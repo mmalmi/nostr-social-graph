@@ -46,16 +46,16 @@ export class SocialGraph {
       const user = queue.shift()!;
       const distance = this.followDistanceByUser.get(user)!;
 
-      const followers = this.followersByUser.get(user) || new Set<number>();
-      for (const follower of followers) {
-        if (!this.followDistanceByUser.has(follower)) {
+      const followedUsers = this.followedByUser.get(user) || new Set<number>();
+      for (const followed of followedUsers) {
+        if (!this.followDistanceByUser.has(followed)) {
           const newFollowDistance = distance + 1;
-          this.followDistanceByUser.set(follower, newFollowDistance);
+          this.followDistanceByUser.set(followed, newFollowDistance);
           if (!this.usersByFollowDistance.has(newFollowDistance)) {
             this.usersByFollowDistance.set(newFollowDistance, new Set());
           }
-          this.usersByFollowDistance.get(newFollowDistance)!.add(follower);
-          queue.push(follower);
+          this.usersByFollowDistance.get(newFollowDistance)!.add(followed);
+          queue.push(followed);
         }
       }
     }

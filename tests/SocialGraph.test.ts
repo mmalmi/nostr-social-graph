@@ -92,4 +92,53 @@ describe('SocialGraph', () => {
     expect(newGraph.isFollowing(pubKeys.adam, pubKeys.fiatjaf)).toBe(true);
     expect(newGraph.isFollowing(pubKeys.fiatjaf, pubKeys.snowden)).toBe(true);
   });
+
+  it('should update follow distances when root is changed', () => {
+    const graph = new SocialGraph(pubKeys.adam);
+    const event1: NostrEvent = {
+      created_at: Date.now(),
+      content: '',
+      tags: [['p', pubKeys.fiatjaf]],
+      kind: 3,
+      pubkey: pubKeys.adam,
+      id: 'event1',
+      sig: 'signature',
+    };
+    const event2: NostrEvent = {
+      created_at: Date.now(),
+      content: '',
+      tags: [['p', pubKeys.snowden]],
+      kind: 3,
+      pubkey: pubKeys.fiatjaf,
+      id: 'event2',
+      sig: 'signature',
+    };
+    graph.handleEvent(event1);
+    graph.handleEvent(event2);
+
+    // Initial follow distances
+    expect(graph.getFollowDistance(pubKeys.adam)).toBe(0);
+    expect(graph.getFollowDistance(pubKeys.fiatjaf)).toBe(1);
+    expect(graph.getFollowDistance(pubKeys.snowden)).toBe(2);
+
+    graph.setRoot(pubKeys.snowden);
+
+    // Snowden doesn't follow anyone.
+    expect(graph.getFollowDistance(pubKeys.snowden)).toBe(0);
+    expect(graph.getFollowDistance(pubKeys.fiatjaf)).toBe(1000);
+    expect(graph.getFollowDistance(pubKeys.adam)).toBe(1000);
+
+    graph.setRoot(pubKeys.fiatjaf);
+
+    // Fiatjaf follows Snowden.
+    expect(graph.getFollowDistance(pubKeys.snowden)).toBe(1);
+    expect(graph.getFollowDistance(pubKeys.fiatjaf)).toBe(0);
+    expect(graph.getFollowDistance(pubKeys.adam)).toBe(1000);
+
+    graph.setRoot(pubKeys.adam)
+    // Initial follow distances
+    expect(graph.getFollowDistance(pubKeys.adam)).toBe(0);
+    expect(graph.getFollowDistance(pubKeys.fiatjaf)).toBe(1);
+    expect(graph.getFollowDistance(pubKeys.snowden)).toBe(2);
+  });
 });
