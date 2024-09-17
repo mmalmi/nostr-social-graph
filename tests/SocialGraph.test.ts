@@ -14,6 +14,8 @@ const pubKeys = {
     snowden: "84dee6e676e5bb67b4ad4e042cf70cbd8681155db535942fcc6a0533858a7240",
 }
 
+const SOCIAL_GRAPH_FILE = path.join(__dirname, '../data/socialGraph.json');
+
 describe('SocialGraph', () => {
   it('should initialize with root user', () => {
     const graph = new SocialGraph(pubKeys.adam);
@@ -154,5 +156,41 @@ describe('SocialGraph', () => {
     const graph = new SocialGraph(pubKeys.adam, JSON.parse(jsonData));
 
     expect(graph.getFollowDistance(pubKeys.adam)).toBe(0);
+  });
+
+  it('should validate the structure of the crawled social graph', () => {
+    if (!fs.existsSync(SOCIAL_GRAPH_FILE)) {
+      throw new Error('Social graph file does not exist');
+    }
+
+    const jsonData = fs.readFileSync(SOCIAL_GRAPH_FILE, 'utf-8');
+    const parsedData = JSON.parse(jsonData);
+
+    // Check followLists structure
+    expect(Array.isArray(parsedData.followLists)).toBe(true);
+    parsedData.followLists.forEach((followList: any) => {
+      expect(Array.isArray(followList)).toBe(true);
+      expect(followList.length).toBe(2);
+      expect(typeof followList[0]).toBe('number');
+      const followedUsers = followList[1]
+      expect(Array.isArray(followedUsers)).toBe(true);
+      expect(followedUsers.length).toBeGreaterThan(0)
+      followedUsers.forEach((id: any) => {
+        expect(typeof id).toBe('number');
+      });
+    });
+
+    // Check uniqueIds structure
+    expect(Array.isArray(parsedData.uniqueIds)).toBe(true);
+    parsedData.uniqueIds.forEach((uniqueId: any) => {
+      expect(Array.isArray(uniqueId)).toBe(true);
+      expect(uniqueId.length).toBe(2);
+      expect(typeof uniqueId[0]).toBe('string');
+      expect(typeof uniqueId[1]).toBe('number');
+    });
+
+    // Attempt to load the graph to ensure it's valid
+    const graph = new SocialGraph('rootPubKey', parsedData);
+    expect(graph).toBeInstanceOf(SocialGraph);
   });
 });

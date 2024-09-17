@@ -1,8 +1,8 @@
 import { SerializedUniqueIds, UniqueIds } from './UniqueIds';
 import { pubKeyRegex, NostrEvent } from './utils';
 
-type SerializedSocialGraph = {
-  follows: [number, number[]][];
+export type SerializedSocialGraph = {
+  followLists: [number, number[]][];
   uniqueIds: SerializedUniqueIds;
 };
 
@@ -20,7 +20,7 @@ export class SocialGraph {
     this.root = this.id(root);
     this.followDistanceByUser.set(this.root, 0);
     this.usersByFollowDistance.set(0, new Set([this.root]));
-    serialized && this.deserialize(serialized.follows);
+    serialized && this.deserialize(serialized.followLists);
   }
 
   private id(str: string): number {
@@ -254,7 +254,7 @@ export class SocialGraph {
   }
 
   serialize(maxSize?: number): SerializedSocialGraph {
-    const follows: [number, number[]][] = [];
+    const followLists: [number, number[]][] = [];
     for (let distance = 0; distance <= Math.max(...this.usersByFollowDistance.keys()); distance++) {
       const users = this.usersByFollowDistance.get(distance) || new Set<number>();
       for (const user of users) {
@@ -262,17 +262,17 @@ export class SocialGraph {
         if (!followedUsers || followedUsers.size === 0) {
           continue
         }
-        follows.push([user, [...followedUsers.values()]]);
-        if (maxSize && follows.length >= maxSize) {
-          return { follows, uniqueIds: this.ids.serialize() };
+        followLists.push([user, [...followedUsers.values()]]);
+        if (maxSize && followLists.length >= maxSize) {
+          return { followLists, uniqueIds: this.ids.serialize() };
         }
       }
     }
-    return { follows, uniqueIds: this.ids.serialize() };
+    return { followLists, uniqueIds: this.ids.serialize() };
   }
 
-  private deserialize(follows: [number, number[]][]): void {
-    for (const [follower, followedUsers] of follows) {
+  private deserialize(followLists: [number, number[]][]): void {
+    for (const [follower, followedUsers] of followLists) {
       for (const followedUser of followedUsers) {
         this.addFollower(followedUser, follower);
       }
