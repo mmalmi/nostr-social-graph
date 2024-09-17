@@ -1,5 +1,10 @@
-import { UniqueIds } from './UniqueIds';
+import { SerializedUniqueIds, UniqueIds } from './UniqueIds';
 import { pubKeyRegex, NostrEvent } from './utils';
+
+type SerializedSocialGraph = {
+  follows: [number, number[]][];
+  uniqueIds: SerializedUniqueIds;
+};
 
 export class SocialGraph {
   private root: number;
@@ -10,14 +15,13 @@ export class SocialGraph {
   private latestFollowEventTimestamps = new Map<number, number>();
   private ids = new UniqueIds();
 
-  constructor(root: string, serialized?: string) {
+  constructor(root: string, serialized?: SerializedSocialGraph) {
     this.root = this.id(root);
     this.followDistanceByUser.set(this.root, 0);
     this.usersByFollowDistance.set(0, new Set([this.root]));
     if (serialized) {
-      const parsed = JSON.parse(serialized);
-      this.ids = new UniqueIds(parsed.uniqueIds);
-      this.deserialize(parsed.follows);
+      this.ids = new UniqueIds(serialized.uniqueIds);
+      this.deserialize(serialized.follows);
     }
   }
 
@@ -251,19 +255,22 @@ export class SocialGraph {
     return set;
   }
 
-  serialize(maxSize?: number): string {
+  serialize(maxSize?: number): SerializedSocialGraph {
     const follows: [number, number[]][] = [];
     for (let distance = 0; distance <= Math.max(...this.usersByFollowDistance.keys()); distance++) {
       const users = this.usersByFollowDistance.get(distance) || new Set<number>();
       for (const user of users) {
-        const followedUsers = this.followedByUser.get(user) || new Set<number>();
-        follows.push([user, [...followedUsers.values()]])
+        const followedUsers = this.followedByUser.get(user)
+        if (!followedUsers || followedUsers.size === 0) {
+          continue
+        }
+        follows.push([user, [...followedUsers.values()]]);
         if (maxSize && follows.length >= maxSize) {
-          return JSON.stringify({ follows, uniqueIds: this.ids.serialize() });
+          return { follows, uniqueIds: this.ids.serialize() };
         }
       }
     }
-    return JSON.stringify({ follows, uniqueIds: this.ids.serialize() });
+    return { follows, uniqueIds: this.ids.serialize() };
   }
 
   private deserialize(follows: [number, number[]][]): void {

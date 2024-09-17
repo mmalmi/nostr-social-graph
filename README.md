@@ -1,1 +1,1 @@
-[Nostr](https://nostr.com) adapter for IrisDB. Uses [NDK](https://github.com/nostr-dev-kit/ndk) under the hood.
+Nostr social graph library

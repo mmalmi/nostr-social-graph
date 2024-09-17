@@ -1,5 +1,7 @@
 export type UID = number;
 
+export type SerializedUniqueIds = [string, UID][];
+
 /**
  * Save memory and storage by mapping repeatedly used long strings such as public keys to internal unique ID numbers.
  */
@@ -8,7 +10,7 @@ export class UniqueIds {
   private uniqueIdToStr = new Map<UID, string>();
   private currentUniqueId = 0;
 
-  constructor(serialized?: [string, UID][]) {
+  constructor(serialized?: SerializedUniqueIds) {
     if (serialized) {
       for (const [str, id] of serialized) {
         this.strToUniqueId.set(str, id);
@@ -41,7 +43,7 @@ export class UniqueIds {
     return this.strToUniqueId.has(str);
   }
 
-  serialize(): [string, UID][] {
+  serialize(): SerializedUniqueIds {
     return Array.from(this.strToUniqueId.entries());
   }
 }
