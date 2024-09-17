@@ -1,6 +1,6 @@
 {
   "name": "nostr-social-graph",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "type": "module",
   "description": "Nostr social graph library",
   "main": "dist/nostr-social-graph.umd.js",
@@ -13,15 +13,14 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/irislib/irisdb.git"
+    "url": "git+https://github.com/mmalmi/nostr-social-graph.git"
   },
   "author": "Martti Malmi",
   "license": "MIT",
   "bugs": {
-    "url": "https://github.com/irislib/irisdb/issues"
+    "url": "https://github.com/mmalmi/nostr-social-graph/issues"
   },
-  "homepage": "https://github.com/irislib/irisdb",
-  "documentation": "https://irisdb.iris.to",
+  "homepage": "https://github.com/mmalmi/nostr-social-graph",
   "files": [
     "src",
     "dist",
