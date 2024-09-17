@@ -16,13 +16,11 @@ export class SocialGraph {
   private ids = new UniqueIds();
 
   constructor(root: string, serialized?: SerializedSocialGraph) {
+    this.ids = new UniqueIds(serialized && serialized.uniqueIds);
     this.root = this.id(root);
     this.followDistanceByUser.set(this.root, 0);
     this.usersByFollowDistance.set(0, new Set([this.root]));
-    if (serialized) {
-      this.ids = new UniqueIds(serialized.uniqueIds);
-      this.deserialize(serialized.follows);
-    }
+    serialized && this.deserialize(serialized.follows);
   }
 
   private id(str: string): number {

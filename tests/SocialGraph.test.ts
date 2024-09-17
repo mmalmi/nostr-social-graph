@@ -1,6 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import { SocialGraph } from '../src/SocialGraph';
 import { NostrEvent } from '../src/utils';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const pubKeys = {
     adam: "020f2d21ae09bf35fcdfb65decf1478b846f5f728ab30c5eaabcd6d081a81c3e",
@@ -140,5 +146,13 @@ describe('SocialGraph', () => {
     expect(graph.getFollowDistance(pubKeys.adam)).toBe(0);
     expect(graph.getFollowDistance(pubKeys.fiatjaf)).toBe(1);
     expect(graph.getFollowDistance(pubKeys.snowden)).toBe(2);
+  });
+
+  it('should load social graph from crawled JSON file', () => {
+    const jsonFilePath = path.join(__dirname, '../data/socialGraph.json');
+    const jsonData = fs.readFileSync(jsonFilePath, 'utf-8');
+    const graph = new SocialGraph(pubKeys.adam, JSON.parse(jsonData));
+
+    expect(graph.getFollowDistance(pubKeys.adam)).toBe(0);
   });
 });
