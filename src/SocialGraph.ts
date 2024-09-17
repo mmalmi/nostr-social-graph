@@ -287,4 +287,21 @@ export class SocialGraph {
     }
     return result;
   }
+
+  *userIterator(upToDistance?: number): Generator<string> {
+    const distances = Array.from(this.usersByFollowDistance.keys()).sort((a, b) => a - b);
+    for (const distance of distances) {
+      if (upToDistance !== undefined && distance > upToDistance) {
+        break;
+      }
+      const users = this.usersByFollowDistance.get(distance) || new Set<number>();
+      for (const user of users) {
+        yield this.str(user);
+      }
+    }
+  }
+
+  [Symbol.iterator](): Generator<string> {
+    return this.userIterator();
+  }
 }
