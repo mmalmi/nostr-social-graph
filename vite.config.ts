@@ -4,17 +4,9 @@ export default defineConfig({
   build: {
     lib: {
       entry: 'src/index.ts',
-      name: 'irisdb',
+      name: 'nostr-social-graph',
       // The file name for the generated bundle (entry point of your library)
-      fileName: (format) => `irisdb-nostr.${format}.js`,
-    },
-    rollupOptions: {
-      // Externalize dependencies so they're not bundled into your library
-      external: ['irisdb'],
-      output: {
-        // Provide globals here if necessary
-        globals: {},
-      },
+      fileName: (format) => `nostr-social-graph.${format}.js`,
     },
     outDir: 'dist',
   },
