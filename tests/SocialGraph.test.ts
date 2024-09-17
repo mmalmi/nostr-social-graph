@@ -53,4 +53,43 @@ describe('SocialGraph', () => {
     graph.handleEvent(event2);
     expect(graph.getFollowDistance(pubKeys.snowden)).toBe(2);
   });
+
+  it('should serialize and deserialize correctly', () => {
+    const graph = new SocialGraph(pubKeys.adam);
+    const event1: NostrEvent = {
+      created_at: Date.now(),
+      content: '',
+      tags: [['p', pubKeys.fiatjaf]],
+      kind: 3,
+      pubkey: pubKeys.adam,
+      id: 'event1',
+      sig: 'signature',
+    };
+    const event2: NostrEvent = {
+      created_at: Date.now(),
+      content: '',
+      tags: [['p', pubKeys.snowden]],
+      kind: 3,
+      pubkey: pubKeys.fiatjaf,
+      id: 'event2',
+      sig: 'signature',
+    };
+    graph.handleEvent(event1);
+    graph.handleEvent(event2);
+
+    expect(graph.getFollowDistance(pubKeys.adam)).toBe(0)
+    expect(graph.getFollowDistance(pubKeys.fiatjaf)).toBe(1);
+    expect(graph.getFollowDistance(pubKeys.snowden)).toBe(2);
+    expect(graph.isFollowing(pubKeys.adam, pubKeys.fiatjaf)).toBe(true);
+    expect(graph.isFollowing(pubKeys.fiatjaf, pubKeys.snowden)).toBe(true);
+
+    const serialized = graph.serialize();
+    const newGraph = new SocialGraph(pubKeys.adam, serialized);
+
+    expect(newGraph.getFollowDistance(pubKeys.adam)).toBe(0)
+    expect(newGraph.getFollowDistance(pubKeys.fiatjaf)).toBe(1);
+    expect(newGraph.getFollowDistance(pubKeys.snowden)).toBe(2);
+    expect(newGraph.isFollowing(pubKeys.adam, pubKeys.fiatjaf)).toBe(true);
+    expect(newGraph.isFollowing(pubKeys.fiatjaf, pubKeys.snowden)).toBe(true);
+  });
 });

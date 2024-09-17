@@ -252,25 +252,25 @@ export class SocialGraph {
   }
 
   serialize(maxSize?: number): string {
-    const follows: [number, number][] = [];
+    const follows: [number, number[]][] = [];
     for (let distance = 0; distance <= Math.max(...this.usersByFollowDistance.keys()); distance++) {
       const users = this.usersByFollowDistance.get(distance) || new Set<number>();
       for (const user of users) {
-        const followers = this.followersByUser.get(user) || new Set<number>();
-        for (const follower of followers) {
-          follows.push([follower, user]);
-          if (maxSize && follows.length >= maxSize) {
-            return JSON.stringify({ follows, uniqueIds: this.ids.serialize() });
-          }
+        const followedUsers = this.followedByUser.get(user) || new Set<number>();
+        follows.push([user, [...followedUsers.values()]])
+        if (maxSize && follows.length >= maxSize) {
+          return JSON.stringify({ follows, uniqueIds: this.ids.serialize() });
         }
       }
     }
     return JSON.stringify({ follows, uniqueIds: this.ids.serialize() });
   }
 
-  private deserialize(follows: [number, number][]): void {
-    for (const [follower, followedUser] of follows) {
-      this.addFollower(followedUser, follower);
+  private deserialize(follows: [number, number[]][]): void {
+    for (const [follower, followedUsers] of follows) {
+      for (const followedUser of followedUsers) {
+        this.addFollower(followedUser, follower);
+      }
     }
   }
 
