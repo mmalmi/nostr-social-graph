@@ -13,7 +13,7 @@ type SearchResult = {
 console.time('fuse init')
 // const fuseIndex = Fuse.parseIndex(fuseIndexData)
 const processedData = fuseData.map((v) => ({ pubKey: v[0], name: v[1], nip05: v[2] || undefined }));
-const fuse = new Fuse<SearchResult>(processedData as SearchResult[], { keys: ["name", "pubKey"] })
+const fuse = new Fuse<SearchResult>(processedData as SearchResult[], { keys: ["name", "pubKey"], includeScore: true })
 console.timeEnd('fuse init')
 console.log(fuse)
 

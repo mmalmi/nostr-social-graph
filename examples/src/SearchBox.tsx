@@ -6,6 +6,7 @@ import { Avatar } from "./Avatar"
 import { debounce } from "lodash"
 import FollowedBy from "./FollowedBy"
 import fuse from "./fuse"
+import socialGraph from "./socialGraph"
 
 const NOSTR_REGEX = /(npub|note|nevent)1[a-zA-Z0-9]{58,300}/gi
 const HEX_REGEX = /[0-9a-fA-F]{64}/gi
@@ -34,8 +35,18 @@ function SearchBox({onSelect}: {onSelect?: (string) => void }) {
 
       const results = fuse.search(v, { limit: MAX_RESULTS })
       console.log('results', results)
+
+      // Fetch follow distances and adjust scores
+      const resultsWithAdjustedScores = results.map((result) => {
+        const followDistance = Math.max(socialGraph.getFollowDistance(result.item.pubKey), 1)
+        const adjustedScore = result.score! * followDistance * Math.pow(0.999, socialGraph.followedByFriends(result.item.pubKey).size)
+        return { ...result, adjustedScore }
+      })
+
+      resultsWithAdjustedScores.sort((a, b) => a.adjustedScore - b.adjustedScore)
+
       setActiveResult(0)
-      setSearchResults(results.map((result) => result.item))
+      setSearchResults(resultsWithAdjustedScores.map((result) => result.item))
     }, 100),
     []
   )

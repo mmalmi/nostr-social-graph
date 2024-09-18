@@ -20,13 +20,16 @@ const ProfileCard = ({pubKey, currentUser, onSetCurrentUser}: {pubKey:string, cu
             {pubKey !== currentUser && <button className="btn btn-sm rounded-full btn-primary" onClick={onSetCurrentUser}>Set as current user</button>}
             </div>
             <FollowedBy pubkey={pubKey} />
-            <div className="flex flex-row gap-4">
-                <div>
+            <div className="flex flex-row gap-4 items-end">
+                <div className="badge badge-neutral">
                     Following: {socialGraph.getFollowedByUser(pubKey).size}
                 </div>
-                <div>
+                <div className="badge badge-neutral">
                     Known followers: {socialGraph.getFollowersByUser(pubKey).size}
                 </div>
+                {socialGraph.getFollowersByUser(pubKey).has(currentUser) && (
+                    <div className="badge badge-accent badge-sm">Follows you</div>
+                )}
             </div>
             <div className="flex flex-row gap-4 text-sm">
                 View profile on:

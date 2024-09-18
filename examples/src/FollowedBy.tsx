@@ -1,7 +1,6 @@
 import React, {Fragment, useMemo} from "react"
 
 import {AvatarGroup} from "./AvatarGroup"
-import {nip19} from "nostr-tools"
 import {Name} from "./Name"
 
 import socialGraph from "./socialGraph"
@@ -9,18 +8,21 @@ import {Badge} from "./Badge"
 
 const MAX_FOLLOWED_BY_FRIENDS = 3
 
+// Extracted function
+const getFollowedByFriends = (pubkey: string, max: number) => {
+  const followedByFriends = socialGraph.followedByFriends(pubkey)
+  return {
+    followedByFriendsArray: Array.from(followedByFriends).slice(
+      0,
+      max
+    ),
+    totalFollowedByFriends: followedByFriends.size,
+  }
+}
+
 export default function FollowedBy({pubkey}: {pubkey: string}) {
   const followDistance = socialGraph.getFollowDistance(pubkey)
-  const {followedByFriendsArray, totalFollowedByFriends} = useMemo(() => {
-    const followedByFriends = socialGraph.followedByFriends(pubkey)
-    return {
-      followedByFriendsArray: Array.from(followedByFriends).slice(
-        0,
-        MAX_FOLLOWED_BY_FRIENDS
-      ),
-      totalFollowedByFriends: followedByFriends.size,
-    }
-  }, [pubkey, followDistance])
+  const {followedByFriendsArray, totalFollowedByFriends} = useMemo(() => getFollowedByFriends(pubkey, MAX_FOLLOWED_BY_FRIENDS), [pubkey, followDistance])
 
   const renderFollowedByFriendsLinks = () => {
     return followedByFriendsArray.map((a, index) => (
@@ -50,7 +52,7 @@ export default function FollowedBy({pubkey}: {pubkey: string}) {
           )}
         </div>
       )}
-      {totalFollowedByFriends < 1 && (
+      {followDistance !== 3 && totalFollowedByFriends < 1 && (
         <div className="text-gray-light">Not followed by anyone you follow</div>
       )}
       {followDistance === 3 && (

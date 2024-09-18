@@ -111,8 +111,8 @@ function handleProfileEvent(event: NostrEvent) {
     const profile = JSON.parse(event.content);
     const pubKey = event.pubkey;
     const name = (profile.name || profile.username).trim().slice(0, MAX_NAME_LENGTH);
-    let nip05 = profile.nip05 ? (profile.nip05.split('@')[0].trim().slice(0, MAX_NAME_LENGTH)) : undefined;
-    if (nip05 === name) {
+    let nip05 = profile.nip05 ? (profile.nip05.split('@')[0].trim().toLowerCase().slice(0, MAX_NAME_LENGTH)) : undefined;
+    if (nip05 === name.toLowerCase()) {
       nip05 = undefined
     }
   
