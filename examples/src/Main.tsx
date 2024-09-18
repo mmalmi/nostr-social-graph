@@ -5,30 +5,31 @@ import { Avatar } from "./Avatar";
 import socialGraph from "./socialGraph";
 import { Name } from "./Name";
 import ProfileCard from "./ProfileCard";
+import useLocalStorage from "./useLocalStorage";
 
 export const Main = () => {
-    const [currentUser, setCurrentUser] = useState(socialGraph.getRoot())
-    const [selectedUser, setSelectedUser] = useState()
-    const [followDistances, setFollowDistances] = useState([])
+    const [currentUser, setCurrentUser] = useLocalStorage("iris.search.currentUser", socialGraph.getRoot());
+    const [selectedUser, setSelectedUser] = useState();
+    const [followDistances, setFollowDistances] = useState([]);
 
     useEffect(() => {
-      socialGraph.setRoot(currentUser)
+      socialGraph.setRoot(currentUser);
       const distances = [1,2,3,4,5].map(d => ({
         distance: d,
         count: socialGraph.getUsersByFollowDistance(d).size
-      })).filter(d => d.count > 0)
-      setFollowDistances(distances)
-    }, [currentUser])
+      })).filter(d => d.count > 0);
+      setFollowDistances(distances);
+    }, [currentUser]);
   
     const onSelect = (pubkey) => {
-      console.log('new pubkey', pubkey)
-      setSelectedUser(pubkey)
-    }
+      console.log('new pubkey', pubkey);
+      setSelectedUser(pubkey);
+    };
 
     const onSetCurrentUser = () => {
-        setSelectedUser(null)
-        setCurrentUser(selectedUser)
-    }
+        setSelectedUser(null);
+        setCurrentUser(selectedUser);
+    };
   
     return (
       <div className="flex flex-col gap-4 p-4 w-full max-w-prose">
