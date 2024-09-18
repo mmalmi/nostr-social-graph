@@ -16,7 +16,12 @@ const useFollows = (pubKey: string, includeSelf = false) => {
 
         const sub = ndk.subscribe(filter)
 
-        sub?.on("event", (event: NDKEvent) => socialGraph.handleEvent(event as NostrEvent))
+        sub?.on("event", (event: NDKEvent) => {
+          socialGraph.handleEvent(event as NostrEvent)
+          setFollows([
+            ...socialGraph.getFollowedByUser(pubKey, includeSelf),
+          ])
+        })
         return () => {
           sub.stop()
         }
