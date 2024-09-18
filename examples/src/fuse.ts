@@ -1,5 +1,5 @@
 import Fuse from "fuse.js"
-// pre-generated index can be given, but not significant performance improvement if dataset not super large
+// pre-generated index can be used, but not significant performance improvement if dataset not super large
 // import fuseIndexData from "../../data/fuse_index.json"
 import fuseData from "../../data/fuse_data.json"
 

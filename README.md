@@ -3,7 +3,10 @@
 * Change social graph root user if needed, efficiently recalculating follow distances
 * Low memory consumption
 * Efficient serialization for saving & loading from storage
-* Optional: pre-crawled Nostr dataset consisting of 260 follow lists and 23 000 users (2.2 MB)
+* Optional: pre-crawled Nostr [datasets](./data)
+  * follows, consisting of 260 follow lists and 23 000 users (2.2 MB)
+  * profile names and pictures for 19 000 users (2.8 MB)
 * Demo: [search.iris.to](https://search.iris.to) ([examples dir](./examples/))
 * Also used on [beta.iris.to](https://beta.iris.to)
 * See [tests](./tests/SocialGraph.test.ts) for usage
+* The magic happens mostly in [SocialGraph.ts](./src/SocialGraph.ts)
