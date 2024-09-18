@@ -1,4 +1,4 @@
-import React, {useState, useEffect} from "react";
+import React, {useState, useEffect, useCallback} from "react";
 
 import SearchBox from "./SearchBox";
 import { Avatar } from "./Avatar";
@@ -6,19 +6,37 @@ import socialGraph from "./socialGraph";
 import { Name } from "./Name";
 import ProfileCard from "./ProfileCard";
 import useLocalStorage from "./useLocalStorage";
+import ndk from "./ndk";
+import { throttle } from "lodash";
 
 export const Main = () => {
     const [currentUser, setCurrentUser] = useLocalStorage("iris.search.currentUser", socialGraph.getRoot());
     const [selectedUser, setSelectedUser] = useState();
     const [followDistances, setFollowDistances] = useState([]);
 
+    const debouncedSetFollowDistances = useCallback(throttle(() => {
+        const distances = [1,2,3,4,5].map(d => ({
+          distance: d,
+          count: socialGraph.getUsersByFollowDistance(d).size
+        })).filter(d => d.count > 0);
+        setFollowDistances(distances);
+    }, 1000), [])
+
     useEffect(() => {
       socialGraph.setRoot(currentUser);
-      const distances = [1,2,3,4,5].map(d => ({
-        distance: d,
-        count: socialGraph.getUsersByFollowDistance(d).size
-      })).filter(d => d.count > 0);
-      setFollowDistances(distances);
+      debouncedSetFollowDistances()
+      const missing = [] as string[]
+      for (const k of socialGraph.getUsersByFollowDistance(1).values()) {
+        if (socialGraph.getFollowedByUser(k).size === 0) {
+            missing.push(k)
+        }
+      }
+      const sub = ndk.subscribe({kinds:[3], authors: missing})
+      sub.on("event", (e) => {
+        socialGraph.handleEvent(e)
+        debouncedSetFollowDistances()
+    })
+      return () => sub.stop()
     }, [currentUser]);
   
     const onSelect = (pubkey) => {
