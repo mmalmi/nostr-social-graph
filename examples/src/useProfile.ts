@@ -1,5 +1,6 @@
 import NDK, {NDKEvent, NDKUserProfile} from "@nostr-dev-kit/ndk"
 import {useEffect, useMemo, useState} from "react"
+import {LRUCache} from "typescript-lru-cache"
 
 const ndk = new NDK({
   explicitRelayUrls: [
@@ -11,8 +12,7 @@ const ndk = new NDK({
     "wss://eden.nostr.land",
   ],
 })
-
-import {LRUCache} from "typescript-lru-cache"
+ndk.connect()
 
 const profileCache = new LRUCache<string, NDKUserProfile>({maxSize: 500})
 

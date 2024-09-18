@@ -2,7 +2,7 @@ import React from 'react';
 
 export const CheckMarkIcon = () => (
   <svg
-    className="text-purple-500"
+    className="h-3 w-3 text-white"
     fill="none"
     viewBox="0 0 24 24"
     stroke="currentColor"

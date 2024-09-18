@@ -2,8 +2,6 @@ import socialGraph from "./socialGraph"
 import { CheckMarkIcon } from "./Icons"
 import React from "react"
 
-let loggedIn = false
-
 export const Badge = ({
   pubKey,
   className,
@@ -11,23 +9,21 @@ export const Badge = ({
   pubKey: string
   className?: string
 }) => {
-  if (!loggedIn) {
-    return null
-  }
   const distance = socialGraph.getFollowDistance(pubKey)
+
   if (distance <= 2) {
     let tooltip
     let badgeClass
     if (distance === 0) {
       tooltip = "You"
-      badgeClass = "bg-primary"
+      badgeClass = "bg-purple-500"
     } else if (distance === 1) {
       tooltip = "Following"
-      badgeClass = "bg-primary"
+      badgeClass = "bg-purple-500"
     } else if (distance === 2) {
       const followedByFriends = socialGraph.followedByFriends(pubKey)
       tooltip = `Followed by ${followedByFriends.size} friends`
-      badgeClass = followedByFriends.size > 10 ? "bg-accent" : "bg-neutral"
+      badgeClass = followedByFriends.size > 10 ? "bg-orange-500" : "bg-neutral"
     }
     return (
       <span

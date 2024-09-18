@@ -31,6 +31,10 @@ export class SocialGraph {
     return this.ids.str(id);
   }
 
+  getRoot() {
+    return this.str(this.root)
+  }
+
   setRoot(root: string) {
     const rootId = this.id(root);
     if (rootId === this.root) {

@@ -71,7 +71,7 @@ export const Avatar = ({
             onError={handleImageError}
           />
         ) : (
-          <MinidenticonImg username={pubKey} alt="User Avatar" />
+          <MinidenticonImg username={pubKey} />
         )}
       </div>
     </div>
