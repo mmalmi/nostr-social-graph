@@ -14,7 +14,7 @@ const Explore = ({ pubKey, selectedUser, setSelectedUser }) => {
   const [followDistances, setFollowDistances] = useState([]);
 
   const debouncedSetFollowDistances = useCallback(throttle(() => {
-    const distances = [1,2,3,4,5].map(d => {
+    const distances = [0,1,2,3,4,5].map(d => {
       const users = Array.from(socialGraph.getUsersByFollowDistance(d));
       const randomUsers = users.sort(() => 0.5 - Math.random()).slice(0, 3);
       return {
@@ -45,7 +45,9 @@ const Explore = ({ pubKey, selectedUser, setSelectedUser }) => {
 
   return (
     <div className="flex flex-col gap-4 p-4 rounded-xl bg-base-100">
-      Known users by follow distance:
+        <div className="flex flex-row flex-wrap justify-between items-start gap-4 uppercase text-xs text-base-content/50 font-bold">
+            Known users by follow distance
+        </div>
       {followDistances.length === 0 && <div className="flex p-4 items-center justify-center">None</div>}
       {followDistances.map((d) => (
         <div key={d.distance} className="flex flex-row justify-between items-center my-4">
@@ -58,7 +60,7 @@ const Explore = ({ pubKey, selectedUser, setSelectedUser }) => {
                   <Avatar pubKey={user} />
               </div>
             ))}
-            +
+            {d.distance > 0 && d.count > d.randomUsers.length && "+"}
           </div>
         </div>
       ))}

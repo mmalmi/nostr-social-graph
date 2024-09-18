@@ -19,7 +19,7 @@ const ProfileCard = ({pubKey, currentUser, onSetCurrentUser}: {pubKey:string, cu
                     <Avatar pubKey={pubKey} />
                     <Name pubKey={pubKey} />
                 </div>
-                {pubKey !== currentUser && <button className="btn btn-sm rounded-full btn-primary" onClick={onSetCurrentUser}>Set as current user</button>}
+                {pubKey !== currentUser && <button className="btn btn-sm rounded-full btn-primary" onClick={onSetCurrentUser}>View as</button>}
             </div>
             <FollowedBy pubkey={pubKey} />
             <div className="flex flex-row flex-wrap gap-4 items-end">

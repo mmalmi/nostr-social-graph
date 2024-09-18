@@ -3,8 +3,8 @@ import SearchBox from "./SearchBox";
 import ProfileCard from "./ProfileCard";
 import useLocalStorage from "./useLocalStorage";
 import socialGraph from "./socialGraph";
-import CurrentUser from "./CurrentUser";
 import Explore from "./Explore";
+import { Avatar } from "./Avatar";
 
 export const Main = () => {
     const [currentUser, setCurrentUser] = useLocalStorage("iris.search.currentUser", socialGraph.getRoot());
@@ -20,8 +20,13 @@ export const Main = () => {
     };
 
     return (
-        <div className="flex flex-col gap-8 p-4 w-full max-w-prose">
-            <CurrentUser pubKey={currentUser} setSelectedUser={setSelectedUser} />
+        <div className="flex flex-col gap-8 p-4 py-8 w-full max-w-prose">
+            <div className="flex flex-row justify-between flex-wrap items-center">
+                <h1 className="text-2xl">Nostr Social Graph</h1>
+                <div className="cursor-pointer" onClick={() => setSelectedUser(currentUser)}>
+                    <Avatar pubKey={currentUser} />
+                </div>
+            </div>
             <SearchBox onSelect={onSelect} />
             <ProfileCard pubKey={selectedUser ?? currentUser} currentUser={currentUser} onSetCurrentUser={onSetCurrentUser} />
             <Explore pubKey={currentUser} selectedUser={selectedUser} setSelectedUser={setSelectedUser} />

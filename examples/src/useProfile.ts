@@ -17,7 +17,7 @@ fuseData.forEach((v) => {
 
 export default function useProfile(pubKey?: string, alwaysSubscribe = true) {
   const [profile, setProfile] = useState(
-    profileCache.get(pubKey || "") || null
+    profileCache.get(pubKey || "") || {}
   )
 
   // Reset profile state when pubKey changes

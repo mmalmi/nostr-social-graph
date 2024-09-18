@@ -98,7 +98,7 @@ function SearchBox({onSelect}: {onSelect?: (string) => void }) {
   }
 
   return (
-    <div className={"dropdown dropdown-open m-4"}>
+    <div className={"dropdown dropdown-open"}>
       <label className="input input-bordered rounded-full flex items-center gap-2">
         <input
           type="text"
