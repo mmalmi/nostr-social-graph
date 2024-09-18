@@ -17,7 +17,7 @@ const SOCIAL_GRAPH_ROOT = "4523be58d395b1b196a9b8c82b038b6895cb02b683d0c253a9550
 
 let socialGraph: SocialGraph;
 const fuse = new Fuse<Profile>([], { keys: ["name", "pubKey", "nip05"] });
-const data: Profile[] = [];
+const data: string[][] = [];
 
 type Profile = {
   name: string;
@@ -110,14 +110,27 @@ function handleProfileEvent(event: NostrEvent) {
   try {
     const profile = JSON.parse(event.content);
     const pubKey = event.pubkey;
-    const name = (profile.name || profile.username).slice(0, MAX_NAME_LENGTH);
-    const nip05 = profile.nip05 ? (profile.nip05.split('@')[0].slice(0, MAX_NAME_LENGTH)) : undefined;
+    const name = (profile.name || profile.username).trim().slice(0, MAX_NAME_LENGTH);
+    let nip05 = profile.nip05 ? (profile.nip05.split('@')[0].trim().slice(0, MAX_NAME_LENGTH)) : undefined;
+    if (nip05 === name) {
+      nip05 = undefined
+    }
   
     if (name) {
       console.log(`Handling profile event for ${name} (${pubKey})`);
       fuse.remove((profile) => profile.pubKey === pubKey);
       fuse.add({ name, pubKey, nip05 });
-      data.push({ name, pubKey, nip05 }); // Add to data array
+      const item = [pubKey, name]
+      const hasPicture = profile.picture && profile.picture.length < 255
+      if (nip05) {
+        item.push(nip05)
+      } else if (hasPicture) {
+        item.push('')
+      }
+      if (hasPicture) {
+        item.push(profile.picture.trim().replace(/^https:\/\//, ''));
+      }
+      data.push(item);
     }
   } catch (e) {
     console.error("Failed to handle profile event", e);

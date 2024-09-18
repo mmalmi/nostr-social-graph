@@ -1,10 +1,19 @@
 import {NDKEvent, NDKUserProfile} from "@nostr-dev-kit/ndk"
 import {useEffect, useState} from "react"
-import {LRUCache} from "typescript-lru-cache"
 import ndk from "./ndk"
 import fuse from "./fuse"
+import fuseData from "../../data/fuse_data.json"
 
-const profileCache = new LRUCache<string, NDKUserProfile>({maxSize: 500})
+const profileCache = new Map<string, NDKUserProfile>()
+fuseData.forEach((v) => {
+  if (v[0] && v[1]) {
+    let pictureUrl = v[3]
+    if (pictureUrl && !pictureUrl.startsWith('http://')) {
+      pictureUrl = `https://${pictureUrl}`
+    }
+    profileCache.set(v[0], {name:v[1], picture: pictureUrl || undefined})
+  }
+})
 
 export default function useProfile(pubKey?: string, subscribe = false) {
   const [profile, setProfile] = useState(

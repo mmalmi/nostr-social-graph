@@ -1,5 +1,6 @@
 import Fuse from "fuse.js"
-import fuseIndexData from "../../data/fuse_index.json"
+// pre-generated index can be given, but not significant performance improvement if dataset not super large
+// import fuseIndexData from "../../data/fuse_index.json"
 import fuseData from "../../data/fuse_data.json"
 
 type SearchResult = {
@@ -10,8 +11,9 @@ type SearchResult = {
   }
 
 console.time('fuse init')
-const fuseIndex = Fuse.parseIndex(fuseIndexData) // optional, you can just use fuseData if it's not super large
-const fuse = new Fuse<SearchResult>(fuseData, { keys: ["name", "pubKey"] }, fuseIndex)
+// const fuseIndex = Fuse.parseIndex(fuseIndexData)
+const processedData = fuseData.map((v) => ({ pubKey: v[0], name: v[1], nip05: v[2] || undefined }));
+const fuse = new Fuse<SearchResult>(processedData as SearchResult[], { keys: ["name", "pubKey"] })
 console.timeEnd('fuse init')
 console.log(fuse)
 
