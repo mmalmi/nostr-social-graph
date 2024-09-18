@@ -3,11 +3,12 @@ import { Avatar } from "./Avatar";
 import socialGraph, {saveGraph} from "./socialGraph";
 import ndk from "./ndk";
 import { throttle } from "lodash";
+import { Link } from "react-router-dom";
+import { nip19 } from "nostr-tools";
 
 interface ExploreProps {
   pubKey: string;
   selectedUser: string;
-  setSelectedUser: (pubKey: string) => void;
 }
 
 interface FollowDistance {
@@ -18,7 +19,7 @@ interface FollowDistance {
 
 const RANDOM_USER_COUNT = 3
 
-const Explore = ({ pubKey, selectedUser, setSelectedUser }: ExploreProps) => {
+const Explore = ({ pubKey, selectedUser }: ExploreProps) => {
   const [followDistances, setFollowDistances] = useState<FollowDistance[]>([]);
 
   const generateFollowDistances = (prevDistances: FollowDistance[] = []) => {
@@ -76,9 +77,9 @@ const Explore = ({ pubKey, selectedUser, setSelectedUser }: ExploreProps) => {
           </div>
           <div className="flex flex-row gap-2 items-center text-lg">
             {d.randomUsers.map((user) => (
-              <div key={user} className="cursor-pointer" onClick={() => setSelectedUser(user)}>
+              <Link key={user} className="cursor-pointer" to={`/${nip19.npubEncode(user)}`}>
                   <Avatar pubKey={user} />
-              </div>
+              </Link>
             ))}
             {d.distance > 0 && d.count > d.randomUsers.length && "+"}
           </div>

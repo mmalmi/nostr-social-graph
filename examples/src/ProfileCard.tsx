@@ -7,7 +7,7 @@ import { nip19 } from "nostr-tools"
 import useFollows from "./useFollows"
 import useProfile from "./useProfile"
 
-const ProfileCard = ({pubKey, currentUser, onSetCurrentUser}: {pubKey:string, currentUser:string, onSetCurrentUser: () => void }) => {
+const ProfileCard = ({pubKey, currentUser, viewAsSelectedUser}: {pubKey:string, currentUser:string, viewAsSelectedUser: () => void }) => {
     const npub = useMemo(() => nip19.npubEncode(pubKey), [pubKey])
     useFollows(pubKey) // subscribe to follows list & update on change
     const profile = useProfile(pubKey)
@@ -19,7 +19,11 @@ const ProfileCard = ({pubKey, currentUser, onSetCurrentUser}: {pubKey:string, cu
                     <Avatar pubKey={pubKey} />
                     <Name pubKey={pubKey} />
                 </div>
-                {pubKey !== currentUser && <button className="btn btn-sm rounded-full btn-primary" onClick={onSetCurrentUser}>View as</button>}
+                {pubKey !== currentUser && (
+                    <button className="btn btn-sm rounded-full btn-primary" onClick={() => viewAsSelectedUser()}>
+                        View as
+                    </button>
+                )}
             </div>
             <FollowedBy pubkey={pubKey} />
             <div className="flex flex-row flex-wrap gap-4 items-end">
@@ -46,7 +50,7 @@ const ProfileCard = ({pubKey, currentUser, onSetCurrentUser}: {pubKey:string, cu
                 {profile?.about && profile.about.length > 2000 && "..."
             }</div>
         </div>
-        )
+    )
 }
 
 export default ProfileCard
