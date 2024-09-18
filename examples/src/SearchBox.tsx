@@ -1,30 +1,15 @@
 import React, {useEffect, useRef, useState, useCallback} from "react"
 import {nip19} from "nostr-tools"
-import Fuse from "fuse.js"
-import fuseIndexData from "../../data/fuse_index.json"
-import fuseData from "../../data/fuse_data.json"
 import classNames from "classnames"
 import {SearchIcon} from "./Icons"
 import { Avatar } from "./Avatar"
 import { debounce } from "lodash"
 import FollowedBy from "./FollowedBy"
-
-console.time('fuse init')
-const fuseIndex = Fuse.parseIndex(fuseIndexData) // optional, you can just use fuseData if it's not super large
-const fuse = new Fuse<SearchResult>(fuseData, { keys: ["name", "pubKey"] }, fuseIndex)
-console.timeEnd('fuse init')
-console.log(fuse)
+import fuse from "./fuse"
 
 const NOSTR_REGEX = /(npub|note|nevent)1[a-zA-Z0-9]{58,300}/gi
 const HEX_REGEX = /[0-9a-fA-F]{64}/gi
 const MAX_RESULTS = 10
-
-type SearchResult = {
-    query?: string
-    name: string
-    pubKey: string
-    nip05?: string
-  }
 
 function SearchBox({onSelect}: {onSelect?: (string) => void }) {
   const [searchResults, setSearchResults] = useState([])
@@ -34,8 +19,16 @@ function SearchBox({onSelect}: {onSelect?: (string) => void }) {
 
   const debouncedSearch = useCallback(
     debounce((v) => {
-      if (v.match(NOSTR_REGEX) || v.match(HEX_REGEX)) {
+      if (v.match(NOSTR_REGEX)) {
         setValue("")
+        const hex = nip19.decode(v)
+        onSelect?.(hex.data)
+        return
+      }
+
+      if (v.match(HEX_REGEX)) {
+        setValue("")
+        onSelect?.(v)
         return
       }
 
@@ -99,7 +92,7 @@ function SearchBox({onSelect}: {onSelect?: (string) => void }) {
         <input
           type="text"
           className="grow"
-          placeholder="Search"
+          placeholder="Search (or paste public key)"
           value={value}
           ref={inputRef}
           onChange={(e) => setValue(e.target.value)}

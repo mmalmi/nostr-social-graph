@@ -1,18 +1,8 @@
-import NDK, {NDKEvent, NDKUserProfile} from "@nostr-dev-kit/ndk"
+import {NDKEvent, NDKUserProfile} from "@nostr-dev-kit/ndk"
 import {useEffect, useState} from "react"
 import {LRUCache} from "typescript-lru-cache"
-
-const ndk = new NDK({
-  explicitRelayUrls: [
-    "wss://relay.snort.social",
-    "wss://relay.damus.io",
-    "wss://relay.nostr.band",
-    "wss://nostr.wine",
-    "wss://soloco.nl",
-    "wss://eden.nostr.land",
-  ],
-})
-ndk.connect()
+import ndk from "./ndk"
+import fuse from "./fuse"
 
 const profileCache = new LRUCache<string, NDKUserProfile>({maxSize: 500})
 
@@ -49,6 +39,8 @@ export default function useProfile(pubKey?: string, subscribe = false) {
         const profile = JSON.parse(event.content)
         profile.created_at = event.created_at
         profileCache.set(pubKey, profile)
+        fuse.remove((item) => item.pubKey === pubKey) // Remove previous entry if exists
+        fuse.add({ pubKey, name: profile.name || profile.username, nip05: profile.nip05?.slice(profile.nip05.indexOf("@")[0]) })
         setProfile(profile)
       }
     })
