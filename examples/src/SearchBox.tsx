@@ -36,7 +36,7 @@ function SearchBox({onSelect}: {onSelect?: (string) => void }) {
       console.log('results', results)
       setActiveResult(0)
       setSearchResults(results.map((result) => result.item))
-    }, 200),
+    }, 100),
     []
   )
 
