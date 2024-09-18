@@ -69,8 +69,9 @@ const Explore = ({ pubKey, selectedUser, setSelectedUser }: ExploreProps) => {
       {followDistances.length === 0 && <div className="flex p-4 items-center justify-center">None</div>}
       {followDistances.map((d) => (
         <div key={d.distance} className="flex flex-row justify-between items-center my-4">
-          <div>
-            <b>{d.distance}</b>: {d.count}
+          <div className="text-xl flex flex-col items-center justify-center w-12">
+            <b>{d.distance}</b>
+            <div className="text-base-content/50 text-base">{d.count}</div>
           </div>
           <div className="flex flex-row gap-2 items-center text-lg">
             {d.randomUsers.map((user) => (

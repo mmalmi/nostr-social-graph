@@ -20,7 +20,7 @@ export const Main = () => {
     };
 
     return (
-        <div className="flex flex-col gap-8 p-4 py-8 w-full max-w-prose">
+        <div className="flex flex-col gap-8 p-4 w-full max-w-prose">
             <div className="flex flex-row justify-between flex-wrap items-center">
                 <h1 className="text-2xl">Nostr Social Graph</h1>
                 <div className="cursor-pointer" onClick={() => setSelectedUser(currentUser)}>
