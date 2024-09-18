@@ -20,7 +20,7 @@ const ProfileCard = ({pubKey, currentUser, onSetCurrentUser}: {pubKey:string, cu
             {pubKey !== currentUser && <button className="btn btn-sm rounded-full btn-primary" onClick={onSetCurrentUser}>Set as current user</button>}
             </div>
             <FollowedBy pubkey={pubKey} />
-            <div className="flex flex-row gap-4 items-end">
+            <div className="flex flex-row flex-wrap gap-4 items-end">
                 <div className="badge badge-neutral">
                     Following: {socialGraph.getFollowedByUser(pubKey).size}
                 </div>
@@ -38,7 +38,7 @@ const ProfileCard = ({pubKey, currentUser, onSetCurrentUser}: {pubKey:string, cu
                 <a href={`https://snort.social/${npub}`} className="link">Snort</a>
                 <a href={`https://coracle.social/people/${npub}`} className="link">Coracle</a>
             </div>
-            <div className="text-xs">{npub}</div>
+            <div className="text-xs break-all">{npub}</div>
         </div>
         )
 }
