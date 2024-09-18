@@ -9,5 +9,5 @@ export default defineConfig({
       fileName: (format) => `nostr-social-graph.${format}.js`,
     },
     outDir: 'dist',
-  },
+  }
 });
