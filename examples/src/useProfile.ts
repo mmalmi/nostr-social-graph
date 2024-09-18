@@ -15,7 +15,7 @@ fuseData.forEach((v) => {
   }
 })
 
-export default function useProfile(pubKey?: string, subscribe = false) {
+export default function useProfile(pubKey?: string, alwaysSubscribe = true) {
   const [profile, setProfile] = useState(
     profileCache.get(pubKey || "") || null
   )
@@ -29,7 +29,7 @@ export default function useProfile(pubKey?: string, subscribe = false) {
     if (!pubKey) {
       return
     }
-    if (profile && !subscribe) {
+    if (profile && !alwaysSubscribe) {
       return
     }
     const sub = ndk.subscribe(
@@ -56,7 +56,7 @@ export default function useProfile(pubKey?: string, subscribe = false) {
     return () => {
       sub.stop()
     }
-  }, [pubKey, profile, subscribe])
+  }, [pubKey, profile, alwaysSubscribe])
 
   return profile
 }
