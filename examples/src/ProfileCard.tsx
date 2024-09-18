@@ -16,8 +16,8 @@ const ProfileCard = ({pubKey, currentUser, onSetCurrentUser}: {pubKey:string, cu
         <div className="flex flex-col gap-4 p-4 rounded-xl bg-base-100">
             <div className="flex flex-row gap-4 justify-between items-center flex-wrap">
                 <div className="flex flex-row gap-4 items-center">
-                <Avatar pubKey={pubKey} />
-                <Name pubKey={pubKey} />
+                    <Avatar pubKey={pubKey} />
+                    <Name pubKey={pubKey} />
                 </div>
                 {pubKey !== currentUser && <button className="btn btn-sm rounded-full btn-primary" onClick={onSetCurrentUser}>Set as current user</button>}
             </div>
@@ -41,7 +41,10 @@ const ProfileCard = ({pubKey, currentUser, onSetCurrentUser}: {pubKey:string, cu
                 <a href={`https://coracle.social/people/${npub}`} className="link" target="_blank" rel="noopener noreferrer">Coracle</a>
             </div>
             <div className="text-xs break-all">{npub}</div>
-            <div className="text-sm">{profile.about}</div>
+            <div className="text-sm">
+                {profile.about?.slice(0, 2000)}
+                {profile.about && profile.about.length > 2000 && "..."
+            }</div>
         </div>
         )
 }
