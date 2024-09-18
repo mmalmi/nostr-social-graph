@@ -42,8 +42,8 @@ const ProfileCard = ({pubKey, currentUser, onSetCurrentUser}: {pubKey:string, cu
             </div>
             <div className="text-xs break-all">{npub}</div>
             <div className="text-sm">
-                {profile.about?.slice(0, 2000)}
-                {profile.about && profile.about.length > 2000 && "..."
+                {profile?.about?.slice(0, 2000)}
+                {profile?.about && profile.about.length > 2000 && "..."
             }</div>
         </div>
         )
