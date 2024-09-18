@@ -5,10 +5,12 @@ import FollowedBy from "./FollowedBy"
 import { Name } from "./Name"
 import { nip19 } from "nostr-tools"
 import useFollows from "./useFollows"
+import useProfile from "./useProfile"
 
 const ProfileCard = ({pubKey, currentUser, onSetCurrentUser}: {pubKey:string, currentUser:string, onSetCurrentUser: () => void }) => {
     const npub = useMemo(() => nip19.npubEncode(pubKey), [pubKey])
     useFollows(pubKey) // subscribe to follows list & update on change
+    const profile = useProfile(pubKey)
 
     return (
         <div className="flex flex-col gap-4 p-4 rounded-xl bg-base-100">
@@ -33,12 +35,13 @@ const ProfileCard = ({pubKey, currentUser, onSetCurrentUser}: {pubKey:string, cu
             </div>
             <div className="flex flex-row gap-4 text-sm">
                 View profile on:
-                <a href={`https://beta.iris.to/${npub}`} className="link">Iris</a>
-                <a href={`https://primal.net/p/${npub}`} className="link">Primal</a>
-                <a href={`https://snort.social/${npub}`} className="link">Snort</a>
-                <a href={`https://coracle.social/people/${npub}`} className="link">Coracle</a>
+                <a href={`https://beta.iris.to/${npub}`} className="link" target="_blank" rel="noopener noreferrer">Iris</a>
+                <a href={`https://primal.net/p/${npub}`} className="link" target="_blank" rel="noopener noreferrer">Primal</a>
+                <a href={`https://snort.social/${npub}`} className="link" target="_blank" rel="noopener noreferrer">Snort</a>
+                <a href={`https://coracle.social/people/${npub}`} className="link" target="_blank" rel="noopener noreferrer">Coracle</a>
             </div>
             <div className="text-xs break-all">{npub}</div>
+            <div className="text-sm">{profile.about}</div>
         </div>
         )
 }
