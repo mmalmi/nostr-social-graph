@@ -81,6 +81,7 @@ function SearchBox({onSelect}: {onSelect?: (string) => void }) {
   }, [searchResults, activeResult])
 
   const handleSearchResultClick = (pubKey: string) => {
+    onSelect?.(pubKey)
     setValue("")
     setSearchResults([])
   }
@@ -94,7 +95,7 @@ function SearchBox({onSelect}: {onSelect?: (string) => void }) {
 
   return (
     <div className={"dropdown dropdown-open m-4"}>
-      <label className="input flex items-center gap-2">
+      <label className="input input-bordered rounded-full flex items-center gap-2">
         <input
           type="text"
           className="grow"
@@ -106,23 +107,25 @@ function SearchBox({onSelect}: {onSelect?: (string) => void }) {
         <SearchIcon />
       </label>
       {searchResults.length > 0 && (
-        <ul className="dropdown-content menu shadow bg-base-100 rounded-box z-10 w-full">
+        <ul className="dropdown-content menu shadow bg-base-100 rounded-box z-10 w-full mt-1">
           {searchResults.slice(0, MAX_RESULTS).map((result, index) => result && (
             <li
               key={result.pubKey}
               className={classNames("cursor-pointer rounded-md", {
-                "bg-primary text-primary-content": index === activeResult,
-                "hover:bg-primary/50": index !== activeResult,
+                "bg-base-300": index === activeResult,
+                "hover:bg-base-200": index !== activeResult,
               })}
               onClick={() => handleSearchResultClick(result.pubKey)}
             >
-              <div className="flex gap-2">
-                <Avatar pubKey={result.pubKey} />
-                <span>
-                    {highlightMatch(result.name, value)}
-                </span>
+              <div className="flex flex-col justify-start items-start p-4">
+                <div className="flex gap-2 items-center">
+                  <Avatar showBadge={false} pubKey={result.pubKey} />
+                  <span>
+                      {highlightMatch(result.name, value)}
+                  </span>
+                </div>
+                <FollowedBy pubkey={result.pubKey} />
               </div>
-              <FollowedBy pubkey={result.pubKey} />
             </li>
           ))}
         </ul>

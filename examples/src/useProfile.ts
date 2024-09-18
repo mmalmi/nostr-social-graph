@@ -1,5 +1,5 @@
 import NDK, {NDKEvent, NDKUserProfile} from "@nostr-dev-kit/ndk"
-import {useEffect, useMemo, useState} from "react"
+import {useEffect, useState} from "react"
 import {LRUCache} from "typescript-lru-cache"
 
 const ndk = new NDK({
@@ -20,6 +20,11 @@ export default function useProfile(pubKey?: string, subscribe = false) {
   const [profile, setProfile] = useState(
     profileCache.get(pubKey || "") || null
   )
+
+  // Reset profile state when pubKey changes
+  useEffect(() => {
+    setProfile(profileCache.get(pubKey || "") || null)
+  }, [pubKey])
 
   useEffect(() => {
     if (!pubKey) {
@@ -50,7 +55,7 @@ export default function useProfile(pubKey?: string, subscribe = false) {
     return () => {
       sub.stop()
     }
-  }, [pubKey])
+  }, [pubKey, profile, subscribe])
 
   return profile
 }
