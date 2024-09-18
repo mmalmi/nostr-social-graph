@@ -60,7 +60,7 @@ const ProfileCard = ({pubKey, currentUser, viewAsSelectedUser}: {pubKey:string, 
                     <a className="link" href={website}>{website?.replace(/^https?:\/\//, '').replace(/\/$/, '')}</a>
                 </div>
             )}
-            <div className="text-sm">
+            <div className="text-sm whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
                 {profile?.about?.slice(0, 2000)}
                 {profile?.about && profile.about.length > 2000 && "..."
             }</div>
