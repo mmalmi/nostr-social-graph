@@ -10,37 +10,55 @@ interface ExploreProps {
   setSelectedUser: (pubKey: string) => void;
 }
 
-const Explore = ({ pubKey, selectedUser, setSelectedUser }) => {
-  const [followDistances, setFollowDistances] = useState([]);
+interface FollowDistance {
+  distance: number;
+  count: number;
+  randomUsers: string[];
+}
 
-  const debouncedSetFollowDistances = useCallback(throttle(() => {
-    const distances = [0,1,2,3,4,5].map(d => {
+const RANDOM_USER_COUNT = 3
+
+const Explore = ({ pubKey, selectedUser, setSelectedUser }: ExploreProps) => {
+  const [followDistances, setFollowDistances] = useState<FollowDistance[]>([]);
+
+  const generateFollowDistances = (prevDistances: FollowDistance[] = []) => {
+    return [0,1,2,3,4,5].map(d => {
       const users = Array.from(socialGraph.getUsersByFollowDistance(d));
-      const randomUsers = users.sort(() => 0.5 - Math.random()).slice(0, 3);
+      let randomUsers;
+      const prevDistance = prevDistances.find(pd => pd.distance === d);
+      if (prevDistance && prevDistance.randomUsers.length >= RANDOM_USER_COUNT) {
+        randomUsers = prevDistance.randomUsers;
+      } else {
+        randomUsers = users.sort(() => 0.5 - Math.random()).slice(0, RANDOM_USER_COUNT);
+      }
       return {
         distance: d,
         count: users.length,
         randomUsers
       };
     }).filter(d => d.count > 0);
-    setFollowDistances(distances);
+  };
+
+  const debouncedSetFollowDistances = useCallback(throttle(() => {
+    setFollowDistances(prevDistances => generateFollowDistances(prevDistances));
   }, 1000), [])
 
   useEffect(() => {
     socialGraph.setRoot(pubKey);
-    debouncedSetFollowDistances()
-    const missing = [] as string[]
+    setFollowDistances(generateFollowDistances());
+
+    const missing = [] as string[];
     for (const k of socialGraph.getUsersByFollowDistance(1).values()) {
       if (socialGraph.getFollowedByUser(k).size === 0) {
-          missing.push(k)
+        missing.push(k);
       }
     }
-    const sub = ndk.subscribe({kinds:[3], authors: missing})
+    const sub = ndk.subscribe({ kinds: [3], authors: missing });
     sub.on("event", (e) => {
-      socialGraph.handleEvent(e)
-      debouncedSetFollowDistances()
-    })
-    return () => sub.stop()
+      socialGraph.handleEvent(e);
+      debouncedSetFollowDistances();
+    });
+    return () => sub.stop();
   }, [pubKey, selectedUser]);
 
   return (
