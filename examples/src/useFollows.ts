@@ -6,7 +6,7 @@ import ndk from "./ndk"
 
 const useFollows = (pubKey: string, includeSelf = false) => {
   const [follows, setFollows] = useState([
-    ...socialGraph.getFollowedByUser(pubKey, includeSelf),
+    ...socialGraph().getFollowedByUser(pubKey, includeSelf),
   ])
 
   useEffect(() => {
@@ -17,9 +17,9 @@ const useFollows = (pubKey: string, includeSelf = false) => {
         const sub = ndk.subscribe(filter)
 
         sub?.on("event", (event: NDKEvent) => {
-          socialGraph.handleEvent(event as NostrEvent)
+          socialGraph().handleEvent(event as NostrEvent)
           setFollows([
-            ...socialGraph.getFollowedByUser(pubKey, includeSelf),
+            ...socialGraph().getFollowedByUser(pubKey, includeSelf),
           ])
         })
         return () => {

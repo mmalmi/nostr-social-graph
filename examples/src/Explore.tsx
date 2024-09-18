@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { Avatar } from "./Avatar";
-import socialGraph from "./socialGraph";
+import socialGraph, {saveGraph} from "./socialGraph";
 import ndk from "./ndk";
 import { throttle } from "lodash";
 
@@ -23,7 +23,7 @@ const Explore = ({ pubKey, selectedUser, setSelectedUser }: ExploreProps) => {
 
   const generateFollowDistances = (prevDistances: FollowDistance[] = []) => {
     return [0,1,2,3,4,5].map(d => {
-      const users = Array.from(socialGraph.getUsersByFollowDistance(d));
+      const users = Array.from(socialGraph().getUsersByFollowDistance(d));
       let randomUsers;
       const prevDistance = prevDistances.find(pd => pd.distance === d);
       if (prevDistance && prevDistance.randomUsers.length >= RANDOM_USER_COUNT) {
@@ -44,18 +44,19 @@ const Explore = ({ pubKey, selectedUser, setSelectedUser }: ExploreProps) => {
   }, 1000), [])
 
   useEffect(() => {
-    socialGraph.setRoot(pubKey);
+    socialGraph().setRoot(pubKey);
     setFollowDistances(generateFollowDistances());
 
     const missing = [] as string[];
-    for (const k of socialGraph.getUsersByFollowDistance(1).values()) {
-      if (socialGraph.getFollowedByUser(k).size === 0) {
+    for (const k of socialGraph().getUsersByFollowDistance(1).values()) {
+      if (socialGraph().getFollowedByUser(k).size === 0) {
         missing.push(k);
       }
     }
     const sub = ndk.subscribe({ kinds: [3], authors: missing });
     sub.on("event", (e) => {
-      socialGraph.handleEvent(e);
+      socialGraph().handleEvent(e);
+      saveGraph()
       debouncedSetFollowDistances();
     });
     return () => sub.stop();
@@ -75,7 +76,7 @@ const Explore = ({ pubKey, selectedUser, setSelectedUser }: ExploreProps) => {
           </div>
           <div className="flex flex-row gap-2 items-center text-lg">
             {d.randomUsers.map((user) => (
-              <div className="cursor-pointer" onClick={() => setSelectedUser(user)}>
+              <div key={user} className="cursor-pointer" onClick={() => setSelectedUser(user)}>
                   <Avatar pubKey={user} />
               </div>
             ))}

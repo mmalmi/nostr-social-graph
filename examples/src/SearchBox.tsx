@@ -38,8 +38,8 @@ function SearchBox({onSelect}: {onSelect?: (string) => void }) {
 
       // Fetch follow distances and adjust scores
       const resultsWithAdjustedScores = results.map((result) => {
-        const followDistance = Math.max(socialGraph.getFollowDistance(result.item.pubKey), 1)
-        const adjustedScore = result.score! * followDistance * Math.pow(0.999, socialGraph.followedByFriends(result.item.pubKey).size)
+        const followDistance = Math.max(socialGraph().getFollowDistance(result.item.pubKey), 1)
+        const adjustedScore = result.score! * followDistance * Math.pow(0.999, socialGraph().followedByFriends(result.item.pubKey).size)
         return { ...result, adjustedScore }
       })
 

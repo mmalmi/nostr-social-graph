@@ -1,14 +1,19 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import SearchBox from "./SearchBox";
 import ProfileCard from "./ProfileCard";
 import useLocalStorage from "./useLocalStorage";
-import socialGraph from "./socialGraph";
+import {socialGraphLoaded, LOCALSTORAGE_PUBLICKEY, DEFAULT_SOCIAL_GRAPH_ROOT} from "./socialGraph";
 import Explore from "./Explore";
 import { Avatar } from "./Avatar";
 
 export const Main = () => {
-    const [currentUser, setCurrentUser] = useLocalStorage("iris.search.currentUser", socialGraph.getRoot());
+    const [currentUser, setCurrentUser] = useLocalStorage(LOCALSTORAGE_PUBLICKEY, DEFAULT_SOCIAL_GRAPH_ROOT);
     const [selectedUser, setSelectedUser] = useState();
+    const [ready, setReady] = useState(false)
+
+    useEffect(() => {
+        socialGraphLoaded.then(() => setReady(true))
+    }, [])
 
     const onSelect = (pubkey) => {
         setSelectedUser(pubkey);
@@ -18,6 +23,10 @@ export const Main = () => {
         setSelectedUser(null);
         setCurrentUser(selectedUser);
     };
+
+    if (!ready) {
+        return null
+    }
 
     return (
         <div className="flex flex-col gap-8 p-4 w-full max-w-prose">

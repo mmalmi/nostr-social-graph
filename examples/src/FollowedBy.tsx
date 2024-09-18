@@ -10,7 +10,7 @@ const MAX_FOLLOWED_BY_FRIENDS = 3
 
 // Extracted function
 const getFollowedByFriends = (pubkey: string, max: number) => {
-  const followedByFriends = socialGraph.followedByFriends(pubkey)
+  const followedByFriends = socialGraph().followedByFriends(pubkey)
   return {
     followedByFriendsArray: Array.from(followedByFriends).slice(
       0,
@@ -21,7 +21,7 @@ const getFollowedByFriends = (pubkey: string, max: number) => {
 }
 
 export default function FollowedBy({pubkey}: {pubkey: string}) {
-  const followDistance = socialGraph.getFollowDistance(pubkey)
+  const followDistance = socialGraph().getFollowDistance(pubkey)
   const {followedByFriendsArray, totalFollowedByFriends} = useMemo(() => getFollowedByFriends(pubkey, MAX_FOLLOWED_BY_FRIENDS), [pubkey, followDistance])
 
   const renderFollowedByFriendsLinks = () => {

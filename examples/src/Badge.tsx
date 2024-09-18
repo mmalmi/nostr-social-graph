@@ -9,7 +9,7 @@ export const Badge = ({
   pubKey: string
   className?: string
 }) => {
-  const distance = socialGraph.getFollowDistance(pubKey)
+  const distance = socialGraph().getFollowDistance(pubKey)
 
   if (distance <= 2) {
     let tooltip
@@ -21,7 +21,7 @@ export const Badge = ({
       tooltip = "Following"
       badgeClass = "bg-purple-500"
     } else if (distance === 2) {
-      const followedByFriends = socialGraph.followedByFriends(pubKey)
+      const followedByFriends = socialGraph().followedByFriends(pubKey)
       tooltip = `Followed by ${followedByFriends.size} friends`
       badgeClass = followedByFriends.size > 10 ? "bg-orange-500" : "bg-neutral"
     }
