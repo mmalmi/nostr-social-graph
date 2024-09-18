@@ -11,6 +11,16 @@ const ProfileCard = ({pubKey, currentUser, viewAsSelectedUser}: {pubKey:string, 
     const npub = useMemo(() => nip19.npubEncode(pubKey), [pubKey])
     useFollows(pubKey) // subscribe to follows list & update on change
     const profile = useProfile(pubKey)
+    const website = useMemo(() => {
+        try {
+            if (profile.website) {
+                return new URL(profile.website).toString()
+            }
+        } catch (e) {
+            // ignore
+        }
+        return null
+    }, [profile])
 
     return (
         <div className="flex flex-col gap-4 p-4 rounded-xl bg-base-100">
@@ -45,6 +55,11 @@ const ProfileCard = ({pubKey, currentUser, viewAsSelectedUser}: {pubKey:string, 
                 <a href={`https://coracle.social/people/${npub}`} className="link" target="_blank" rel="noopener noreferrer">Coracle</a>
             </div>
             <div className="text-xs break-all">{npub}</div>
+            {website && (
+                <div className="text-xs break-all">
+                    <a className="link" href={website}>{website?.replace(/^https?:\/\//, '').replace(/\/$/, '')}</a>
+                </div>
+            )}
             <div className="text-sm">
                 {profile?.about?.slice(0, 2000)}
                 {profile?.about && profile.about.length > 2000 && "..."

@@ -16,7 +16,7 @@ export const CheckMarkIcon = () => (
   </svg>
 );
 
-export const SearchIcon = () => {
+export const SearchIcon = () => (
     <svg
     className="h-6 w-6 text-neutral-content/60"
     fill="none"
@@ -30,4 +30,4 @@ export const SearchIcon = () => {
       d="M10 18a8 8 0 100-16 8 8 0 000 16zm6-2l4 4"
     />
   </svg>
-}
+)
