@@ -1,8 +1,8 @@
 import {NDKEvent, NDKUserProfile} from "@nostr-dev-kit/ndk"
 import {useEffect, useState} from "react"
-import ndk from "./ndk"
-import fuse from "./fuse"
-import fuseData from "../../data/fuse_data.json"
+import ndk from "../utils/ndk"
+import fuse from "../utils/fuse"
+import fuseData from "../../../data/fuse_data.json"
 
 const profileCache = new Map<string, NDKUserProfile>()
 fuseData.forEach((v) => {

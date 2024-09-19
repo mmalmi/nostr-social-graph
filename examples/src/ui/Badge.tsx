@@ -1,4 +1,4 @@
-import socialGraph from "./socialGraph"
+import socialGraph from "../utils/socialGraph"
 import { CheckMarkIcon } from "./Icons"
 import React from "react"
 

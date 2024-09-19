@@ -1,4 +1,4 @@
-import { SerializedSocialGraph, SocialGraph } from "../../src"
+import { SerializedSocialGraph, SocialGraph } from "../../../src"
 import throttle from "lodash/throttle"
 import localForage from "localforage"
 
@@ -39,7 +39,7 @@ const initGraph = async () => {
     localForage.removeItem(LOCALFORAGE_KEY)
   }
   if (!graph) {
-    const { default: socialGraphData } = await import("../../data/socialGraph.json")
+    const { default: socialGraphData } = await import("../../../data/socialGraph.json")
     graph = new SocialGraph(publicKey, socialGraphData as SerializedSocialGraph)
   }
 }

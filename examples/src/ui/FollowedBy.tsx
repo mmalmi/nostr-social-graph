@@ -3,7 +3,7 @@ import React, {Fragment, useMemo} from "react"
 import {AvatarGroup} from "./AvatarGroup"
 import {Name} from "./Name"
 
-import socialGraph from "./socialGraph"
+import socialGraph from "../utils/socialGraph"
 import {Badge} from "./Badge"
 
 const MAX_FOLLOWED_BY_FRIENDS = 3

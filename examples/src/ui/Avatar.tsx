@@ -1,8 +1,8 @@
 import React, {useEffect, useMemo, useState} from "react"
 
-import MinidenticonImg from "./MinidenticonImg"
+import MinidenticonImg from "./MinidenticonImg.tsx"
 import ProxyImg from "./ProxyImg.tsx"
-import useProfile from "./useProfile.ts"
+import useProfile from "../hooks/useProfile.ts"
 import {Badge} from "./Badge"
 
 export const Avatar = ({

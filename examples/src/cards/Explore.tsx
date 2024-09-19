@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from "react";
-import { Avatar } from "./Avatar";
-import socialGraph, {saveGraph} from "./socialGraph";
-import ndk from "./ndk";
+import { Avatar } from "../ui/Avatar";
+import socialGraph, {saveGraph} from "../utils/socialGraph";
+import ndk from "../utils/ndk";
 import { throttle } from "lodash";
 import { Link } from "react-router-dom";
 import { nip19 } from "nostr-tools";

@@ -5,8 +5,8 @@ import {SearchIcon} from "./Icons"
 import { Avatar } from "./Avatar"
 import { debounce } from "lodash"
 import FollowedBy from "./FollowedBy"
-import fuse from "./fuse"
-import socialGraph from "./socialGraph"
+import fuse from "../utils/fuse"
+import socialGraph from "../utils/socialGraph"
 
 const NOSTR_REGEX = /(npub|note|nevent)1[a-zA-Z0-9]{58,300}/gi
 const HEX_REGEX = /[0-9a-fA-F]{64}/gi

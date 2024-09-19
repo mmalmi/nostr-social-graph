@@ -1,7 +1,7 @@
 import classNames from "classnames"
 import React, {useMemo} from "react"
 
-import useProfile from "./useProfile.ts"
+import useProfile from "../hooks/useProfile.ts"
 
 export function Name({pubKey, className}: {pubKey: string; className?: string}) {
   const profile = useProfile(pubKey)

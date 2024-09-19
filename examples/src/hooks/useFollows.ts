@@ -1,8 +1,8 @@
-import socialGraph from "./socialGraph"
+import socialGraph from "../utils/socialGraph"
 import {useEffect, useState} from "react"
-import { NostrEvent } from "../../src"
+import { NostrEvent } from "../../../src"
 import {NDKEvent} from "@nostr-dev-kit/ndk"
-import ndk from "./ndk"
+import ndk from "../utils/ndk"
 
 const useFollows = (pubKey: string, includeSelf = false) => {
   const [follows, setFollows] = useState([

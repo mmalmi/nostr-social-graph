@@ -1,11 +1,11 @@
 import React, {useMemo} from "react"
-import socialGraph from "./socialGraph"
-import { Avatar } from "./Avatar"
-import FollowedBy from "./FollowedBy"
-import { Name } from "./Name"
+import socialGraph from "../utils/socialGraph"
+import { Avatar } from "../ui/Avatar"
+import FollowedBy from "../ui/FollowedBy"
+import { Name } from "../ui/Name"
 import { nip19 } from "nostr-tools"
-import useFollows from "./useFollows"
-import useProfile from "./useProfile"
+import useFollows from "../hooks/useFollows"
+import useProfile from "../hooks/useProfile"
 
 const ProfileCard = ({pubKey, currentUser, viewAsSelectedUser}: {pubKey:string, currentUser:string, viewAsSelectedUser: () => void }) => {
     const npub = useMemo(() => nip19.npubEncode(pubKey), [pubKey])

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import socialGraph from "./socialGraph";
+import socialGraph from "../utils/socialGraph";
 
 const Stats = () => {
   const [graphData, setGraphData] = useState({
