@@ -25,7 +25,7 @@ describe('SocialGraph', () => {
   it('should handle follow events', () => {
     const graph = new SocialGraph(pubKeys.adam);
     const event: NostrEvent = {
-      created_at: Date.now(),
+      created_at: Math.floor(Date.now() / 1000) / 1000,
       content: '',
       tags: [['p', pubKeys.fiatjaf]],
       kind: 3,
@@ -40,7 +40,7 @@ describe('SocialGraph', () => {
   it('should update follow distances correctly', () => {
     const graph = new SocialGraph(pubKeys.adam);
     const event1: NostrEvent = {
-      created_at: Date.now(),
+      created_at: Math.floor(Date.now() / 1000),
       content: '',
       tags: [['p', pubKeys.fiatjaf]],
       kind: 3,
@@ -49,7 +49,7 @@ describe('SocialGraph', () => {
       sig: 'signature',
     };
     const event2: NostrEvent = {
-      created_at: Date.now(),
+      created_at: Math.floor(Date.now() / 1000),
       content: '',
       tags: [['p', pubKeys.snowden]],
       kind: 3,
@@ -65,7 +65,7 @@ describe('SocialGraph', () => {
   it('should serialize and deserialize correctly', () => {
     const graph = new SocialGraph(pubKeys.adam);
     const event1: NostrEvent = {
-      created_at: Date.now(),
+      created_at: Math.floor(Date.now() / 1000),
       content: '',
       tags: [['p', pubKeys.fiatjaf]],
       kind: 3,
@@ -74,7 +74,7 @@ describe('SocialGraph', () => {
       sig: 'signature',
     };
     const event2: NostrEvent = {
-      created_at: Date.now(),
+      created_at: Math.floor(Date.now() / 1000),
       content: '',
       tags: [['p', pubKeys.snowden]],
       kind: 3,
@@ -104,7 +104,7 @@ describe('SocialGraph', () => {
   it('should update follow distances when root is changed', () => {
     const graph = new SocialGraph(pubKeys.adam);
     const event1: NostrEvent = {
-      created_at: Date.now(),
+      created_at: Math.floor(Date.now() / 1000),
       content: '',
       tags: [['p', pubKeys.fiatjaf]],
       kind: 3,
@@ -113,7 +113,7 @@ describe('SocialGraph', () => {
       sig: 'signature',
     };
     const event2: NostrEvent = {
-      created_at: Date.now(),
+      created_at: Math.floor(Date.now() / 1000),
       content: '',
       tags: [['p', pubKeys.snowden]],
       kind: 3,

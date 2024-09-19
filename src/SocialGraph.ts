@@ -1,8 +1,10 @@
 import { SerializedUniqueIds, UniqueIds } from './UniqueIds';
 import { pubKeyRegex, NostrEvent } from './utils';
 
+export type SerializedFollowList = [number, number[], number?]
+
 export type SerializedSocialGraph = {
-  followLists: [number, number[]][];
+  followLists: SerializedFollowList[];
   uniqueIds: SerializedUniqueIds;
 };
 
@@ -12,7 +14,7 @@ export class SocialGraph {
   private usersByFollowDistance = new Map<number, Set<number>>();
   private followedByUser = new Map<number, Set<number>>();
   private followersByUser = new Map<number, Set<number>>();
-  private latestFollowEventTimestamps = new Map<number, number>();
+  private followListCreatedAt = new Map<number, number>();
   private ids = new UniqueIds();
 
   constructor(root: string, serialized?: SerializedSocialGraph) {
@@ -69,17 +71,18 @@ export class SocialGraph {
 
   handleEvent(evs: NostrEvent | Array<NostrEvent>) {
     const filtered = (Array.isArray(evs) ? evs : [evs]).filter((a) => a.kind === 3);
-    if (filtered.length === 0) {
-      return;
-    }
     for (const event of filtered) {
+      const createdAt = event.created_at;
+      if (createdAt > Math.floor(Date.now() / 1000) + 10 * 60) {
+        console.debug("event.created_at more than 10 minutes in the future", event)
+        continue
+      }
       const author = this.id(event.pubkey);
-      const timestamp = event.created_at;
-      const existingTimestamp = this.latestFollowEventTimestamps.get(author);
-      if (existingTimestamp && timestamp <= existingTimestamp) {
+      const existingCreatedAt = this.followListCreatedAt.get(author);
+      if (existingCreatedAt && createdAt <= existingCreatedAt) {
         return;
       }
-      this.latestFollowEventTimestamps.set(author, timestamp);
+      this.followListCreatedAt.set(author, createdAt);
 
       const followedInEvent = new Set<number>();
       for (const tag of event.tags) {
@@ -258,15 +261,19 @@ export class SocialGraph {
   }
 
   serialize(maxSize?: number): SerializedSocialGraph {
-    const followLists: [number, number[]][] = [];
+    const followLists: SerializedFollowList[] = [];
     for (let distance = 0; distance <= Math.max(...this.usersByFollowDistance.keys()); distance++) {
       const users = this.usersByFollowDistance.get(distance) || new Set<number>();
       for (const user of users) {
-        const followedUsers = this.followedByUser.get(user)
-        if (!followedUsers || followedUsers.size === 0) {
+        const createdAt = this.followListCreatedAt.get(user)
+        if (!createdAt) {
           continue
         }
-        followLists.push([user, [...followedUsers.values()]]);
+        const followedUsers = this.followedByUser.get(user)
+        if (!followedUsers) { // should not happen
+          continue
+        }
+        followLists.push([user, [...followedUsers.values()], createdAt]);
         if (maxSize && followLists.length >= maxSize) {
           return { followLists, uniqueIds: this.ids.serialize() };
         }
@@ -275,11 +282,12 @@ export class SocialGraph {
     return { followLists, uniqueIds: this.ids.serialize() };
   }
 
-  private deserialize(followLists: [number, number[]][]): void {
-    for (const [follower, followedUsers] of followLists) {
+  private deserialize(followLists: SerializedFollowList[]): void {
+    for (const [follower, followedUsers, createdAt] of followLists) {
       for (const followedUser of followedUsers) {
         this.addFollower(followedUser, follower);
       }
+      this.followListCreatedAt.set(follower, createdAt ?? 0)
     }
   }
 
@@ -290,6 +298,31 @@ export class SocialGraph {
       result.add(this.str(user));
     }
     return result;
+  }
+
+  getFollowListCreatedAt(user: string) {
+    return this.followListCreatedAt.get(this.id(user))
+  }
+
+  merge(other: SocialGraph) {
+    console.log('size before merge', this.size())
+    for (const user of other) {
+      const ourCreatedAt = this.getFollowListCreatedAt(user)
+      if (!ourCreatedAt || ourCreatedAt < other.getFollowListCreatedAt(user)) {
+        const newFollows = other.getFollowedByUser(user)
+        for (const follow of newFollows) {
+          if (!this.followedByUser.has(this.id(follow))) {
+            this.addFollower(this.id(follow), this.id(user))
+          }
+        }
+        for (const follow of this.followedByUser.get(this.id(user))) {
+          if (!newFollows.has(this.str(follow))) {
+            this.removeFollower(follow, this.id(user))
+          }
+        }
+      }
+    }
+    console.log('size after merge', this.size())
   }
 
   *userIterator(upToDistance?: number): Generator<string> {
