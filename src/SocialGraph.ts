@@ -1,11 +1,12 @@
 import { SerializedUniqueIds, UniqueIds } from './UniqueIds';
 import { pubKeyRegex, NostrEvent } from './utils';
 
-export type SerializedFollowList = [number, number[], number?]
+export type SerializedUserList = [number, number[], number?]
 
 export type SerializedSocialGraph = {
-  followLists: SerializedFollowList[];
   uniqueIds: SerializedUniqueIds;
+  followLists: SerializedUserList[];
+  muteLists?: SerializedUserList[];
 };
 
 export class SocialGraph {
@@ -15,6 +16,8 @@ export class SocialGraph {
   private followedByUser = new Map<number, Set<number>>();
   private followersByUser = new Map<number, Set<number>>();
   private followListCreatedAt = new Map<number, number>();
+  private mutedByUser = new Map<number, Set<number>>();
+  private muteListCreatedAt = new Map<number, number>()
   private ids = new UniqueIds();
 
   constructor(root: string, serialized?: SerializedSocialGraph) {
@@ -67,6 +70,10 @@ export class SocialGraph {
         }
       }
     }
+  }
+
+  handleMuteList(ev: NostrEvent) {
+
   }
 
   handleEvent(evs: NostrEvent | Array<NostrEvent>) {
@@ -261,7 +268,8 @@ export class SocialGraph {
   }
 
   serialize(maxSize?: number): SerializedSocialGraph {
-    const followLists: SerializedFollowList[] = [];
+    const followLists: SerializedUserList[] = [];
+    const muteLists: SerializedUserList[] = []
     for (let distance = 0; distance <= Math.max(...this.usersByFollowDistance.keys()); distance++) {
       const users = this.usersByFollowDistance.get(distance) || new Set<number>();
       for (const user of users) {
@@ -277,17 +285,32 @@ export class SocialGraph {
         if (maxSize && followLists.length >= maxSize) {
           return { followLists, uniqueIds: this.ids.serialize() };
         }
+        const muteListCreatedAt = this.muteListCreatedAt.get(user)
+        if (!muteListCreatedAt) {
+          continue
+        }
+        const mutedUsers = this.mutedByUser.get(user)
+        if (!mutedUsers) {
+          continue
+        }
+        muteLists.push([user, [...mutedUsers.values()], createdAt]);
       }
     }
-    return { followLists, uniqueIds: this.ids.serialize() };
+    return { followLists, uniqueIds: this.ids.serialize(), muteLists };
   }
 
-  private deserialize(followLists: SerializedFollowList[]): void {
+  private deserialize(followLists: SerializedUserList[], muteLists?: SerializedUserList[]): void {
     for (const [follower, followedUsers, createdAt] of followLists) {
       for (const followedUser of followedUsers) {
         this.addFollower(followedUser, follower);
       }
       this.followListCreatedAt.set(follower, createdAt ?? 0)
+    }
+    if (muteLists) {
+      for (const [muter, mutedUsers, createdAt] of muteLists) {
+        this.mutedByUser.set(muter, new Set(mutedUsers))
+        this.muteListCreatedAt.set(muter, createdAt ?? 0)
+      }
     }
   }
 
@@ -306,6 +329,7 @@ export class SocialGraph {
 
   merge(other: SocialGraph) {
     console.log('size before merge', this.size())
+    console.time('merge graph')
     for (const user of other) {
       const ourCreatedAt = this.getFollowListCreatedAt(user)
       if (!ourCreatedAt || ourCreatedAt < other.getFollowListCreatedAt(user)) {
@@ -322,6 +346,7 @@ export class SocialGraph {
         }
       }
     }
+    console.timeEnd('merge graph')
     console.log('size after merge', this.size())
   }
 
