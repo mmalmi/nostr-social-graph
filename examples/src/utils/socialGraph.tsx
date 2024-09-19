@@ -44,6 +44,39 @@ const initGraph = async () => {
   }
 }
 
+export const saveToFile = () => {
+  const data = graph.serialize()
+  const url = URL.createObjectURL(
+    new File([JSON.stringify(data)], "social_graph.json", {
+      type: "text/json",
+    }),
+  );
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "social_graph.json";
+  a.click();
+}
+
+export const loadFromFile = () => {
+  const input = document.createElement("input")
+  input.type = "file"
+  input.accept = ".json"
+  input.multiple = false
+  input.onchange = () => {
+    if (input.files.length) {
+      const file = input.files[0]
+      file.text().then((json) => {
+        try {
+          graph = new SocialGraph(graph.getRoot(), JSON.parse(json))
+        } catch (e) {
+          console.error("failed to load social graph from file:", e)
+        }
+      })
+    }
+  }
+  input.click()
+}
+
 export const socialGraphLoaded = new Promise(async (resolve) => {
   await initGraph()
   resolve(true)
