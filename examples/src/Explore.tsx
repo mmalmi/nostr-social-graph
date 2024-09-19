@@ -66,7 +66,7 @@ const Explore = ({ pubKey, selectedUser }: ExploreProps) => {
   return (
     <div className="flex flex-col gap-4 p-4 rounded-xl bg-base-100">
         <div className="flex flex-row flex-wrap justify-between items-start gap-4 uppercase text-xs text-base-content/50 font-bold">
-            Known users by follow distance
+            Your graph by follow distance
         </div>
       {followDistances.length === 0 && <div className="flex p-4 items-center justify-center">None</div>}
       {followDistances.map((d) => (

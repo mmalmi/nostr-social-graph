@@ -29,7 +29,9 @@ export default function useProfile(pubKey?: string, alwaysSubscribe = true) {
     if (!pubKey) {
       return
     }
-    if (profile && !alwaysSubscribe) {
+    const newProfile = profileCache.get(pubKey || "") || null
+    setProfile(newProfile)
+    if (newProfile && !alwaysSubscribe) {
       return
     }
     const sub = ndk.subscribe(
