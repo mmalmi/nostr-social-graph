@@ -72,13 +72,10 @@ export class SocialGraph {
     }
   }
 
-  handleMuteList(ev: NostrEvent) {
-
-  }
-
   handleEvent(evs: NostrEvent | Array<NostrEvent>) {
-    const filtered = (Array.isArray(evs) ? evs : [evs]).filter((a) => a.kind === 3);
+    const filtered = (Array.isArray(evs) ? evs : [evs]).filter((a) => [3/*, 10000*/].includes(a.kind));
     for (const event of filtered) {
+      // TODO handle mute list, very similar
       const createdAt = event.created_at;
       if (createdAt > Math.floor(Date.now() / 1000) + 10 * 60) {
         console.debug("event.created_at more than 10 minutes in the future", event)
@@ -332,14 +329,15 @@ export class SocialGraph {
     console.time('merge graph')
     for (const user of other) {
       const ourCreatedAt = this.getFollowListCreatedAt(user)
-      if (!ourCreatedAt || ourCreatedAt < other.getFollowListCreatedAt(user)) {
+      const theirCreatedAt = other.getFollowListCreatedAt(user)
+      if (!ourCreatedAt || (theirCreatedAt && ourCreatedAt < theirCreatedAt)) {
         const newFollows = other.getFollowedByUser(user)
         for (const follow of newFollows) {
           if (!this.followedByUser.has(this.id(follow))) {
             this.addFollower(this.id(follow), this.id(user))
           }
         }
-        for (const follow of this.followedByUser.get(this.id(user))) {
+        for (const follow of this.followedByUser.get(this.id(user)) || new Set()) {
           if (!newFollows.has(this.str(follow))) {
             this.removeFollower(follow, this.id(user))
           }
