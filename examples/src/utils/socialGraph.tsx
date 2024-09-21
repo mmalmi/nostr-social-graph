@@ -57,17 +57,22 @@ export const saveToFile = () => {
   a.click();
 }
 
-export const loadFromFile = () => {
+export const loadFromFile = (merge = false) => {
   const input = document.createElement("input")
   input.type = "file"
   input.accept = ".json"
   input.multiple = false
   input.onchange = () => {
-    if (input.files.length) {
+    if (input.files?.length) {
       const file = input.files[0]
       file.text().then((json) => {
         try {
-          graph = new SocialGraph(graph.getRoot(), JSON.parse(json))
+          const data = JSON.parse(json)
+          if (merge) {
+            graph.merge(new SocialGraph(graph.getRoot(), data))
+          } else {
+            graph = new SocialGraph(graph.getRoot(), data)
+          }
         } catch (e) {
           console.error("failed to load social graph from file:", e)
         }
@@ -76,6 +81,8 @@ export const loadFromFile = () => {
   }
   input.click()
 }
+
+export const loadAndMerge = () => loadFromFile(true)
 
 export const socialGraphLoaded = new Promise(async (resolve) => {
   await initGraph()

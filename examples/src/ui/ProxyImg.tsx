@@ -26,6 +26,7 @@ const shouldSkipProxy = (url: string) => {
 const ProxyImg = (props: Props) => {
   const [proxyFailed, setProxyFailed] = useState(false)
   const [src, setSrc] = useState(props.src)
+  const [loadFailed, setLoadFailed] = useState(false)
 
   useEffect(() => {
     let mySrc = props.src
@@ -49,6 +50,7 @@ const ProxyImg = (props: Props) => {
   const handleError = () => {
     if (proxyFailed) {
       console.log("original source failed too", props.src)
+      setLoadFailed(true)
       props.onError && props.onError()
       if (props.hideBroken) {
         setSrc("")
@@ -60,7 +62,7 @@ const ProxyImg = (props: Props) => {
     }
   }
 
-  if (!src) {
+  if (!src || loadFailed) {
     return null
   }
 
