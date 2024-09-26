@@ -177,6 +177,8 @@ describe('SocialGraph', () => {
       followedUsers.forEach((id: any) => {
         expect(typeof id).toBe('number');
       });
+      const listTimestamp = followList[2]
+      expect(typeof listTimestamp).toBe('number');
     });
 
     // Check uniqueIds structure
