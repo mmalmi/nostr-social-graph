@@ -12,6 +12,7 @@ const pubKeys = {
     adam: "020f2d21ae09bf35fcdfb65decf1478b846f5f728ab30c5eaabcd6d081a81c3e",
     fiatjaf: "3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d",
     snowden: "84dee6e676e5bb67b4ad4e042cf70cbd8681155db535942fcc6a0533858a7240",
+    sirius: "4523be58d395b1b196a9b8c82b038b6895cb02b683d0c253a955068dba1facd0",
 }
 
 const SOCIAL_GRAPH_FILE = path.join(__dirname, '../data/socialGraph.json');
@@ -193,5 +194,60 @@ describe('SocialGraph', () => {
     // Attempt to load the graph to ensure it's valid
     const graph = new SocialGraph('rootPubKey', parsedData);
     expect(graph).toBeInstanceOf(SocialGraph);
+  });
+
+  it('should utilize existing follow lists for new users', () => {
+    const graph = new SocialGraph(pubKeys.adam);
+    const event1: NostrEvent = {
+      created_at: Math.floor(Date.now() / 1000),
+      content: '',
+      tags: [['p', pubKeys.fiatjaf]],
+      kind: 3,
+      pubkey: pubKeys.adam,
+      id: 'event1',
+      sig: 'signature',
+    };
+    const event2: NostrEvent = {
+      created_at: Math.floor(Date.now() / 1000),
+      content: '',
+      tags: [['p', pubKeys.snowden]],
+      kind: 3,
+      pubkey: pubKeys.fiatjaf,
+      id: 'event2',
+      sig: 'signature',
+    };
+    graph.handleEvent(event1);
+    graph.handleEvent(event2);
+
+    expect(graph.getFollowDistance(pubKeys.adam)).toBe(0)
+    expect(graph.getFollowDistance(pubKeys.fiatjaf)).toBe(1);
+    expect(graph.getFollowDistance(pubKeys.snowden)).toBe(2);
+    expect(graph.isFollowing(pubKeys.adam, pubKeys.fiatjaf)).toBe(true);
+    expect(graph.isFollowing(pubKeys.fiatjaf, pubKeys.snowden)).toBe(true);
+
+    const serialized = graph.serialize();
+    const newGraph = new SocialGraph(pubKeys.sirius, serialized);
+
+    expect(newGraph.getFollowDistance(pubKeys.sirius)).toBe(0)
+    expect(newGraph.getFollowDistance(pubKeys.adam)).toBe(1000)
+    expect(newGraph.getFollowDistance(pubKeys.fiatjaf)).toBe(1000);
+    expect(newGraph.getFollowDistance(pubKeys.snowden)).toBe(1000);
+    expect(newGraph.isFollowing(pubKeys.adam, pubKeys.fiatjaf)).toBe(true);
+    expect(newGraph.isFollowing(pubKeys.fiatjaf, pubKeys.snowden)).toBe(true);
+
+    const event3: NostrEvent = {
+      created_at: Math.floor(Date.now() / 1000),
+      content: '',
+      tags: [['p', pubKeys.adam]],
+      kind: 3,
+      pubkey: pubKeys.sirius,
+      id: 'event3',
+      sig: 'signature',
+    };
+    graph.handleEvent(event3);
+    expect(newGraph.getFollowDistance(pubKeys.sirius)).toBe(0)
+    expect(newGraph.getFollowDistance(pubKeys.adam)).toBe(1)
+    expect(newGraph.getFollowDistance(pubKeys.fiatjaf)).toBe(2);
+    expect(newGraph.getFollowDistance(pubKeys.snowden)).toBe(3);
   });
 });
