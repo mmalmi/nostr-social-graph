@@ -219,7 +219,7 @@ describe('SocialGraph', () => {
     graph.handleEvent(event1);
     graph.handleEvent(event2);
 
-    expect(graph.getFollowDistance(pubKeys.adam)).toBe(0)
+    expect(graph.getFollowDistance(pubKeys.adam)).toBe(0);
     expect(graph.getFollowDistance(pubKeys.fiatjaf)).toBe(1);
     expect(graph.getFollowDistance(pubKeys.snowden)).toBe(2);
     expect(graph.isFollowing(pubKeys.adam, pubKeys.fiatjaf)).toBe(true);
@@ -228,12 +228,13 @@ describe('SocialGraph', () => {
     const serialized = graph.serialize();
     const newGraph = new SocialGraph(pubKeys.sirius, serialized);
 
-    expect(newGraph.getFollowDistance(pubKeys.sirius)).toBe(0)
-    expect(newGraph.getFollowDistance(pubKeys.adam)).toBe(1000)
-    expect(newGraph.getFollowDistance(pubKeys.fiatjaf)).toBe(1000);
-    expect(newGraph.getFollowDistance(pubKeys.snowden)).toBe(1000);
+    // Check initial state of newGraph
     expect(newGraph.isFollowing(pubKeys.adam, pubKeys.fiatjaf)).toBe(true);
     expect(newGraph.isFollowing(pubKeys.fiatjaf, pubKeys.snowden)).toBe(true);
+    expect(newGraph.getFollowDistance(pubKeys.sirius)).toBe(0);
+    expect(newGraph.getFollowDistance(pubKeys.adam)).toBe(1000);
+    expect(newGraph.getFollowDistance(pubKeys.fiatjaf)).toBe(1000);
+    expect(newGraph.getFollowDistance(pubKeys.snowden)).toBe(1000);
 
     const event3: NostrEvent = {
       created_at: Math.floor(Date.now() / 1000),
@@ -244,9 +245,14 @@ describe('SocialGraph', () => {
       id: 'event3',
       sig: 'signature',
     };
-    graph.handleEvent(event3);
-    expect(newGraph.getFollowDistance(pubKeys.sirius)).toBe(0)
-    expect(newGraph.getFollowDistance(pubKeys.adam)).toBe(1)
+    newGraph.handleEvent(event3);
+
+    // Check updated state of newGraph
+    expect(newGraph.isFollowing(pubKeys.sirius, pubKeys.adam)).toBe(true);
+    expect(newGraph.isFollowing(pubKeys.adam, pubKeys.fiatjaf)).toBe(true);
+    expect(newGraph.isFollowing(pubKeys.fiatjaf, pubKeys.snowden)).toBe(true);
+    expect(newGraph.getFollowDistance(pubKeys.sirius)).toBe(0);
+    expect(newGraph.getFollowDistance(pubKeys.adam)).toBe(1);
     expect(newGraph.getFollowDistance(pubKeys.fiatjaf)).toBe(2);
     expect(newGraph.getFollowDistance(pubKeys.snowden)).toBe(3);
   });
