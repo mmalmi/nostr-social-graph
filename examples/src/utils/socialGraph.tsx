@@ -40,7 +40,7 @@ const initGraph = async () => {
   }
   if (!graph) {
     const { default: socialGraphData } = await import("../../../data/socialGraph.json")
-    graph = new SocialGraph(publicKey, socialGraphData as SerializedSocialGraph)
+    graph = new SocialGraph(publicKey, socialGraphData as unknown as SerializedSocialGraph)
   }
 }
 
