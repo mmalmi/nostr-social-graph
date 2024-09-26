@@ -10,8 +10,8 @@ global.WebSocket = WebSocket as any;
 
 const DATA_DIR = path.resolve(path.dirname(new URL(import.meta.url).pathname), "../data");
 const SOCIAL_GRAPH_FILE = path.join(DATA_DIR, "socialGraph.json");
-const FUSE_INDEX_FILE = path.join(DATA_DIR, "fuse_index.json");
-const DATA_FILE = path.join(DATA_DIR, "fuse_data.json");
+const FUSE_INDEX_FILE = path.join(DATA_DIR, "profileIndex.json");
+const DATA_FILE = path.join(DATA_DIR, "profileData.json");
 
 const SOCIAL_GRAPH_ROOT = "4523be58d395b1b196a9b8c82b038b6895cb02b683d0c253a955068dba1facd0";
 
@@ -110,7 +110,7 @@ function handleProfileEvent(event: NostrEvent) {
   try {
     const profile = JSON.parse(event.content);
     const pubKey = event.pubkey;
-    const name = (profile.name || profile.username).trim().slice(0, MAX_NAME_LENGTH);
+    const name = (profile.display_name || profile.username).trim().slice(0, MAX_NAME_LENGTH);
     let nip05 = profile.nip05 ? (profile.nip05.split('@')[0].trim().toLowerCase().slice(0, MAX_NAME_LENGTH)) : undefined;
     if (nip05 === name.toLowerCase()) {
       nip05 = undefined

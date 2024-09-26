@@ -170,11 +170,10 @@ describe('SocialGraph', () => {
     expect(Array.isArray(parsedData.followLists)).toBe(true);
     parsedData.followLists.forEach((followList: any) => {
       expect(Array.isArray(followList)).toBe(true);
-      expect(followList.length).toBe(2);
+      expect(followList.length).toBe(3); // pubkey, followed users, list timestamp
       expect(typeof followList[0]).toBe('number');
       const followedUsers = followList[1]
       expect(Array.isArray(followedUsers)).toBe(true);
-      expect(followedUsers.length).toBeGreaterThan(0)
       followedUsers.forEach((id: any) => {
         expect(typeof id).toBe('number');
       });

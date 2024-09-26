@@ -105,12 +105,12 @@ export class SocialGraph {
 
       for (const user of currentlyFollowed) {
         if (!followedInEvent.has(user)) {
-          this.removeFollower(user, author);
+          this.privateRemoveFollower(user, author);
         }
       }
 
       for (const user of followedInEvent) {
-        this.addFollower(user, author);
+        this.privateAddFollower(user, author);
       }
     }
   }
@@ -138,7 +138,7 @@ export class SocialGraph {
     }
   }
 
-  private addFollower(followedUser: number, follower: number) {
+  private privateAddFollower(followedUser: number, follower: number) {
     if (typeof followedUser !== 'number' || typeof follower !== 'number') {
       throw new Error('Invalid user id');
     }
@@ -174,7 +174,15 @@ export class SocialGraph {
     this.followedByUser.get(follower)?.add(followedUser);
   }
 
-  private removeFollower(unfollowedUser: number, follower: number) {
+  addFollower(follower: string, followedUser: string) {
+    this.privateAddFollower(this.id(followedUser), this.id(follower))
+  }
+
+  removeFollower(follower: string, followedUser: string) {
+    this.privateRemoveFollower(this.id(followedUser), this.id(follower))
+  }
+
+  private privateRemoveFollower(unfollowedUser: number, follower: number) {
     this.followersByUser.get(unfollowedUser)?.delete(follower);
     this.followedByUser.get(follower)?.delete(unfollowedUser);
 
@@ -299,7 +307,7 @@ export class SocialGraph {
   private deserialize(followLists: SerializedUserList[], muteLists?: SerializedUserList[]): void {
     for (const [follower, followedUsers, createdAt] of followLists) {
       for (const followedUser of followedUsers) {
-        this.addFollower(followedUser, follower);
+        this.privateAddFollower(followedUser, follower);
       }
       this.followListCreatedAt.set(follower, createdAt ?? 0)
     }
@@ -334,12 +342,12 @@ export class SocialGraph {
         const newFollows = other.getFollowedByUser(user)
         for (const follow of newFollows) {
           if (!this.followedByUser.has(this.id(follow))) {
-            this.addFollower(this.id(follow), this.id(user))
+            this.privateAddFollower(this.id(follow), this.id(user))
           }
         }
         for (const follow of this.followedByUser.get(this.id(user)) || new Set()) {
           if (!newFollows.has(this.str(follow))) {
-            this.removeFollower(follow, this.id(user))
+            this.privateRemoveFollower(follow, this.id(user))
           }
         }
       }
