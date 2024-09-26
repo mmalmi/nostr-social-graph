@@ -1,7 +1,7 @@
 import Fuse from "fuse.js"
 // pre-generated index can be used, but not significant performance improvement if dataset not super large
-// import fuseIndexData from "../../data/fuse_index.json"
-import fuseData from "../../../data/fuse_data.json"
+// import fuseIndexData from "../../data/profileIndex.json"
+import fuseData from "../../../data/profileData.json"
 
 type SearchResult = {
     query?: string
