@@ -46,4 +46,8 @@ export class UniqueIds {
   serialize(): SerializedUniqueIds {
     return Array.from(this.strToUniqueId.entries());
   }
+
+  *[Symbol.iterator]() {
+    yield* this.uniqueIdToStr.entries();
+  }
 }

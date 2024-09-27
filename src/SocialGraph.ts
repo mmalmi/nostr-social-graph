@@ -46,6 +46,10 @@ export class SocialGraph {
       return;
     }
     this.root = rootId;
+    this.recalculateFollowDistances();
+  }
+
+  private recalculateFollowDistances() {
     this.followDistanceByUser.clear();
     this.usersByFollowDistance.clear();
     this.followDistanceByUser.set(this.root, 0);
@@ -71,6 +75,7 @@ export class SocialGraph {
       }
     }
   }
+
 
   handleEvent(evs: NostrEvent | Array<NostrEvent>) {
     const filtered = (Array.isArray(evs) ? evs : [evs]).filter((a) => [3/*, 10000*/].includes(a.kind));
@@ -297,6 +302,7 @@ export class SocialGraph {
   }
 
   private deserialize(followLists: SerializedUserList[], muteLists?: SerializedUserList[]): void {
+    const serializedRoot = followLists[0]?.[0]
     for (const [follower, followedUsers, createdAt] of followLists) {
       for (const followedUser of followedUsers) {
         this.privateAddFollower(followedUser, follower);
@@ -308,6 +314,10 @@ export class SocialGraph {
         this.mutedByUser.set(muter, new Set(mutedUsers))
         this.muteListCreatedAt.set(muter, createdAt ?? 0)
       }
+    }
+    if (serializedRoot !== this.root) {
+      // console.log('recalculating follow distances', serializedRoot, this.root)
+      this.recalculateFollowDistances()
     }
   }
 
