@@ -247,6 +247,9 @@ describe('SocialGraph', () => {
     };
     newGraph.handleEvent(event3);
 
+    // should we do this automatically on some condition?
+    newGraph.recalculateFollowDistances();
+
     // Check updated state of newGraph
     expect(newGraph.isFollowing(pubKeys.sirius, pubKeys.adam)).toBe(true);
     expect(newGraph.isFollowing(pubKeys.adam, pubKeys.fiatjaf)).toBe(true);

@@ -49,7 +49,7 @@ export class SocialGraph {
     this.recalculateFollowDistances();
   }
 
-  private recalculateFollowDistances() {
+  recalculateFollowDistances() {
     this.followDistanceByUser.clear();
     this.usersByFollowDistance.clear();
     this.followDistanceByUser.set(this.root, 0);
@@ -75,7 +75,6 @@ export class SocialGraph {
       }
     }
   }
-
 
   handleEvent(evs: NostrEvent | Array<NostrEvent>) {
     const filtered = (Array.isArray(evs) ? evs : [evs]).filter((a) => [3/*, 10000*/].includes(a.kind));
@@ -316,7 +315,6 @@ export class SocialGraph {
       }
     }
     if (serializedRoot !== this.root) {
-      // console.log('recalculating follow distances', serializedRoot, this.root)
       this.recalculateFollowDistances()
     }
   }
