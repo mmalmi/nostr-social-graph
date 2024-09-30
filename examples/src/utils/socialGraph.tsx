@@ -84,6 +84,18 @@ export const loadFromFile = (merge = false) => {
 
 export const loadAndMerge = () => loadFromFile(true)
 
+export const downloadLargeGraph = () => {
+  fetch("/large_social_graph.json")
+    .then(response => response.json())
+    .then(data => {
+      graph = new SocialGraph(graph.getRoot(), data)
+      saveGraph()
+    })
+    .catch(error => {
+      console.error("failed to load large social graph:", error)
+    })
+}
+
 export const socialGraphLoaded = new Promise(async (resolve) => {
   await initGraph()
   resolve(true)

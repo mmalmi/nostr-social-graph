@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import socialGraph, {loadFromFile, saveToFile, loadAndMerge} from "../utils/socialGraph";
+import socialGraph, {loadFromFile, saveToFile, loadAndMerge, downloadLargeGraph} from "../utils/socialGraph";
 
 const Stats = () => {
   const [graphData, setGraphData] = useState({
@@ -30,6 +30,9 @@ const Stats = () => {
         <button className="btn btn-neutral btn-sm rounded-full" onClick={() => saveToFile()}>Save to file</button>
         <button className="btn btn-neutral btn-sm rounded-full" onClick={() => loadFromFile()}>Load from file</button>
         <button className="btn btn-neutral btn-sm rounded-full" onClick={() => loadAndMerge()}>Load & merge</button>
+      </div>
+      <div>
+        <button className="btn btn-neutral btn-sm rounded-full" onClick={() => downloadLargeGraph()}>Download large graph (38.6 MB)</button>
       </div>
     </div>
   );
