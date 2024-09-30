@@ -85,7 +85,7 @@ export const loadFromFile = (merge = false) => {
 export const loadAndMerge = () => loadFromFile(true)
 
 export const downloadLargeGraph = () => {
-  fetch("/large_social_graph.json")
+  fetch("https://files.iris.to/large_social_graph.json")
     .then(response => response.json())
     .then(data => {
       graph = new SocialGraph(graph.getRoot(), data)
