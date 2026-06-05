@@ -150,7 +150,7 @@ where
     }
 }
 
-#[async_trait(?Send)]
+#[async_trait]
 impl<B> PubsubPolicy for SocialGraphPolicy<B>
 where
     B: SocialGraphBackend + Send + Sync + 'static,
