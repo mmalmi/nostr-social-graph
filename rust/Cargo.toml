@@ -16,7 +16,7 @@ heed = "0.20"
 hex = "0.4"
 http-body-util = "0.1"
 indexmap = "2.12"
-nostr = { version = "0.35", features = ["nip44"] }
+nostr = { version = "0.44.3", features = ["nip44"] }
 nostr-pubsub = { version = "0.1.0", path = "../../nostr-pubsub" }
 nostr-sdk = "0.44.1"
 serde = { version = "1", features = ["derive"] }

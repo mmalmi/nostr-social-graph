@@ -13,4 +13,6 @@ thiserror.workspace = true
 
 [dev-dependencies]
 nostr.workspace = true
+nostr-social-graph-hashtree = { version = "0.1.0", path = "../nostr-social-graph-hashtree" }
+tempfile.workspace = true
 tokio.workspace = true

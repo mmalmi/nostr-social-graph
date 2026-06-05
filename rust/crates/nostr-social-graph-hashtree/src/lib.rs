@@ -4,6 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use futures::executor::block_on;
 use hashtree_core::{
     Cid, CidParseError, HashTree, HashTreeConfig, HashTreeError, Store, StoreError,
 };
@@ -12,7 +13,6 @@ use nostr_social_graph::{
     NostrEvent, SocialGraph, SocialGraphBackend, SocialGraphError, SocialGraphState,
 };
 use serde::{Deserialize, Serialize};
-use tokio::runtime::{Builder as RuntimeBuilder, Runtime};
 
 const MANIFEST_FILE: &str = "social-graph-root.json";
 const BLOBS_DIR: &str = "blobs";
@@ -84,7 +84,6 @@ pub struct HashtreeSocialGraph {
     manifest_path: PathBuf,
     store: Arc<FsBlobStore>,
     tree: HashTree<FsBlobStore>,
-    runtime: Runtime,
     graph: SocialGraph,
     manifest: Option<SnapshotManifest>,
     dirty: bool,
@@ -97,17 +96,17 @@ impl HashtreeSocialGraph {
 
         let store = Arc::new(FsBlobStore::new(path.join(BLOBS_DIR))?);
         let tree = HashTree::new(HashTreeConfig::new(store.clone()).public());
-        let runtime = RuntimeBuilder::new_current_thread().build()?;
         let manifest_path = path.join(MANIFEST_FILE);
         let manifest = read_manifest(&manifest_path)?;
 
         let graph = match &manifest {
             Some(manifest) => {
                 let cid = manifest.validate()?;
-                let data = runtime
-                    .block_on(tree.get(&cid, Some(MAX_SNAPSHOT_BYTES)))?
-                    .ok_or_else(|| HashtreeSocialGraphError::MissingSnapshot {
-                        cid: manifest.cid.clone(),
+                let data =
+                    block_on(tree.get(&cid, Some(MAX_SNAPSHOT_BYTES)))?.ok_or_else(|| {
+                        HashtreeSocialGraphError::MissingSnapshot {
+                            cid: manifest.cid.clone(),
+                        }
                     })?;
                 let actual = data.len() as u64;
                 if actual != manifest.size {
@@ -126,7 +125,6 @@ impl HashtreeSocialGraph {
             manifest_path,
             store,
             tree,
-            runtime,
             graph,
             manifest,
             dirty: false,
@@ -144,7 +142,7 @@ impl HashtreeSocialGraph {
     }
 
     pub fn snapshot_exists(&self, cid: &Cid) -> Result<bool> {
-        Ok(self.runtime.block_on(self.store.has(&cid.hash))?)
+        Ok(block_on(self.store.has(&cid.hash))?)
     }
 
     pub fn export_state(&self) -> SocialGraphState {
@@ -154,7 +152,7 @@ impl HashtreeSocialGraph {
     fn write_snapshot(&mut self) -> Result<()> {
         let root = self.graph.get_root().to_string();
         let data = self.graph.to_binary()?;
-        let (cid, size) = self.runtime.block_on(self.tree.put(&data))?;
+        let (cid, size) = block_on(self.tree.put(&data))?;
         let manifest = SnapshotManifest::new(root, &cid, size);
         write_manifest_atomic(&self.manifest_path, &manifest)?;
         self.manifest = Some(manifest);

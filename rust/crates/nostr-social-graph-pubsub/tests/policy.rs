@@ -5,8 +5,10 @@ use nostr_pubsub::{
     EventBus, EventSource, Filter, InMemoryEventBus, PolicyDecision, PubsubPolicy, QueryOptions,
     SourceCandidate, SourceHealth, SourcePolicyContext, VerifiedEvent,
 };
-use nostr_social_graph::{NostrEvent, SocialGraph};
+use nostr_social_graph::{NostrEvent, SocialGraph, SocialGraphBackend};
+use nostr_social_graph_hashtree::HashtreeSocialGraph;
 use nostr_social_graph_pubsub::{GraphDistanceAction, SocialGraphPolicy, SocialGraphPolicyConfig};
+use tempfile::TempDir;
 
 #[tokio::test]
 async fn bus_prioritizes_graph_authors_and_throttles_unknown_authors() {
@@ -136,6 +138,56 @@ async fn overmuted_authors_are_dropped_before_distance_checks() {
     );
 }
 
+#[tokio::test]
+async fn bus_policy_can_use_persisted_hashtree_graph_backend() {
+    let HashtreeFixture {
+        graph,
+        friend,
+        unknown,
+        overmuted,
+        ..
+    } = hashtree_fixture();
+    let bus = InMemoryEventBus::with_policy(Arc::new(SocialGraphPolicy::new(
+        graph,
+        SocialGraphPolicyConfig::default(),
+    )));
+
+    let trusted = bus
+        .publish(
+            signed_text_note(&friend, "trusted"),
+            EventSource::peer("peer"),
+        )
+        .await
+        .unwrap();
+    let unknown = bus
+        .publish(
+            signed_text_note(&unknown, "unknown"),
+            EventSource::peer("peer"),
+        )
+        .await
+        .unwrap();
+    let overmuted = bus
+        .publish(
+            signed_text_note(&overmuted, "overmuted"),
+            EventSource::peer("peer"),
+        )
+        .await
+        .unwrap();
+
+    assert!(trusted.accepted);
+    assert!(unknown.accepted);
+    assert!(!overmuted.accepted);
+    assert!(trusted.priority > unknown.priority);
+    assert_eq!(
+        unknown.reason.as_deref(),
+        Some("author outside social graph")
+    );
+    assert_eq!(
+        overmuted.reason.as_deref(),
+        Some("author overmuted by social graph")
+    );
+}
+
 struct Fixture {
     graph: Arc<RwLock<SocialGraph>>,
     friend: Keys,
@@ -144,6 +196,59 @@ struct Fixture {
 }
 
 fn fixture() -> Fixture {
+    let keys = graph_keys();
+    let root_pk = keys.root.public_key().to_hex();
+    let mut graph = SocialGraph::new(&root_pk);
+    seed_graph(&mut graph, &keys).unwrap();
+
+    Fixture {
+        graph: Arc::new(RwLock::new(graph)),
+        friend: keys.friend,
+        unknown: keys.unknown,
+        overmuted: keys.overmuted,
+    }
+}
+
+struct HashtreeFixture {
+    graph: Arc<RwLock<HashtreeSocialGraph>>,
+    _tempdir: TempDir,
+    friend: Keys,
+    unknown: Keys,
+    overmuted: Keys,
+}
+
+fn hashtree_fixture() -> HashtreeFixture {
+    let keys = graph_keys();
+    let root_pk = keys.root.public_key().to_hex();
+    let tempdir = TempDir::new().unwrap();
+    let mut graph = HashtreeSocialGraph::open(tempdir.path(), &root_pk).unwrap();
+    seed_graph(&mut graph, &keys).unwrap();
+    graph.flush().unwrap();
+    drop(graph);
+
+    let reopened =
+        HashtreeSocialGraph::open(tempdir.path(), &keys.unknown.public_key().to_hex()).unwrap();
+    assert_eq!(reopened.get_root().unwrap(), root_pk);
+
+    HashtreeFixture {
+        graph: Arc::new(RwLock::new(reopened)),
+        _tempdir: tempdir,
+        friend: keys.friend,
+        unknown: keys.unknown,
+        overmuted: keys.overmuted,
+    }
+}
+
+struct GraphKeys {
+    root: Keys,
+    friend: Keys,
+    friend_of_friend: Keys,
+    muter: Keys,
+    unknown: Keys,
+    overmuted: Keys,
+}
+
+fn graph_keys() -> GraphKeys {
     let root = Keys::generate();
     let friend = Keys::generate();
     let friend_of_friend = Keys::generate();
@@ -151,45 +256,52 @@ fn fixture() -> Fixture {
     let unknown = Keys::generate();
     let overmuted = Keys::generate();
 
-    let root_pk = root.public_key().to_hex();
-    let friend_pk = friend.public_key().to_hex();
-    let friend_of_friend_pk = friend_of_friend.public_key().to_hex();
-    let muter_pk = muter.public_key().to_hex();
-    let overmuted_pk = overmuted.public_key().to_hex();
-
-    let mut graph = SocialGraph::new(&root_pk);
-    graph.handle_event(
-        &follow_event(&root_pk, 1_000, vec![&friend_pk, &muter_pk]),
-        true,
-        1.0,
-    );
-    graph.handle_event(
-        &follow_event(&friend_pk, 1_100, vec![&friend_of_friend_pk]),
-        true,
-        1.0,
-    );
-    graph.handle_event(
-        &mute_event(&friend_pk, 1_200, vec![&overmuted_pk]),
-        true,
-        1.0,
-    );
-    graph.handle_event(
-        &mute_event(&muter_pk, 1_201, vec![&overmuted_pk]),
-        true,
-        1.0,
-    );
-
-    Fixture {
-        graph: Arc::new(RwLock::new(graph)),
+    GraphKeys {
+        root,
         friend,
+        friend_of_friend,
+        muter,
         unknown,
         overmuted,
     }
 }
 
+fn seed_graph<B>(graph: &mut B, keys: &GraphKeys) -> Result<(), B::Error>
+where
+    B: SocialGraphBackend,
+{
+    let root_pk = keys.root.public_key().to_hex();
+    let friend_pk = keys.friend.public_key().to_hex();
+    let friend_of_friend_pk = keys.friend_of_friend.public_key().to_hex();
+    let muter_pk = keys.muter.public_key().to_hex();
+    let overmuted_pk = keys.overmuted.public_key().to_hex();
+
+    graph.handle_event(
+        &follow_event(&root_pk, 1_000, vec![&friend_pk, &muter_pk]),
+        true,
+        1.0,
+    )?;
+    graph.handle_event(
+        &follow_event(&friend_pk, 1_100, vec![&friend_of_friend_pk]),
+        true,
+        1.0,
+    )?;
+    graph.handle_event(
+        &mute_event(&friend_pk, 1_200, vec![&overmuted_pk]),
+        true,
+        1.0,
+    )?;
+    graph.handle_event(
+        &mute_event(&muter_pk, 1_201, vec![&overmuted_pk]),
+        true,
+        1.0,
+    )?;
+    Ok(())
+}
+
 fn signed_text_note(keys: &Keys, content: &str) -> VerifiedEvent {
-    let event = EventBuilder::new(Kind::TextNote, content, [])
-        .to_event(keys)
+    let event = EventBuilder::new(Kind::TextNote, content)
+        .sign_with_keys(keys)
         .unwrap();
     VerifiedEvent::try_from(event).unwrap()
 }
