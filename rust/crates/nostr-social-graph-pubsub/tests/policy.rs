@@ -1,9 +1,10 @@
 use std::sync::{Arc, RwLock};
 
-use nostr::{EventBuilder, Keys, Kind};
+use nostr::{EventBuilder, Keys, Kind, ToBech32};
 use nostr_pubsub::{
-    EventBus, EventSource, Filter, InMemoryEventBus, PolicyDecision, PubsubPolicy, QueryOptions,
-    SourceCandidate, SourceHealth, SourcePolicyContext, VerifiedEvent,
+    EventBus, EventSource, EventSourceKind, Filter, InMemoryEventBus, PolicyDecision, PubsubPolicy,
+    QueryOptions, RouteQuerySource, RoutedQueryOptions, SourceCandidate, SourceHealth, SourceId,
+    SourcePolicyContext, SourceRoute, VerifiedEvent, query_routes_with_policy,
 };
 use nostr_social_graph::{NostrEvent, SocialGraph, SocialGraphBackend};
 use nostr_social_graph_hashtree::HashtreeSocialGraph;
@@ -111,6 +112,100 @@ async fn source_policy_uses_candidate_author_pubkey() {
 
     assert!(matches!(trusted, PolicyDecision::Allow { .. }));
     assert!(matches!(unknown, PolicyDecision::Throttle { .. }));
+}
+
+#[tokio::test]
+async fn source_policy_infers_fips_peer_npub_source_id_when_author_is_missing() {
+    let Fixture { graph, friend, .. } = fixture();
+    let policy = SocialGraphPolicy::new(graph, SocialGraphPolicyConfig::default());
+    let friend_npub = friend.public_key().to_bech32().unwrap();
+    let fips_candidate = SourceCandidate {
+        source: EventSource {
+            id: SourceId::new(friend_npub),
+            kind: EventSourceKind::FipsEndpoint,
+            url: None,
+        },
+        priority: 0,
+        reason: None,
+        freshness_hint: None,
+        health: SourceHealth::default(),
+    };
+    let relay_candidate = SourceCandidate {
+        source: EventSource::relay("wss://relay.example"),
+        priority: 0,
+        reason: None,
+        freshness_hint: None,
+        health: SourceHealth::default(),
+    };
+
+    let trusted = policy
+        .check_source(SourcePolicyContext {
+            candidate: &fips_candidate,
+            author_pubkey: None,
+        })
+        .await
+        .unwrap();
+    let relay = policy
+        .check_source(SourcePolicyContext {
+            candidate: &relay_candidate,
+            author_pubkey: None,
+        })
+        .await
+        .unwrap();
+
+    assert!(matches!(trusted, PolicyDecision::Allow { priority } if priority > 0));
+    assert_eq!(relay, PolicyDecision::Allow { priority: 0 });
+}
+
+#[tokio::test]
+async fn routed_query_can_apply_graph_policy_to_peer_source_ids_without_author_hint() {
+    let Fixture {
+        graph,
+        friend,
+        unknown,
+        ..
+    } = fixture();
+    let friend_id = friend.public_key().to_hex();
+    let unknown_id = unknown.public_key().to_hex();
+    let friend_bus = InMemoryEventBus::new();
+    let unknown_bus = InMemoryEventBus::new();
+    let friend_event = signed_text_note(&friend, "trusted peer route");
+    let unknown_event = signed_text_note(&unknown, "unknown peer route");
+    friend_bus
+        .publish(friend_event.clone(), EventSource::peer(&friend_id))
+        .await
+        .unwrap();
+    unknown_bus
+        .publish(unknown_event.clone(), EventSource::peer(&unknown_id))
+        .await
+        .unwrap();
+    let routes = vec![
+        RouteQuerySource::new(SourceRoute::fips_peer(unknown_id, 100), &unknown_bus),
+        RouteQuerySource::new(SourceRoute::fips_peer(friend_id, 0), &friend_bus),
+    ];
+    let policy = SocialGraphPolicy::new(graph, SocialGraphPolicyConfig::default());
+
+    let report = query_routes_with_policy(
+        &routes,
+        vec![Filter::new().kind(Kind::TextNote)],
+        RoutedQueryOptions {
+            query: QueryOptions { limit: Some(1) },
+            ..RoutedQueryOptions::default()
+        },
+        None,
+        &policy,
+        None,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(report.events.len(), 1);
+    assert_eq!(
+        report.events[0].event.as_event().id,
+        friend_event.as_event().id
+    );
+    assert_eq!(report.attempts.len(), 1);
+    assert_eq!(report.attempts[0].route.id, friend.public_key().to_hex());
 }
 
 #[tokio::test]

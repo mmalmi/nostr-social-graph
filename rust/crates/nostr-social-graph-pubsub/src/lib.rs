@@ -4,7 +4,8 @@ use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
 use nostr_pubsub::{
-    EventPolicyContext, PolicyDecision, PubsubError, PubsubPolicy, Result, SourcePolicyContext,
+    EventPolicyContext, EventSourceKind, PolicyDecision, PublicKey, PubsubError, PubsubPolicy,
+    Result, SourcePolicyContext,
 };
 use nostr_social_graph::SocialGraphBackend;
 
@@ -160,11 +161,28 @@ where
     }
 
     async fn check_source(&self, context: SourcePolicyContext<'_>) -> Result<PolicyDecision> {
-        match context.author_pubkey {
-            Some(author_pubkey) => self.decision_for_author(author_pubkey),
+        match author_pubkey_for_source_policy(context) {
+            Some(author_pubkey) => self.decision_for_author(&author_pubkey),
             None => Ok(self.decision_for_missing_author()),
         }
     }
+}
+
+fn author_pubkey_for_source_policy(context: SourcePolicyContext<'_>) -> Option<String> {
+    if let Some(author_pubkey) = context.author_pubkey {
+        return Some(author_pubkey.to_owned());
+    }
+
+    match context.candidate.source.kind {
+        EventSourceKind::Peer | EventSourceKind::FipsEndpoint => {
+            parse_pubkey(&context.candidate.source.id.0)
+        }
+        _ => None,
+    }
+}
+
+fn parse_pubkey(value: &str) -> Option<String> {
+    PublicKey::parse(value).ok().map(|pubkey| pubkey.to_hex())
 }
 
 fn outside_reason(distance: u32, config: &SocialGraphPolicyConfig) -> String {
