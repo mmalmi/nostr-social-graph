@@ -1357,7 +1357,7 @@ dependencies = [
  "nostr-lmdb",
  "nostr-sdk",
  "nostr-social-graph",
- "nostr-social-graph-heed",
+ "nostr-social-graph-hashtree",
  "reqwest",
  "serde",
  "serde_json",

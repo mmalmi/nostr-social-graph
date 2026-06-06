@@ -149,6 +149,11 @@ impl HashtreeSocialGraph {
         self.graph.export_state()
     }
 
+    pub fn replace_state(&mut self, state: &SocialGraphState) -> Result<()> {
+        self.graph = SocialGraph::from_state(state.clone())?;
+        self.write_snapshot()
+    }
+
     fn write_snapshot(&mut self) -> Result<()> {
         let root = self.graph.get_root().to_string();
         let data = self.graph.to_binary()?;

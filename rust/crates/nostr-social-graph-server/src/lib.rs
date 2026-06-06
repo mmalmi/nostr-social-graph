@@ -17,7 +17,7 @@ use nostr_sdk::{
     ToBech32,
 };
 use nostr_social_graph::{BinaryBudget, NostrEvent, SocialGraph, SocialGraphState};
-use nostr_social_graph_heed::{HeedSocialGraph, HeedSocialGraphError};
+use nostr_social_graph_hashtree::HashtreeSocialGraph;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tower_http::cors::{Any, CorsLayer};
@@ -398,7 +398,7 @@ impl ServerConfig {
             .unwrap_or_else(|| cwd.join("data"));
         let graph_db_dir = std::env::var_os("SOCIAL_GRAPH_DB_DIR")
             .map(PathBuf::from)
-            .unwrap_or_else(|| data_dir.join("socialGraph.heed"));
+            .unwrap_or_else(|| data_dir.join("socialGraph.hashtree"));
         let legacy_graph_binary_path = std::env::var_os("LEGACY_SOCIAL_GRAPH_BINARY_PATH")
             .map(PathBuf::from)
             .or_else(|| {
@@ -443,11 +443,9 @@ pub fn load_or_bootstrap_graph(
     legacy_graph_binary_path: Option<&Path>,
 ) -> Result<SocialGraph> {
     let graph_db_dir = graph_db_dir.as_ref();
-    let mut store = HeedSocialGraph::open(graph_db_dir, root)
+    let mut store = HashtreeSocialGraph::open(graph_db_dir, root)
         .map_err(|error| ServerError::Io(std::io::Error::other(error.to_string())))?;
-    let state = store
-        .export_state()
-        .map_err(|error| ServerError::Io(std::io::Error::other(error.to_string())))?;
+    let state = store.export_state();
 
     let graph_is_empty = state.followed_by_user.is_empty() && state.muted_by_user.is_empty();
     if graph_is_empty
@@ -459,7 +457,7 @@ pub fn load_or_bootstrap_graph(
             .replace_state(&graph.export_state())
             .map_err(|error| ServerError::Io(std::io::Error::other(error.to_string())))?;
         info!(
-            "imported graph snapshot from {} into heed store {}",
+            "imported graph snapshot from {} into hashtree store {}",
             graph_binary_path.display(),
             graph_db_dir.display()
         );
@@ -476,23 +474,12 @@ pub fn load_graph_read_only(
     legacy_graph_binary_path: Option<&Path>,
 ) -> Result<SocialGraph> {
     let graph_db_dir = graph_db_dir.as_ref();
-    let state = match HeedSocialGraph::export_state_from_path(graph_db_dir) {
-        Ok(state) => state,
-        Err(HeedSocialGraphError::MissingDatabase(_)) | Err(HeedSocialGraphError::MissingRoot) => {
-            SocialGraphState {
-                root: root.to_string(),
-                unique_ids: Vec::new(),
-                follow_distance_by_user: Vec::new(),
-                users_by_follow_distance: Vec::new(),
-                followed_by_user: Vec::new(),
-                followers_by_user: Vec::new(),
-                follow_list_created_at: Vec::new(),
-                muted_by_user: Vec::new(),
-                user_muted_by: Vec::new(),
-                mute_list_created_at: Vec::new(),
-            }
-        }
-        Err(error) => return Err(ServerError::Io(std::io::Error::other(error.to_string()))),
+    let state = if path_has_entries(graph_db_dir) {
+        let store = HashtreeSocialGraph::open(graph_db_dir, root)
+            .map_err(|error| ServerError::Io(std::io::Error::other(error.to_string())))?;
+        store.export_state()
+    } else {
+        empty_graph_state(root)
     };
 
     let graph_is_empty = state.followed_by_user.is_empty() && state.muted_by_user.is_empty();
@@ -513,13 +500,28 @@ pub fn persist_graph_snapshot(
     graph: &SocialGraph,
 ) -> Result<()> {
     let graph_db_dir = graph_db_dir.as_ref();
-    let mut store = HeedSocialGraph::open(graph_db_dir, root)
+    let mut store = HashtreeSocialGraph::open(graph_db_dir, root)
         .map_err(|error| ServerError::Io(std::io::Error::other(error.to_string())))?;
     store
         .replace_state(&graph.export_state())
         .map_err(|error| ServerError::Io(std::io::Error::other(error.to_string())))?;
     info!("persisted graph snapshot to {}", graph_db_dir.display());
     Ok(())
+}
+
+fn empty_graph_state(root: &str) -> SocialGraphState {
+    SocialGraphState {
+        root: root.to_string(),
+        unique_ids: Vec::new(),
+        follow_distance_by_user: Vec::new(),
+        users_by_follow_distance: Vec::new(),
+        followed_by_user: Vec::new(),
+        followers_by_user: Vec::new(),
+        follow_list_created_at: Vec::new(),
+        muted_by_user: Vec::new(),
+        user_muted_by: Vec::new(),
+        mute_list_created_at: Vec::new(),
+    }
 }
 
 pub async fn run(config: ServerConfig) -> Result<()> {

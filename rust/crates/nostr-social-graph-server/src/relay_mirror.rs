@@ -90,7 +90,7 @@ impl RelayMirrorConfig {
             .unwrap_or_else(|| cwd.join("data"));
         let graph_db_dir = std::env::var_os("SOCIAL_GRAPH_DB_DIR")
             .map(PathBuf::from)
-            .unwrap_or_else(|| data_dir.join("socialGraph.heed"));
+            .unwrap_or_else(|| data_dir.join("socialGraph.hashtree"));
         let legacy_graph_binary_path = std::env::var_os("LEGACY_SOCIAL_GRAPH_BINARY_PATH")
             .map(PathBuf::from)
             .or_else(|| {
@@ -740,7 +740,7 @@ mod tests {
             sync_relay_urls: Vec::new(),
             live_relay_urls: Vec::new(),
             allowlist_url: None,
-            graph_db_dir: tempdir.path().join("missing.heed"),
+            graph_db_dir: tempdir.path().join("missing.hashtree"),
             legacy_graph_binary_path: None,
             graph_snapshot_url: Some(format!("http://{address}/social-graph")),
             state_dir: tempdir.path().join("state"),
@@ -793,7 +793,7 @@ mod tests {
             sync_relay_urls: Vec::new(),
             live_relay_urls: Vec::new(),
             allowlist_url: Some(format!("http://{address}/allowlist")),
-            graph_db_dir: tempdir.path().join("missing.heed"),
+            graph_db_dir: tempdir.path().join("missing.hashtree"),
             legacy_graph_binary_path: None,
             graph_snapshot_url: None,
             state_dir: tempdir.path().join("state"),

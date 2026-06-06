@@ -1,5 +1,5 @@
-use nostr_social_graph::SocialGraph;
-use nostr_social_graph_heed::HeedSocialGraph;
+use nostr_social_graph::{SocialGraph, SocialGraphBackend};
+use nostr_social_graph_hashtree::HashtreeSocialGraph;
 use nostr_social_graph_server::{load_or_bootstrap_graph, persist_graph_snapshot};
 use tempfile::TempDir;
 
@@ -8,9 +8,9 @@ const FIATJAF: &str = "3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaa
 const SNOWDEN: &str = "84dee6e676e5bb67b4ad4e042cf70cbd8681155db535942fcc6a0533858a7240";
 
 #[test]
-fn bootstrapping_imports_existing_binary_snapshot_into_heed() {
+fn bootstrapping_imports_existing_binary_snapshot_into_hashtree() {
     let tempdir = TempDir::new().unwrap();
-    let db_dir = tempdir.path().join("socialGraph.heed");
+    let db_dir = tempdir.path().join("socialGraph.hashtree");
     let binary_path = tempdir.path().join("socialGraph.large.bin");
 
     let mut original = SocialGraph::new(ADAM);
@@ -22,15 +22,16 @@ fn bootstrapping_imports_existing_binary_snapshot_into_heed() {
     assert!(graph.is_following(ADAM, FIATJAF));
     assert!(graph.is_following(FIATJAF, SNOWDEN));
 
-    let reopened = HeedSocialGraph::open(&db_dir, ADAM).unwrap();
+    let reopened = HashtreeSocialGraph::open(&db_dir, ADAM).unwrap();
     assert!(reopened.is_following(ADAM, FIATJAF).unwrap());
     assert!(reopened.is_following(FIATJAF, SNOWDEN).unwrap());
+    assert!(reopened.latest_cid().is_some());
 }
 
 #[test]
-fn persisting_snapshot_updates_heed_without_writing_binary_snapshot() {
+fn persisting_snapshot_updates_hashtree_without_writing_binary_snapshot() {
     let tempdir = TempDir::new().unwrap();
-    let db_dir = tempdir.path().join("socialGraph.heed");
+    let db_dir = tempdir.path().join("socialGraph.hashtree");
     let binary_path = tempdir.path().join("socialGraph.large.bin");
 
     let mut graph = SocialGraph::new(ADAM);
@@ -39,9 +40,10 @@ fn persisting_snapshot_updates_heed_without_writing_binary_snapshot() {
 
     persist_graph_snapshot(ADAM, &db_dir, &graph).unwrap();
 
-    let reopened = HeedSocialGraph::open(&db_dir, ADAM).unwrap();
+    let reopened = HashtreeSocialGraph::open(&db_dir, ADAM).unwrap();
     assert!(reopened.is_following(ADAM, FIATJAF).unwrap());
     assert!(reopened.is_following(FIATJAF, SNOWDEN).unwrap());
+    assert!(reopened.latest_cid().is_some());
     assert!(!binary_path.exists());
 }
 
