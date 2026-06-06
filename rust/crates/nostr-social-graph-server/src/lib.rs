@@ -34,16 +34,7 @@ const PROFILE_NAME_MAX_LENGTH: usize = 100;
 const PROFILE_PICTURE_URL_MAX_LENGTH: usize = 255;
 pub const DEFAULT_SOCIAL_GRAPH_ROOT: &str =
     "4523be58d395b1b196a9b8c82b038b6895cb02b683d0c253a955068dba1facd0";
-pub const DEFAULT_RELAY_URLS: &[&str] = &[
-    "wss://relay.snort.social",
-    "wss://relay.damus.io",
-    "wss://relay.nostr.band",
-    "wss://nostr.wine",
-    "wss://soloco.nl",
-    "wss://eden.nostr.land",
-    "wss://temp.iris.to",
-    "wss://vault.iris.to",
-];
+pub const DEFAULT_RELAY_URLS: &[&str] = &[];
 
 #[derive(Debug, thiserror::Error)]
 pub enum ServerError {
@@ -1391,4 +1382,29 @@ fn unix_timestamp() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn relay_urls_are_empty_until_explicitly_configured() {
+        assert!(DEFAULT_RELAY_URLS.is_empty());
+        assert!(parse_relay_urls(None).is_empty());
+        assert!(parse_relay_urls(Some(" , ".to_string())).is_empty());
+    }
+
+    #[test]
+    fn relay_urls_parse_explicit_configuration() {
+        assert_eq!(
+            parse_relay_urls(Some(
+                "wss://relay-a.example, wss://relay-b.example ".to_string()
+            )),
+            vec![
+                "wss://relay-a.example".to_string(),
+                "wss://relay-b.example".to_string()
+            ]
+        );
+    }
 }
