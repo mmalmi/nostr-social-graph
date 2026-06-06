@@ -8,8 +8,19 @@ use nostr_pubsub::{
 };
 use nostr_social_graph::{NostrEvent, SocialGraph, SocialGraphBackend};
 use nostr_social_graph_hashtree::HashtreeSocialGraph;
-use nostr_social_graph_pubsub::{GraphDistanceAction, SocialGraphPolicy, SocialGraphPolicyConfig};
+use nostr_social_graph_pubsub::{
+    DEFAULT_SOCIAL_GRAPH_ENTRYPOINT_NPUB, GraphDistanceAction, InMemoryServiceReputation,
+    SocialGraphPolicy, SocialGraphPolicyConfig,
+};
 use tempfile::TempDir;
+
+#[test]
+fn default_social_graph_entrypoint_seed_is_exposed_for_cold_start() {
+    assert_eq!(
+        DEFAULT_SOCIAL_GRAPH_ENTRYPOINT_NPUB,
+        "npub1g53mukxnjkcmr94fhryzkqutdz2ukq4ks0gvy5af25rgmwsl4ngq43drvk"
+    );
+}
 
 #[tokio::test]
 async fn bus_prioritizes_graph_authors_and_throttles_unknown_authors() {
@@ -76,6 +87,64 @@ async fn bus_can_drop_authors_outside_the_social_graph() {
         .await
         .unwrap();
     assert!(queried.events.is_empty());
+}
+
+#[tokio::test]
+async fn service_reputation_can_boost_useful_sources_outside_the_human_graph() {
+    let Fixture { graph, unknown, .. } = fixture();
+    let unknown_id = unknown.public_key().to_hex();
+    let unknown_npub = unknown.public_key().to_bech32().unwrap();
+    let reputation = Arc::new(InMemoryServiceReputation::default());
+    reputation.boost_source(&unknown_id, None, 250);
+    let policy = SocialGraphPolicy::new(graph, SocialGraphPolicyConfig::default())
+        .with_service_reputation(reputation);
+    let candidate = SourceCandidate {
+        source: EventSource::peer(&unknown_npub),
+        priority: 0,
+        reason: None,
+        freshness_hint: None,
+        health: SourceHealth::default(),
+    };
+
+    let decision = policy
+        .check_source(SourcePolicyContext {
+            candidate: &candidate,
+            author_pubkey: None,
+        })
+        .await
+        .unwrap();
+
+    assert!(matches!(decision, PolicyDecision::Allow { priority } if priority > 0));
+}
+
+#[tokio::test]
+async fn service_reputation_can_throttle_socially_near_sources_with_bad_history() {
+    let Fixture { graph, friend, .. } = fixture();
+    let friend_id = friend.public_key().to_hex();
+    let reputation = Arc::new(InMemoryServiceReputation::default());
+    reputation.throttle_source(&friend_id, None, -250, "recent invalid responses");
+    let policy = SocialGraphPolicy::new(graph, SocialGraphPolicyConfig::default())
+        .with_service_reputation(reputation);
+    let candidate = SourceCandidate {
+        source: EventSource::peer(&friend_id),
+        priority: 0,
+        reason: None,
+        freshness_hint: None,
+        health: SourceHealth::default(),
+    };
+
+    let decision = policy
+        .check_source(SourcePolicyContext {
+            candidate: &candidate,
+            author_pubkey: None,
+        })
+        .await
+        .unwrap();
+
+    assert!(matches!(decision, PolicyDecision::Throttle { priority, .. } if priority < 0));
+    assert!(
+        matches!(decision, PolicyDecision::Throttle { reason, .. } if reason.contains("recent invalid responses"))
+    );
 }
 
 #[tokio::test]
@@ -155,6 +224,38 @@ async fn source_policy_infers_fips_peer_npub_source_id_when_author_is_missing() 
 
     assert!(matches!(trusted, PolicyDecision::Allow { priority } if priority > 0));
     assert_eq!(relay, PolicyDecision::Allow { priority: 0 });
+}
+
+#[tokio::test]
+async fn source_policy_drops_overmuted_fips_peer_without_author_hint() {
+    let Fixture {
+        graph, overmuted, ..
+    } = fixture();
+    let policy = SocialGraphPolicy::new(graph, SocialGraphPolicyConfig::default());
+    let candidate = SourceCandidate {
+        source: EventSource {
+            id: SourceId::new(overmuted.public_key().to_bech32().unwrap()),
+            kind: EventSourceKind::FipsEndpoint,
+            url: None,
+        },
+        priority: 0,
+        reason: None,
+        freshness_hint: None,
+        health: SourceHealth::default(),
+    };
+
+    let decision = policy
+        .check_source(SourcePolicyContext {
+            candidate: &candidate,
+            author_pubkey: None,
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(
+        decision,
+        PolicyDecision::drop("author overmuted by social graph")
+    );
 }
 
 #[tokio::test]
