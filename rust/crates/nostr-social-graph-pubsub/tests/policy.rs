@@ -344,6 +344,69 @@ async fn overmuted_authors_are_dropped_before_distance_checks() {
 }
 
 #[tokio::test]
+async fn root_mutelist_drops_event_authors_when_overmute_heuristic_is_disabled() {
+    let RootMuteFixture { graph, bad_actor } = root_muted_fixture();
+    let bus = InMemoryEventBus::with_policy(Arc::new(SocialGraphPolicy::new(
+        graph,
+        SocialGraphPolicyConfig {
+            drop_overmuted: false,
+            ..SocialGraphPolicyConfig::default()
+        },
+    )));
+
+    let report = bus
+        .publish(
+            signed_text_note(&bad_actor, "root-muted"),
+            EventSource::peer("peer"),
+        )
+        .await
+        .unwrap();
+
+    assert!(!report.accepted);
+    assert_eq!(
+        report.reason.as_deref(),
+        Some("author muted by social graph root")
+    );
+}
+
+#[tokio::test]
+async fn root_mutelist_drops_fips_peer_sources_when_overmute_heuristic_is_disabled() {
+    let RootMuteFixture { graph, bad_actor } = root_muted_fixture();
+    let policy = SocialGraphPolicy::new(
+        graph,
+        SocialGraphPolicyConfig {
+            drop_overmuted: false,
+            ..SocialGraphPolicyConfig::default()
+        },
+    );
+    let candidate = SourceCandidate {
+        source: EventSource {
+            id: SourceId::new(bad_actor.public_key().to_bech32().unwrap()),
+            kind: EventSourceKind::FipsEndpoint,
+            url: None,
+        },
+        priority: 0,
+        reason: None,
+        freshness_hint: None,
+        health: SourceHealth::default(),
+    };
+
+    let decision = policy
+        .check_source(SourcePolicyContext {
+            candidate: &candidate,
+            author_pubkey: None,
+            capabilities: &[],
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(
+        decision,
+        PolicyDecision::drop("author muted by social graph root")
+    );
+}
+
+#[tokio::test]
 async fn bus_policy_can_use_persisted_hashtree_graph_backend() {
     let HashtreeFixture {
         graph,
@@ -400,6 +463,11 @@ struct Fixture {
     overmuted: Keys,
 }
 
+struct RootMuteFixture {
+    graph: Arc<RwLock<SocialGraph>>,
+    bad_actor: Keys,
+}
+
 fn fixture() -> Fixture {
     let keys = graph_keys();
     let root_pk = keys.root.public_key().to_hex();
@@ -411,6 +479,25 @@ fn fixture() -> Fixture {
         friend: keys.friend,
         unknown: keys.unknown,
         overmuted: keys.overmuted,
+    }
+}
+
+fn root_muted_fixture() -> RootMuteFixture {
+    let root = Keys::generate();
+    let bad_actor = Keys::generate();
+    let root_pk = root.public_key().to_hex();
+    let bad_actor_pk = bad_actor.public_key().to_hex();
+    let mut graph = SocialGraph::new(&root_pk);
+    graph.handle_event(
+        &follow_event(&root_pk, 1_000, vec![&bad_actor_pk]),
+        true,
+        1.0,
+    );
+    graph.handle_event(&mute_event(&root_pk, 1_001, vec![&bad_actor_pk]), true, 1.0);
+
+    RootMuteFixture {
+        graph: Arc::new(RwLock::new(graph)),
+        bad_actor,
     }
 }
 

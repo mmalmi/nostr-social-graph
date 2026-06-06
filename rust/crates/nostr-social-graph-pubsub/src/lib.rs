@@ -33,6 +33,7 @@ pub struct SocialGraphPolicyConfig {
     pub missing_author_priority: i32,
     pub outside_graph_action: GraphDistanceAction,
     pub missing_author_action: GraphDistanceAction,
+    pub drop_root_mutes: bool,
     pub drop_overmuted: bool,
     pub overmute_threshold: f64,
 }
@@ -50,6 +51,7 @@ impl Default for SocialGraphPolicyConfig {
             missing_author_priority: 0,
             outside_graph_action: GraphDistanceAction::Throttle,
             missing_author_action: GraphDistanceAction::Allow,
+            drop_root_mutes: true,
             drop_overmuted: true,
             overmute_threshold: 1.0,
         }
@@ -95,6 +97,12 @@ where
             .graph
             .read()
             .map_err(|_| PubsubError::Validation("social graph lock poisoned".to_string()))?;
+
+        if self.config.drop_root_mutes
+            && author_is_muted_by_root(&*graph, author_pubkey).map_err(graph_policy_error)?
+        {
+            return Ok(PolicyDecision::drop("author muted by social graph root"));
+        }
 
         if self.config.drop_overmuted
             && graph
@@ -379,6 +387,17 @@ fn outside_reason(distance: u32, config: &SocialGraphPolicyConfig) -> String {
         Some(max_distance) => format!("author beyond allowed social graph distance {max_distance}"),
         None => "author outside social graph".to_string(),
     }
+}
+
+fn author_is_muted_by_root<B>(graph: &B, author_pubkey: &str) -> std::result::Result<bool, B::Error>
+where
+    B: SocialGraphBackend + ?Sized,
+{
+    let root = graph.get_root()?;
+    let muted = graph.get_muted_by_user(&root)?;
+    Ok(muted
+        .iter()
+        .any(|muted_pubkey| muted_pubkey == author_pubkey))
 }
 
 fn graph_policy_error(error: impl std::fmt::Display) -> PubsubError {
