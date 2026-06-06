@@ -166,12 +166,15 @@ where
     fn apply_service_reputation(
         &self,
         source: &EventSource,
+        capabilities: &[String],
         graph_decision: PolicyDecision,
     ) -> PolicyDecision {
         let Some(reputation) = &self.service_reputation else {
             return graph_decision;
         };
-        let Some(reputation_decision) = reputation.decision_for_source(source, None) else {
+        let Some(reputation_decision) =
+            reputation.decision_for_source_capabilities(source, capabilities)
+        else {
             return graph_decision;
         };
         combine_source_decisions(graph_decision, reputation_decision)
@@ -193,7 +196,11 @@ where
             None => Ok(self.decision_for_missing_author()),
         }?;
 
-        Ok(self.apply_service_reputation(&context.candidate.source, graph_decision))
+        Ok(self.apply_service_reputation(
+            &context.candidate.source,
+            context.capabilities,
+            graph_decision,
+        ))
     }
 }
 
@@ -203,6 +210,17 @@ pub trait ServiceReputation: Send + Sync {
         source: &EventSource,
         capability: Option<&str>,
     ) -> Option<PolicyDecision>;
+
+    fn decision_for_source_capabilities(
+        &self,
+        source: &EventSource,
+        capabilities: &[String],
+    ) -> Option<PolicyDecision> {
+        capabilities
+            .iter()
+            .find_map(|capability| self.decision_for_source(source, Some(capability)))
+            .or_else(|| self.decision_for_source(source, None))
+    }
 }
 
 #[derive(Default)]
@@ -270,7 +288,6 @@ impl ServiceReputation for InMemoryServiceReputation {
         let records = self.records.read().ok()?;
         records
             .get(&ServiceReputationKey::new(source.id.0.clone(), capability))
-            .or_else(|| records.get(&ServiceReputationKey::new(source.id.0.clone(), None)))
             .cloned()
     }
 }

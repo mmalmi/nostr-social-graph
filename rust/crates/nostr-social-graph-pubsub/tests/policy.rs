@@ -2,9 +2,10 @@ use std::sync::{Arc, RwLock};
 
 use nostr::{EventBuilder, Keys, Kind, ToBech32};
 use nostr_pubsub::{
-    EventBus, EventSource, EventSourceKind, Filter, InMemoryEventBus, PolicyDecision, PubsubPolicy,
-    QueryOptions, RouteQuerySource, RoutedQueryOptions, SourceCandidate, SourceHealth, SourceId,
-    SourcePolicyContext, SourceRoute, VerifiedEvent, query_routes_with_policy,
+    CAP_HASHTREE_FETCH, EventBus, EventSource, EventSourceKind, Filter, InMemoryEventBus,
+    PolicyDecision, PubsubPolicy, QueryOptions, RouteQuerySource, RoutedQueryOptions,
+    SourceCandidate, SourceHealth, SourceId, SourcePolicyContext, SourceRoute, VerifiedEvent,
+    query_routes_with_policy,
 };
 use nostr_social_graph::{NostrEvent, SocialGraph, SocialGraphBackend};
 use nostr_social_graph_hashtree::HashtreeSocialGraph;
@@ -95,9 +96,10 @@ async fn service_reputation_can_boost_useful_sources_outside_the_human_graph() {
     let unknown_id = unknown.public_key().to_hex();
     let unknown_npub = unknown.public_key().to_bech32().unwrap();
     let reputation = Arc::new(InMemoryServiceReputation::default());
-    reputation.boost_source(&unknown_id, None, 250);
+    reputation.boost_source(&unknown_id, Some(CAP_HASHTREE_FETCH), 250);
     let policy = SocialGraphPolicy::new(graph, SocialGraphPolicyConfig::default())
         .with_service_reputation(reputation);
+    let capabilities = vec![CAP_HASHTREE_FETCH.to_string()];
     let candidate = SourceCandidate {
         source: EventSource::peer(&unknown_npub),
         priority: 0,
@@ -110,6 +112,7 @@ async fn service_reputation_can_boost_useful_sources_outside_the_human_graph() {
         .check_source(SourcePolicyContext {
             candidate: &candidate,
             author_pubkey: None,
+            capabilities: &capabilities,
         })
         .await
         .unwrap();
@@ -137,6 +140,7 @@ async fn service_reputation_can_throttle_socially_near_sources_with_bad_history(
         .check_source(SourcePolicyContext {
             candidate: &candidate,
             author_pubkey: None,
+            capabilities: &[],
         })
         .await
         .unwrap();
@@ -168,6 +172,7 @@ async fn source_policy_uses_candidate_author_pubkey() {
         .check_source(SourcePolicyContext {
             candidate: &candidate,
             author_pubkey: Some(&friend.public_key().to_hex()),
+            capabilities: &[],
         })
         .await
         .unwrap();
@@ -175,6 +180,7 @@ async fn source_policy_uses_candidate_author_pubkey() {
         .check_source(SourcePolicyContext {
             candidate: &candidate,
             author_pubkey: Some(&unknown.public_key().to_hex()),
+            capabilities: &[],
         })
         .await
         .unwrap();
@@ -211,6 +217,7 @@ async fn source_policy_infers_fips_peer_npub_source_id_when_author_is_missing() 
         .check_source(SourcePolicyContext {
             candidate: &fips_candidate,
             author_pubkey: None,
+            capabilities: &[],
         })
         .await
         .unwrap();
@@ -218,6 +225,7 @@ async fn source_policy_infers_fips_peer_npub_source_id_when_author_is_missing() 
         .check_source(SourcePolicyContext {
             candidate: &relay_candidate,
             author_pubkey: None,
+            capabilities: &[],
         })
         .await
         .unwrap();
@@ -248,6 +256,7 @@ async fn source_policy_drops_overmuted_fips_peer_without_author_hint() {
         .check_source(SourcePolicyContext {
             candidate: &candidate,
             author_pubkey: None,
+            capabilities: &[],
         })
         .await
         .unwrap();
