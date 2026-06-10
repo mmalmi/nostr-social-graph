@@ -68,14 +68,51 @@ pub struct HeedSocialGraph {
 
 impl HeedSocialGraph {
     pub fn open<P: AsRef<Path>>(path: P, default_root: &str) -> Result<Self> {
-        fs::create_dir_all(path.as_ref())?;
-        let env = unsafe {
-            EnvOpenOptions::new()
-                .map_size(DEFAULT_MAP_SIZE)
-                .max_dbs(MAX_DBS)
-                .open(path.as_ref())?
-        };
+        unsafe { Self::open_with_env_flags(path, default_root, EnvFlags::empty()) }
+    }
 
+    /// Open a graph store with explicit LMDB environment flags.
+    ///
+    /// # Safety
+    ///
+    /// The caller must uphold LMDB's safety requirements for any unsafe flags.
+    /// In particular, `EnvFlags::NO_LOCK` requires external synchronization so
+    /// no other process concurrently opens the same environment for writing.
+    pub unsafe fn open_with_env_flags<P: AsRef<Path>>(
+        path: P,
+        default_root: &str,
+        flags: EnvFlags,
+    ) -> Result<Self> {
+        unsafe {
+            Self::open_with_env_flags_and_map_size(path, default_root, flags, DEFAULT_MAP_SIZE)
+        }
+    }
+
+    /// Open a graph store with explicit LMDB environment flags and map size.
+    ///
+    /// # Safety
+    ///
+    /// The caller must uphold LMDB's safety requirements for any unsafe flags.
+    /// In particular, `EnvFlags::NO_LOCK` requires external synchronization so
+    /// no other process concurrently opens the same environment for writing.
+    pub unsafe fn open_with_env_flags_and_map_size<P: AsRef<Path>>(
+        path: P,
+        default_root: &str,
+        flags: EnvFlags,
+        map_size: usize,
+    ) -> Result<Self> {
+        fs::create_dir_all(path.as_ref())?;
+        let mut options = EnvOpenOptions::new();
+        options.map_size(map_size).max_dbs(MAX_DBS);
+        unsafe {
+            options.flags(flags);
+        }
+        let env = unsafe { options.open(path.as_ref())? };
+
+        Self::open_env(env, default_root)
+    }
+
+    fn open_env(env: Env, default_root: &str) -> Result<Self> {
         let mut wtxn = env.write_txn()?;
         let metadata = env.create_database(&mut wtxn, Some(METADATA_DB))?;
         let str_to_unique_id = env.create_database(&mut wtxn, Some(STR_TO_UNIQUE_ID_DB))?;
@@ -612,6 +649,24 @@ impl SocialGraphBackend for HeedSocialGraph {
 
     fn has_unflushed_changes(&self) -> bool {
         HeedSocialGraph::has_unflushed_changes(self)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ROOT: &str = "0000000000000000000000000000000000000000000000000000000000000000";
+
+    #[test]
+    fn open_with_env_flags_keeps_requested_lmdb_flags() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let store = unsafe {
+            HeedSocialGraph::open_with_env_flags(tempdir.path(), ROOT, EnvFlags::NO_LOCK).unwrap()
+        };
+
+        let flags = store.env.flags().unwrap().unwrap_or(EnvFlags::empty());
+        assert!(flags.contains(EnvFlags::NO_LOCK));
     }
 }
 
