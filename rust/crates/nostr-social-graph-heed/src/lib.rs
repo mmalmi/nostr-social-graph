@@ -652,24 +652,6 @@ impl SocialGraphBackend for HeedSocialGraph {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    const ROOT: &str = "0000000000000000000000000000000000000000000000000000000000000000";
-
-    #[test]
-    fn open_with_env_flags_keeps_requested_lmdb_flags() {
-        let tempdir = tempfile::tempdir().unwrap();
-        let store = unsafe {
-            HeedSocialGraph::open_with_env_flags(tempdir.path(), ROOT, EnvFlags::NO_LOCK).unwrap()
-        };
-
-        let flags = store.env.flags().unwrap().unwrap_or(EnvFlags::empty());
-        assert!(flags.contains(EnvFlags::NO_LOCK));
-    }
-}
-
 fn read_root_from_rtxn<'a>(
     metadata: &'a Database<Str, Bytes>,
     rtxn: &'a heed::RoTxn<'_>,
@@ -1220,4 +1202,22 @@ fn persist_state(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ROOT: &str = "0000000000000000000000000000000000000000000000000000000000000000";
+
+    #[test]
+    fn open_with_env_flags_keeps_requested_lmdb_flags() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let store = unsafe {
+            HeedSocialGraph::open_with_env_flags(tempdir.path(), ROOT, EnvFlags::NO_LOCK).unwrap()
+        };
+
+        let flags = store.env.flags().unwrap().unwrap_or(EnvFlags::empty());
+        assert!(flags.contains(EnvFlags::NO_LOCK));
+    }
 }

@@ -35,6 +35,7 @@ done
 CRATES=(
     "nostr-social-graph"
     "nostr-social-graph-heed"
+    "nostr-social-memory"
 )
 
 if [[ "$PLAN_ONLY" -eq 1 ]]; then

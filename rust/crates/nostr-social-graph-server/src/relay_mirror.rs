@@ -498,10 +498,8 @@ async fn publish_snapshot(
             .await
             .map_err(|error| ServerError::Io(std::io::Error::other(error.to_string())))?;
         for event in events.into_iter() {
-            if is_allowed_event(&event, allowed) {
-                if publish_event(local, &event).await? {
-                    forwarded += 1;
-                }
+            if is_allowed_event(&event, allowed) && publish_event(local, &event).await? {
+                forwarded += 1;
             }
         }
     }
@@ -526,10 +524,8 @@ async fn publish_events_by_ids(
         else {
             continue;
         };
-        if is_allowed_event(&event, allowed) {
-            if publish_event(local, &event).await? {
-                forwarded += 1;
-            }
+        if is_allowed_event(&event, allowed) && publish_event(local, &event).await? {
+            forwarded += 1;
         }
     }
     Ok(forwarded)

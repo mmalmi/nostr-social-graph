@@ -16,10 +16,11 @@ test('publish plan lists crates in dependency order', () => {
     .trim()
     .split('\n')
     .filter(Boolean)
-    .filter((line) => line.startsWith('nostr-social-graph'));
+    .filter((line) => line.startsWith('nostr-social-'));
 
   assert.deepEqual(crates, [
     'nostr-social-graph',
     'nostr-social-graph-heed',
+    'nostr-social-memory',
   ]);
 });

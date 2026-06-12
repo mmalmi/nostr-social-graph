@@ -1,0 +1,21 @@
+[package]
+name = "nostr-social-memory"
+version = "0.1.0"
+description = "Entity memory, attestations, and trust scoring for Nostr identities"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage = "https://github.com/mmalmi/nostr-social-graph"
+readme = "../../README.md"
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+nostr = { version = "0.37", default-features = false, features = ["std"] }
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

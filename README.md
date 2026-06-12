@@ -5,6 +5,8 @@
 > Main development is on [decentralized git](https://git.iris.to/#/npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/nostr-social-graph): `htree://npub1xdhnr9mrv47kkrn95k6cwecearydeh8e895990n3acntwvmgk2dsdeeycm/nostr-social-graph`
 
 A repository for building and querying Nostr social graphs in both TypeScript and Rust.
+The Rust workspace also includes an optional social-memory crate for UUID-backed
+entity memory, Nostr attestations, counter-attestations, and trust scoring.
 
 ## Features
 
@@ -16,6 +18,7 @@ A repository for building and querying Nostr social graphs in both TypeScript an
 - Pre-crawled datasets
 - Server for maintaining and serving the up-to-date social graph, for quick initialization in web apps
 - Rust workspace with interchangeable in-memory and LMDB-backed backends
+- Optional social memory for entities, key/identifier attestations, and trust scoring
 
 ## Usage
 
@@ -86,5 +89,6 @@ The Rust workspace now has two interchangeable backends:
 
 - [`rust/crates/nostr-social-graph`](./rust/crates/nostr-social-graph): in-memory core graph and binary format
 - [`rust/crates/nostr-social-graph-heed`](./rust/crates/nostr-social-graph-heed): optional LMDB/`heed` backend for persistent large graphs
+- [`rust/crates/nostr-social-memory`](./rust/crates/nostr-social-memory): entity memory, attestations, counter-attestations, and trust scoring
 
 Both Rust backends implement the shared `SocialGraphBackend` runtime trait from the core crate.

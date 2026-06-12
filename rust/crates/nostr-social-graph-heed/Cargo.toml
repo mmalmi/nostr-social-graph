@@ -1,6 +1,6 @@
 [package]
 name = "nostr-social-graph-heed"
-version = "0.1.0"
+version = "0.1.1"
 description = "LMDB-backed Nostr social graph backend implementing the shared runtime trait"
 edition.workspace = true
 license.workspace = true
@@ -10,7 +10,7 @@ readme = "../../README.md"
 
 [dependencies]
 heed.workspace = true
-nostr-social-graph = { version = "0.1.0", path = "../nostr-social-graph" }
+nostr-social-graph = { version = "0.1.1", path = "../nostr-social-graph" }
 thiserror.workspace = true
 
 [dev-dependencies]
