@@ -4,7 +4,7 @@
 
 `draft` `optional`
 
-Tag-only events for signed facts about one subject.
+Tag-only subject-predicate-object events for signed facts about one subject.
 
 ## Kinds
 
@@ -132,6 +132,50 @@ Example:
     ["name", "Alice"],
     ["same_as", "github:alice"],
     ["controls", "4f355bdcb7c27f8f3e4f6c4ec8f996d45b33f2d9c93a9d5c7aa9a6e1a4e7f8aa"]
+  ]
+}
+```
+
+## Review Profile
+
+A review is a subject.
+
+Suggested predicates:
+
+- `type`: `review`
+- `reviewer`: reviewer identifier or UUID
+- `review_of`: reviewed identifier or UUID
+- `rating`: value and maximum
+- `body`: review text
+- `lang`: language code
+- `published_at`: unix timestamp
+- `source`: source name
+- `source_id`: source review id
+
+Crawlers SHOULD add `i` tags for the source review id, source URL, reviewer id,
+and reviewed object id.
+
+Example:
+
+```json
+{
+  "kind": 7368,
+  "content": "",
+  "tags": [
+    ["i", "8ef4ad1f-6d74-4f1a-8f4e-4d7a79a78645", "subject"],
+    ["i", "google:review:abc123"],
+    ["i", "https://maps.example/review/abc123"],
+    ["i", "google:user:alice"],
+    ["i", "google:place:xyz"],
+    ["type", "review"],
+    ["reviewer", "google:user:alice"],
+    ["review_of", "google:place:xyz"],
+    ["rating", "4", "5"],
+    ["body", "Great coffee, noisy on weekends."],
+    ["lang", "en"],
+    ["published_at", "1716508800"],
+    ["source", "google"],
+    ["source_id", "google:review:abc123"]
   ]
 }
 ```
