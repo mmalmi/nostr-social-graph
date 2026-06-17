@@ -69,6 +69,7 @@ Package-specific docs:
 
 - [`ts/README.md`](./ts/README.md)
 - [`rust/README.md`](./rust/README.md)
+- [`nips/fact-events.md`](./nips/fact-events.md): draft NIP for tag-native fact events and UUID entity profiles
 
 ## Demo & API
 

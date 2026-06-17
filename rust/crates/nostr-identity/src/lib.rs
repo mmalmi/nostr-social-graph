@@ -480,6 +480,9 @@ fn normalize_predicate(value: &str) -> Result<String> {
     if trimmed.is_empty() {
         bail!("identity fact predicate cannot be empty");
     }
+    if trimmed.chars().count() < 2 {
+        bail!("identity fact predicate must be at least two characters: {trimmed}");
+    }
     if trimmed.chars().any(char::is_whitespace) {
         bail!("identity fact predicate cannot contain whitespace: {trimmed}");
     }
@@ -596,6 +599,9 @@ fn parse_common_event(event: &Event, snapshot: bool) -> Result<ParsedIdentityEve
                 }
             }
             _ => {
+                if kind.chars().count() == 1 {
+                    continue;
+                }
                 if snapshot && kind == "expiration" {
                     continue;
                 }
@@ -772,6 +778,16 @@ mod tests {
         assert_eq!(parsed.subject, subject());
         assert_eq!(parsed.heads, vec![head]);
         assert!(parsed.facts.contains(&identity_fact("same_as", &[OTHER])));
+    }
+
+    #[test]
+    fn rejects_single_character_predicates() {
+        let keys = Keys::generate();
+        let error =
+            build_identity_op_event(&keys, subject(), [identity_fact("x", &["y"])], [], 789)
+                .unwrap_err()
+                .to_string();
+        assert!(error.contains("predicate must be at least two characters"));
     }
 
     #[test]

@@ -80,6 +80,12 @@ describe('identity events', () => {
     expect(snapshot.heads).toEqual([eventId('3')]);
   });
 
+  it('rejects single-character predicates', () => {
+    expect(() => buildIdentityOpDraft(subject, [identityFact('x', ['y'])])).toThrow(
+      /predicate must be at least two characters/,
+    );
+  });
+
   it('projects heads through optional prev links', () => {
     const first = parseIdentityOpEvent(
       eventFromDraft(buildIdentityOpDraft(subject, [identityFact('name', ['Alice'])]), eventId('5')),

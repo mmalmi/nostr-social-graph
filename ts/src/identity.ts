@@ -307,6 +307,7 @@ function parseCommonEvent(event: NostrEvent, snapshot: boolean): ParsedIdentityE
       else throw new Error('identity e tag is missing marker');
       continue;
     }
+    if ([...kind].length === 1) continue;
     if (snapshot && kind === 'expiration') continue;
     facts.push({
       predicate: normalizePredicate(kind),
@@ -381,6 +382,9 @@ function normalizeFacts(facts: IdentityFact[]): IdentityFact[] {
 function normalizePredicate(value: string): string {
   const trimmed = value.trim();
   if (!trimmed) throw new Error('identity fact predicate cannot be empty');
+  if ([...trimmed].length < 2) {
+    throw new Error(`identity fact predicate must be at least two characters: ${trimmed}`);
+  }
   if (/\s/.test(trimmed)) throw new Error(`identity fact predicate cannot contain whitespace: ${trimmed}`);
   return trimmed;
 }
