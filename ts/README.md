@@ -17,6 +17,7 @@ const restored = await SocialGraph.fromBinary(rootPubkey, binary);
 Notes:
 
 - `handleEvent` only uses kind `3` and `10000` events.
+- Identity helpers export tag-native UUID op/snapshot builders, parsers, and projection utilities.
 - Unknown authors are ignored by default. Pass `true` when ingesting from a cold start.
 - `await graph.setRoot(pubkey)` before reading follow distances for a new root.
 - If you connect a new root into preloaded graph data, run `recalculateFollowDistances()` before reading distances.

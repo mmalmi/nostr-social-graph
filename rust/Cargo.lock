@@ -1259,6 +1259,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "nostr-identity"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "nostr-sdk",
+ "uuid",
+]
+
+[[package]]
 name = "nostr-lmdb"
 version = "0.44.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

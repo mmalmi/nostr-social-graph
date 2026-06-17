@@ -1,7 +1,8 @@
 # Nostr Social Graph Rust
 
-This workspace contains the Rust implementation of the Nostr social graph and
-an optional social-memory crate for identity/entity continuity.
+This workspace contains the Rust implementation of the Nostr social graph,
+tag-native UUID identity events, and an optional social-memory crate for
+identity/entity continuity.
 
 Quickstart:
 
@@ -31,6 +32,7 @@ Crates:
 
 - [`crates/nostr-social-graph`](./crates/nostr-social-graph): in-memory core graph, binary format, and shared `SocialGraphBackend` trait
 - [`crates/nostr-social-graph-heed`](./crates/nostr-social-graph-heed): optional LMDB/`heed` backend implementing the same runtime trait
+- [`crates/nostr-identity`](./crates/nostr-identity): UUID subject ops, snapshots, event builders/parsers, and projection helpers
 - [`crates/nostr-social-memory`](./crates/nostr-social-memory): UUID-backed entities, Nostr attestations/counter-attestations, and trust scoring over a graph
 
 Common commands:
