@@ -13,6 +13,8 @@
       "import": "./dist/nostr-social-graph.es.js",
       "require": "./dist/nostr-social-graph.cjs"
     },
+    "./data/socialGraph.bin": "./data/socialGraph.bin",
+    "./data/profileData.json": "./data/profileData.json",
     "./package.json": "./package.json"
   },
   "scripts": {

@@ -1,7 +1,7 @@
 import type { NostrEvent } from './utils';
 
-export const IDENTITY_OP_KIND = 7368;
-export const IDENTITY_SNAPSHOT_KIND = 37368;
+export const FACT_OP_KIND = 7368;
+export const FACT_SNAPSHOT_KIND = 37368;
 
 const SUBJECT_MARKER = 'subject';
 const PREV_MARKER = 'prev';
@@ -13,32 +13,32 @@ const RESERVED_TAGS = new Set(['d', 'e', 'i', 'p']);
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const hex64Pattern = /^[0-9a-f]{64}$/;
 
-export type IdentityFact = {
+export type Fact = {
   predicate: string;
   values: string[];
 };
 
-export type IdentityOpLinks = {
+export type FactOpLinks = {
   prev?: string[];
   replace?: string[];
   dispute?: string[];
 };
 
-export type IdentityEventIndexes = {
+export type FactEventIndexes = {
   externalIdentifiers?: string[];
 };
 
-export type IdentityEventDraft = {
+export type FactEventDraft = {
   kind: number;
   content: string;
   tags: string[][];
 };
 
-export type IdentityOp = {
+export type FactOp = {
   opId: string;
   authorPubkey: string;
   subject: string;
-  facts: IdentityFact[];
+  facts: Fact[];
   pubkeys: Set<string>;
   externalIdentifiers: Set<string>;
   mentionedSubjects: Set<string>;
@@ -48,11 +48,11 @@ export type IdentityOp = {
   createdAt: number;
 };
 
-export type IdentitySnapshot = {
+export type FactSnapshot = {
   snapshotId: string;
   authorPubkey: string;
   subject: string;
-  facts: IdentityFact[];
+  facts: Fact[];
   pubkeys: Set<string>;
   externalIdentifiers: Set<string>;
   mentionedSubjects: Set<string>;
@@ -60,7 +60,27 @@ export type IdentitySnapshot = {
   createdAt: number;
 };
 
-export type IdentityProjection = {
+export type ParsedFactOpDraft = {
+  subject: string;
+  facts: Fact[];
+  pubkeys: Set<string>;
+  externalIdentifiers: Set<string>;
+  mentionedSubjects: Set<string>;
+  prev: string[];
+  replace: string[];
+  dispute: string[];
+};
+
+export type ParsedFactSnapshotDraft = {
+  subject: string;
+  facts: Fact[];
+  pubkeys: Set<string>;
+  externalIdentifiers: Set<string>;
+  mentionedSubjects: Set<string>;
+  heads: string[];
+};
+
+export type FactProjection = {
   subject: string;
   facts: Map<string, Set<string>>;
   pubkeys: Set<string>;
@@ -72,9 +92,9 @@ export type IdentityProjection = {
   heads: Set<string>;
 };
 
-type ParsedIdentityEvent = {
+type ParsedFactEvent = {
   subject: string;
-  facts: IdentityFact[];
+  facts: Fact[];
   pubkeys: Set<string>;
   externalIdentifiers: Set<string>;
   mentionedSubjects: Set<string>;
@@ -84,41 +104,41 @@ type ParsedIdentityEvent = {
   heads: string[];
 };
 
-export function identityFact(predicate: string, values: string[]): IdentityFact {
+export function fact(predicate: string, values: string[]): Fact {
   return { predicate, values };
 }
 
-export function buildIdentityOpDraft(
+export function buildFactOpDraft(
   subject: string,
-  facts: IdentityFact[],
-  links: IdentityOpLinks = {},
-  indexes: IdentityEventIndexes = {},
-): IdentityEventDraft {
+  facts: Fact[],
+  links: FactOpLinks = {},
+  indexes: FactEventIndexes = {},
+): FactEventDraft {
   return {
-    kind: IDENTITY_OP_KIND,
+    kind: FACT_OP_KIND,
     content: '',
-    tags: buildIdentityOpTags(subject, facts, links, indexes),
+    tags: buildFactOpTags(subject, facts, links, indexes),
   };
 }
 
-export function buildIdentitySnapshotDraft(
+export function buildFactSnapshotDraft(
   subject: string,
-  facts: IdentityFact[],
+  facts: Fact[],
   heads: string[],
-  indexes: IdentityEventIndexes = {},
-): IdentityEventDraft {
+  indexes: FactEventIndexes = {},
+): FactEventDraft {
   return {
-    kind: IDENTITY_SNAPSHOT_KIND,
+    kind: FACT_SNAPSHOT_KIND,
     content: '',
-    tags: buildIdentitySnapshotTags(subject, facts, heads, indexes),
+    tags: buildFactSnapshotTags(subject, facts, heads, indexes),
   };
 }
 
-export function buildIdentityOpTags(
+export function buildFactOpTags(
   subject: string,
-  facts: IdentityFact[],
-  links: IdentityOpLinks = {},
-  indexes: IdentityEventIndexes = {},
+  facts: Fact[],
+  links: FactOpLinks = {},
+  indexes: FactEventIndexes = {},
 ): string[][] {
   const normalizedSubject = normalizeUuid(subject);
   const normalizedFacts = normalizeFacts(facts);
@@ -133,11 +153,11 @@ export function buildIdentityOpTags(
   return tags;
 }
 
-export function buildIdentitySnapshotTags(
+export function buildFactSnapshotTags(
   subject: string,
-  facts: IdentityFact[],
+  facts: Fact[],
   heads: string[],
-  indexes: IdentityEventIndexes = {},
+  indexes: FactEventIndexes = {},
 ): string[][] {
   const normalizedSubject = normalizeUuid(subject);
   const normalizedFacts = normalizeFacts(facts);
@@ -153,11 +173,11 @@ export function buildIdentitySnapshotTags(
   return canonicalizeTags(tags);
 }
 
-export function parseIdentityOpEvent(event: NostrEvent): IdentityOp {
-  if (event.kind !== IDENTITY_OP_KIND) {
-    throw new Error(`wrong identity op kind: expected ${IDENTITY_OP_KIND}, got ${event.kind}`);
+export function parseFactOpEvent(event: NostrEvent): FactOp {
+  if (event.kind !== FACT_OP_KIND) {
+    throw new Error(`wrong fact op kind: expected ${FACT_OP_KIND}, got ${event.kind}`);
   }
-  const parsed = parseCommonEvent(event, false);
+  const parsed = parseCommonTags(event, false);
   return {
     opId: normalizeEventId(event.id, 'op id'),
     authorPubkey: normalizePubkey(event.pubkey),
@@ -173,19 +193,13 @@ export function parseIdentityOpEvent(event: NostrEvent): IdentityOp {
   };
 }
 
-export function parseIdentitySnapshotEvent(event: NostrEvent): IdentitySnapshot {
-  if (event.kind !== IDENTITY_SNAPSHOT_KIND) {
+export function parseFactSnapshotEvent(event: NostrEvent): FactSnapshot {
+  if (event.kind !== FACT_SNAPSHOT_KIND) {
     throw new Error(
-      `wrong identity snapshot kind: expected ${IDENTITY_SNAPSHOT_KIND}, got ${event.kind}`,
+      `wrong fact snapshot kind: expected ${FACT_SNAPSHOT_KIND}, got ${event.kind}`,
     );
   }
-  const parsed = parseCommonEvent(event, true);
-  const d = event.tags.find((tag) => tag[0] === 'd')?.[1];
-  if (!d) throw new Error('identity snapshot is missing d tag');
-  const dSubject = normalizeUuid(d);
-  if (dSubject !== parsed.subject) {
-    throw new Error(`identity snapshot d tag ${dSubject} does not match subject ${parsed.subject}`);
-  }
+  const parsed = parseCommonTags(event, true);
   return {
     snapshotId: normalizeEventId(event.id, 'snapshot id'),
     authorPubkey: normalizePubkey(event.pubkey),
@@ -199,7 +213,39 @@ export function parseIdentitySnapshotEvent(event: NostrEvent): IdentitySnapshot 
   };
 }
 
-export function projectIdentityOps(subject: string, ops: IdentityOp[]): IdentityProjection {
+export function parseFactOpDraft(draft: FactEventDraft): ParsedFactOpDraft {
+  if (draft.kind !== FACT_OP_KIND) {
+    throw new Error(`wrong fact op draft kind: expected ${FACT_OP_KIND}, got ${draft.kind}`);
+  }
+  const parsed = parseCommonTags(draft, false);
+  return {
+    subject: parsed.subject,
+    facts: parsed.facts,
+    pubkeys: parsed.pubkeys,
+    externalIdentifiers: parsed.externalIdentifiers,
+    mentionedSubjects: parsed.mentionedSubjects,
+    prev: parsed.prev,
+    replace: parsed.replace,
+    dispute: parsed.dispute,
+  };
+}
+
+export function parseFactSnapshotDraft(draft: FactEventDraft): ParsedFactSnapshotDraft {
+  if (draft.kind !== FACT_SNAPSHOT_KIND) {
+    throw new Error(`wrong fact snapshot draft kind: expected ${FACT_SNAPSHOT_KIND}, got ${draft.kind}`);
+  }
+  const parsed = parseCommonTags(draft, true);
+  return {
+    subject: parsed.subject,
+    facts: parsed.facts,
+    pubkeys: parsed.pubkeys,
+    externalIdentifiers: parsed.externalIdentifiers,
+    mentionedSubjects: parsed.mentionedSubjects,
+    heads: parsed.heads,
+  };
+}
+
+export function projectFactOps(subject: string, ops: FactOp[]): FactProjection {
   const normalizedSubject = normalizeUuid(subject);
   const matching = ops
     .filter((op) => op.subject === normalizedSubject)
@@ -248,17 +294,17 @@ export function projectIdentityOps(subject: string, ops: IdentityOp[]): Identity
   };
 }
 
-export function factsFromProjection(projection: IdentityProjection): IdentityFact[] {
+export function factsFromProjection(projection: FactProjection): Fact[] {
   return [...projection.facts.entries()].flatMap(([predicate, values]) =>
     [...values].map((value) => ({ predicate, values: JSON.parse(value) as string[] })),
   );
 }
 
-function parseCommonEvent(event: NostrEvent, snapshot: boolean): ParsedIdentityEvent {
-  if (event.content !== '') throw new Error('identity events must have empty content');
+function parseCommonTags(event: Pick<FactEventDraft, 'content' | 'tags'>, snapshot: boolean): ParsedFactEvent {
+  if (event.content !== '') throw new Error('fact events must have empty content');
 
   let subject: string | null = null;
-  const facts: IdentityFact[] = [];
+  const facts: Fact[] = [];
   const pubkeys = new Set<string>();
   const externalIdentifiers = new Set<string>();
   const mentionedSubjects = new Set<string>();
@@ -271,15 +317,15 @@ function parseCommonEvent(event: NostrEvent, snapshot: boolean): ParsedIdentityE
     const kind = tag[0];
     if (!kind) continue;
     if (kind === 'd') {
-      if (!snapshot) throw new Error('identity op event must not use d tag');
+      if (!snapshot) throw new Error('fact op event must not use d tag');
       continue;
     }
     if (kind === 'i') {
       const value = tag[1];
-      if (!value) throw new Error('identity i tag is missing value');
+      if (!value) throw new Error('fact i tag is missing value');
       if (tag[2] === SUBJECT_MARKER) {
         const uuid = normalizeUuid(value);
-        if (subject) throw new Error('identity event has multiple subject i tags');
+        if (subject) throw new Error('fact event has multiple subject i tags');
         subject = uuid;
       } else if (isUuid(value)) {
         mentionedSubjects.add(normalizeUuid(value));
@@ -290,21 +336,21 @@ function parseCommonEvent(event: NostrEvent, snapshot: boolean): ParsedIdentityE
     }
     if (kind === 'p') {
       const value = tag[1];
-      if (!value) throw new Error('identity p tag is missing pubkey');
+      if (!value) throw new Error('fact p tag is missing pubkey');
       pubkeys.add(normalizePubkey(value));
       continue;
     }
     if (kind === 'e') {
       const value = tag[1];
-      if (!value) throw new Error('identity e tag is missing event id');
+      if (!value) throw new Error('fact e tag is missing event id');
       const id = normalizeEventId(value, 'linked');
       const marker = tag[3];
       if (marker === PREV_MARKER) prev.push(id);
       else if (marker === REPLACE_MARKER) replace.push(id);
       else if (marker === DISPUTE_MARKER) dispute.push(id);
       else if (marker === HEAD_MARKER && snapshot) heads.push(id);
-      else if (marker) throw new Error(`unsupported identity e tag marker: ${marker}`);
-      else throw new Error('identity e tag is missing marker');
+      else if (marker) throw new Error(`unsupported fact e tag marker: ${marker}`);
+      else throw new Error('fact e tag is missing marker');
       continue;
     }
     if ([...kind].length === 1) continue;
@@ -315,7 +361,15 @@ function parseCommonEvent(event: NostrEvent, snapshot: boolean): ParsedIdentityE
     });
   }
 
-  if (!subject) throw new Error('identity event is missing subject i tag');
+  if (!subject) throw new Error('fact event is missing subject i tag');
+  if (snapshot) {
+    const d = event.tags.find((tag) => tag[0] === 'd')?.[1];
+    if (!d) throw new Error('fact snapshot is missing d tag');
+    const dSubject = normalizeUuid(d);
+    if (dSubject !== subject) {
+      throw new Error(`fact snapshot d tag ${dSubject} does not match subject ${subject}`);
+    }
+  }
   for (const fact of facts) {
     for (const value of fact.values) {
       if (isUuid(value)) {
@@ -339,7 +393,7 @@ function parseCommonEvent(event: NostrEvent, snapshot: boolean): ParsedIdentityE
   };
 }
 
-function normalizeLinks(links: IdentityOpLinks): Required<IdentityOpLinks> {
+function normalizeLinks(links: FactOpLinks): Required<FactOpLinks> {
   return {
     prev: normalizeEventIds(links.prev ?? [], PREV_MARKER),
     replace: normalizeEventIds(links.replace ?? [], REPLACE_MARKER),
@@ -353,16 +407,16 @@ function normalizeExternalIdentifiers(values: string[]): Set<string> {
 
 function normalizeExternalIdentifier(value: string): string {
   const trimmed = value.trim();
-  if (!trimmed) throw new Error('external identity identifier cannot be empty');
+  if (!trimmed) throw new Error('external identifier cannot be empty');
   if (isUuid(trimmed)) return normalizeUuid(trimmed);
-  if (/\s/.test(trimmed)) throw new Error(`external identity identifier cannot contain whitespace: ${trimmed}`);
+  if (/\s/.test(trimmed)) throw new Error(`external identifier cannot contain whitespace: ${trimmed}`);
   return trimmed.toLowerCase();
 }
 
-function normalizeFacts(facts: IdentityFact[]): IdentityFact[] {
+function normalizeFacts(facts: Fact[]): Fact[] {
   const normalized = facts.map((fact) => {
     const predicate = normalizePredicate(fact.predicate);
-    if (RESERVED_TAGS.has(predicate)) throw new Error(`${predicate} is a reserved identity event tag`);
+    if (RESERVED_TAGS.has(predicate)) throw new Error(`${predicate} is a reserved fact event tag`);
     return {
       predicate,
       values: fact.values.map(normalizeValue),
@@ -381,11 +435,11 @@ function normalizeFacts(facts: IdentityFact[]): IdentityFact[] {
 
 function normalizePredicate(value: string): string {
   const trimmed = value.trim();
-  if (!trimmed) throw new Error('identity fact predicate cannot be empty');
+  if (!trimmed) throw new Error('fact predicate cannot be empty');
   if ([...trimmed].length < 2) {
-    throw new Error(`identity fact predicate must be at least two characters: ${trimmed}`);
+    throw new Error(`fact predicate must be at least two characters: ${trimmed}`);
   }
-  if (/\s/.test(trimmed)) throw new Error(`identity fact predicate cannot contain whitespace: ${trimmed}`);
+  if (/\s/.test(trimmed)) throw new Error(`fact predicate cannot contain whitespace: ${trimmed}`);
   return trimmed;
 }
 
@@ -421,7 +475,7 @@ function normalizeEventIds(values: string[], role: string): string[] {
   return uniqueSorted(values.map((value) => normalizeEventId(value, role)));
 }
 
-function indexTags(subject: string, facts: IdentityFact[], externalIdentifiers: Set<string>): string[][] {
+function indexTags(subject: string, facts: Fact[], externalIdentifiers: Set<string>): string[][] {
   const uuids = new Set<string>();
   const pubkeys = new Set<string>();
   for (const fact of facts) {
@@ -443,7 +497,7 @@ function indexTags(subject: string, facts: IdentityFact[], externalIdentifiers: 
   ];
 }
 
-function factParts(fact: IdentityFact): string[] {
+function factParts(fact: Fact): string[] {
   return [fact.predicate, ...fact.values];
 }
 
@@ -461,7 +515,7 @@ function compareTags(left: string[], right: string[]): number {
   return 0;
 }
 
-function compareFacts(left: IdentityFact, right: IdentityFact): number {
+function compareFacts(left: Fact, right: Fact): number {
   return left.predicate.localeCompare(right.predicate) || compareTags([left.predicate, ...left.values], [right.predicate, ...right.values]);
 }
 
