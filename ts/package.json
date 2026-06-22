@@ -51,7 +51,7 @@
     "data/profileData.json"
   ],
   "devDependencies": {
-    "@hashtree/core": "^0.1.3",
+    "@hashtree/core": "link:../../hashtree/ts/packages/hashtree",
     "@noble/hashes": "^2.0.1",
     "@playwright/test": "^1.57.0",
     "@scure/base": "^2.0.0",

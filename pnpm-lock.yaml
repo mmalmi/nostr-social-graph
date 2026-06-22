@@ -4,6 +4,18 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+overrides:
+  '@hashtree/collection': link:../hashtree/ts/packages/hashtree-collection
+  '@hashtree/core': link:../hashtree/ts/packages/hashtree
+  '@hashtree/dexie': link:../hashtree/ts/packages/hashtree-dexie
+  '@hashtree/fips-transport': link:../hashtree/ts/packages/hashtree-fips-transport
+  '@hashtree/git': link:../hashtree/ts/packages/hashtree-git
+  '@hashtree/index': link:../hashtree/ts/packages/hashtree-index
+  '@hashtree/merge': link:../hashtree/ts/packages/hashtree-merge
+  '@hashtree/mesh': link:../hashtree/ts/packages/hashtree-mesh
+  '@hashtree/nostr': link:../hashtree/ts/packages/hashtree-nostr
+  '@hashtree/worker': link:../hashtree/ts/packages/hashtree-worker
+
 importers:
 
   .: {}
@@ -21,8 +33,8 @@ importers:
         version: 2.8.5
     devDependencies:
       '@hashtree/core':
-        specifier: ^0.1.3
-        version: 0.1.3
+        specifier: link:../../hashtree/ts/packages/hashtree
+        version: link:../../hashtree/ts/packages/hashtree
       '@noble/hashes':
         specifier: ^2.0.1
         version: 2.0.1
@@ -442,9 +454,6 @@ packages:
 
   '@gerrit0/mini-shiki@3.3.0':
     resolution: {integrity: sha512-frvArO0+s5Viq68uSod5SieLPVM2cLpXoQ1e07lURwgADXpL/MOypM7jPz9otks0g2DIe2YedDAeVrDyYJZRxA==}
-
-  '@hashtree/core@0.1.3':
-    resolution: {integrity: sha512-DGkEAv4k86DQ737EaUjnrxaG9gKTq/8pl7U7JWlMBpbNBBP+oXEHpfYdvcu0b9o1/IczXVU3pJ0G+J12tOF/Lg==}
 
   '@humanfs/core@0.19.1':
     resolution: {integrity: sha512-5DyQ4+1JEUzejeK1JGICcideyfUbGixgS9jNgex5nqkW+cY7WZhxBigmieN5Qnw9ZosSNVC9KQKyb+GUaGyKUA==}
@@ -2714,12 +2723,6 @@ snapshots:
       '@shikijs/themes': 3.3.0
       '@shikijs/types': 3.3.0
       '@shikijs/vscode-textmate': 10.0.2
-
-  '@hashtree/core@0.1.3':
-    dependencies:
-      '@msgpack/msgpack': 3.1.3
-      '@noble/hashes': 2.0.1
-      '@scure/base': 2.0.0
 
   '@humanfs/core@0.19.1': {}
 
