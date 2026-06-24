@@ -3,6 +3,10 @@ use nostr_sdk::{Event, EventBuilder, Keys, Kind, Tag, Timestamp};
 use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 
+mod identity_graph;
+
+pub use identity_graph::*;
+
 /// Regular, append-only fact op events.
 pub const FACT_OP_KIND: u16 = 7368;
 
