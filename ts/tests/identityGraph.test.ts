@@ -311,7 +311,7 @@ describe('identity graph', () => {
     });
   });
 
-  it('lets signer-only recovery add an app key without rotating secrets', () => {
+  it('lets recovery with denied decrypt permission add an app key without rotating secrets', () => {
     const recoveryPubkey = otherPubkey;
     const bootstrap = parseIdentityRosterOpEvent(eventFromDraft(buildIdentityRosterOpDraft({
       signerPubkey: adminPubkey,
