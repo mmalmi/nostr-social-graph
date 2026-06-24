@@ -41,7 +41,6 @@ export type PushProfileSearchIndexOptions = {
 const DEFAULT_BLOSSOM_SERVERS: BlossomServer[] = [
   { url: "https://upload.iris.to", read: false, write: true },
   { url: "https://cdn.iris.to", read: true, write: false },
-  { url: "https://hashtree.iris.to", read: true, write: false },
 ];
 
 function inferBlossomRole(url: string): Pick<BlossomServer, "read" | "write"> {

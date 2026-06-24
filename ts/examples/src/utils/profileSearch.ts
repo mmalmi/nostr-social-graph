@@ -29,7 +29,6 @@ for (const entry of profileData as string[][]) {
 const DEFAULT_BLOSSOM_SERVERS: BlossomServer[] = [
   { url: "https://upload.iris.to", read: false, write: true },
   { url: "https://cdn.iris.to", read: true, write: false },
-  { url: "https://hashtree.iris.to", read: true, write: false },
 ];
 
 function parseBlossomServers(raw?: string): BlossomServer[] {
