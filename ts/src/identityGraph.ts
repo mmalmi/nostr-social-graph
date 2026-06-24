@@ -271,10 +271,17 @@ export function applyIdentityRosterOp(
     && op.key.pubkey === signer
     && keyHasCapability(op.key, IDENTITY_CAPABILITY_ADMIN);
   const canAdmin = isBootstrap || identityKeyCanAdmin(projection, signer);
+  const canRecover = identityKeyCanRecover(projection, signer);
+  const canRecoverRoster = canRecover && (
+    (op.op === 'add_key' && !keyHasCapability(op.key, IDENTITY_CAPABILITY_ADMIN))
+    || op.op === 'tombstone_key'
+    || op.op === 'rotate_secret_epoch'
+    || op.op === 'repair_secret_wraps'
+  );
   const canRepairEpoch = op.op === 'repair_secret_wraps'
     && projection.secretEpochs[String(op.epoch)]?.signedByPubkey === signer;
 
-  if (!canAdmin && !canRepairEpoch) return false;
+  if (!canAdmin && !canRecoverRoster && !canRepairEpoch) return false;
 
   if (op.op === 'add_key') {
     if (projection.tombstones[op.key.pubkey]) return false;
@@ -353,6 +360,11 @@ export function projectIdentityKeyAcceptances(
 export function identityKeyCanAdmin(projection: IdentityRosterProjection, pubkey: string): boolean {
   const normalized = normalizeHexPubkey(pubkey);
   return Boolean(normalized && keyHasCapability(projection.activeKeys[normalized], IDENTITY_CAPABILITY_ADMIN));
+}
+
+export function identityKeyCanRecover(projection: IdentityRosterProjection, pubkey: string): boolean {
+  const normalized = normalizeHexPubkey(pubkey);
+  return Boolean(normalized && keyHasCapability(projection.activeKeys[normalized], IDENTITY_CAPABILITY_RECOVER));
 }
 
 export function identityKey(

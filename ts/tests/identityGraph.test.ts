@@ -4,8 +4,10 @@ import {
   IDENTITY_APP_KEY_CAPABILITIES,
   IDENTITY_CAPABILITY_ADMIN,
   IDENTITY_CAPABILITY_DECRYPT_SECRET_EPOCHS,
+  IDENTITY_CAPABILITY_RECOVER,
   IDENTITY_CAPABILITY_WRITE,
   IDENTITY_PURPOSE_APP,
+  IDENTITY_PURPOSE_RECOVERY,
   IDENTITY_PURPOSE_REMOTE_SIGNER,
   NOSTR_IDENTITY_KEY_ACCEPTANCE_TYPE,
   NOSTR_IDENTITY_ROSTER_TYPE,
@@ -179,6 +181,131 @@ describe('identity graph', () => {
         [adminPubkey]: 'wrap-admin',
         [appPubkey]: 'wrap-app',
       },
+    });
+  });
+
+  it('allows recovery keys to add and remove app keys and rewrap secrets', () => {
+    const recoveryPubkey = otherPubkey;
+    const bootstrap = parseIdentityRosterOpEvent(eventFromDraft(buildIdentityRosterOpDraft({
+      signerPubkey: adminPubkey,
+      identity,
+      createdAt: 10,
+      clientNonce: 'nonce-1',
+      op: {
+        op: 'add_key',
+        key: identityKey(adminPubkey, {
+          addedAt: 10,
+          capabilities: IDENTITY_ADMIN_CAPABILITIES,
+        }),
+      },
+    }), eventId('1'), adminPubkey));
+    const addRecovery = parseIdentityRosterOpEvent(eventFromDraft(buildIdentityRosterOpDraft({
+      signerPubkey: adminPubkey,
+      identity,
+      parents: [bootstrap.opId],
+      createdAt: 11,
+      clientNonce: 'nonce-2',
+      op: {
+        op: 'add_key',
+        key: identityKey(recoveryPubkey, {
+          addedAt: 11,
+          purposes: [IDENTITY_PURPOSE_RECOVERY],
+          capabilities: [IDENTITY_CAPABILITY_RECOVER],
+        }),
+      },
+    }), eventId('2'), adminPubkey));
+    const recoverAppKey = parseIdentityRosterOpEvent(eventFromDraft(buildIdentityRosterOpDraft({
+      signerPubkey: recoveryPubkey,
+      identity,
+      parents: [addRecovery.opId],
+      createdAt: 12,
+      clientNonce: 'nonce-3',
+      op: {
+        op: 'add_key',
+        key: identityKey(appPubkey, {
+          addedAt: 12,
+          capabilities: IDENTITY_APP_KEY_CAPABILITIES,
+        }),
+      },
+    }), eventId('3'), recoveryPubkey));
+    const recoverAdmin = parseIdentityRosterOpEvent(eventFromDraft(buildIdentityRosterOpDraft({
+      signerPubkey: recoveryPubkey,
+      identity,
+      parents: [recoverAppKey.opId],
+      createdAt: 13,
+      clientNonce: 'nonce-4',
+      op: {
+        op: 'add_key',
+        key: identityKey('d'.repeat(64), {
+          addedAt: 13,
+          capabilities: IDENTITY_ADMIN_CAPABILITIES,
+        }),
+      },
+    }), eventId('4'), recoveryPubkey));
+    const rotate = parseIdentityRosterOpEvent(eventFromDraft(buildIdentityRosterOpDraft({
+      signerPubkey: recoveryPubkey,
+      identity,
+      parents: [recoverAppKey.opId],
+      createdAt: 14,
+      clientNonce: 'nonce-5',
+      op: {
+        op: 'rotate_secret_epoch',
+        epoch: 2,
+        wrappedSecrets: {
+          [appPubkey]: 'wrap-app',
+        },
+      },
+    }), eventId('5'), recoveryPubkey));
+    const repair = parseIdentityRosterOpEvent(eventFromDraft(buildIdentityRosterOpDraft({
+      signerPubkey: recoveryPubkey,
+      identity,
+      parents: [rotate.opId],
+      createdAt: 15,
+      clientNonce: 'nonce-6',
+      op: {
+        op: 'repair_secret_wraps',
+        epoch: 2,
+        wrappedSecrets: {
+          [adminPubkey]: 'wrap-admin',
+        },
+      },
+    }), eventId('6'), recoveryPubkey));
+    const removeAppKey = parseIdentityRosterOpEvent(eventFromDraft(buildIdentityRosterOpDraft({
+      signerPubkey: recoveryPubkey,
+      identity,
+      parents: [repair.opId],
+      createdAt: 16,
+      clientNonce: 'nonce-7',
+      op: {
+        op: 'tombstone_key',
+        pubkey: appPubkey,
+        reason: 'recovered',
+      },
+    }), eventId('7'), recoveryPubkey));
+
+    const projection = projectIdentityRoster(identity, [
+      bootstrap,
+      addRecovery,
+      recoverAppKey,
+      recoverAdmin,
+      rotate,
+      repair,
+      removeAppKey,
+    ]);
+    expect(projection.acceptedOpIds).toEqual([
+      bootstrap.opId,
+      addRecovery.opId,
+      recoverAppKey.opId,
+      rotate.opId,
+      repair.opId,
+      removeAppKey.opId,
+    ]);
+    expect(projection.rejectedOpIds).toEqual([recoverAdmin.opId]);
+    expect(projection.activeKeys[appPubkey]).toBeUndefined();
+    expect(projection.tombstones[appPubkey]?.reason).toBe('recovered');
+    expect(projection.secretEpochs['2']?.wrappedSecrets).toEqual({
+      [adminPubkey]: 'wrap-admin',
+      [appPubkey]: 'wrap-app',
     });
   });
 

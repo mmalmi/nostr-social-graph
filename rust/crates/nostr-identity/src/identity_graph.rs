@@ -298,6 +298,15 @@ pub fn apply_identity_roster_op(
     let is_bootstrap = projection.accepted_op_ids.is_empty()
         && matches!(&signed.content.op, IdentityRosterOp::AddKey { key } if key.pubkey == *signer && key_has_capability(key, IDENTITY_CAPABILITY_ADMIN));
     let can_admin = is_bootstrap || identity_key_can_admin(projection, signer);
+    let can_recover = identity_key_can_recover(projection, signer);
+    let can_recover_roster = can_recover
+        && match &signed.content.op {
+            IdentityRosterOp::AddKey { key } => !key_has_capability(key, IDENTITY_CAPABILITY_ADMIN),
+            IdentityRosterOp::TombstoneKey { .. }
+            | IdentityRosterOp::RotateSecretEpoch { .. }
+            | IdentityRosterOp::RepairSecretWraps { .. } => true,
+            IdentityRosterOp::SetKeyCapabilities { .. } => false,
+        };
     let can_repair_epoch = match &signed.content.op {
         IdentityRosterOp::RepairSecretWraps { epoch, .. } => projection
             .secret_epochs
@@ -305,7 +314,7 @@ pub fn apply_identity_roster_op(
             .is_some_and(|secret_epoch| secret_epoch.signed_by_pubkey == *signer),
         _ => false,
     };
-    if !can_admin && !can_repair_epoch {
+    if !can_admin && !can_recover_roster && !can_repair_epoch {
         return false;
     }
 
@@ -426,6 +435,12 @@ pub fn identity_key_can_admin(projection: &IdentityRosterProjection, pubkey: &st
     normalize_hex_pubkey(pubkey)
         .and_then(|normalized| projection.active_keys.get(&normalized))
         .is_some_and(|key| key_has_capability(key, IDENTITY_CAPABILITY_ADMIN))
+}
+
+pub fn identity_key_can_recover(projection: &IdentityRosterProjection, pubkey: &str) -> bool {
+    normalize_hex_pubkey(pubkey)
+        .and_then(|normalized| projection.active_keys.get(&normalized))
+        .is_some_and(|key| key_has_capability(key, IDENTITY_CAPABILITY_RECOVER))
 }
 
 pub fn normalize_identity_capabilities(
@@ -1056,6 +1071,186 @@ mod tests {
                 (app_pubkey, "wrap-app".to_owned()),
             ])
         );
+    }
+
+    #[test]
+    fn allows_recovery_keys_to_add_and_remove_app_keys_and_rewrap_secrets() {
+        let admin_keys = Keys::generate();
+        let recovery_keys = Keys::generate();
+        let app_keys = Keys::generate();
+        let admin_pubkey = admin_keys.public_key().to_hex();
+        let recovery_pubkey = recovery_keys.public_key().to_hex();
+        let app_pubkey = app_keys.public_key().to_hex();
+        let bootstrap = parse_identity_roster_op_event(
+            &build_identity_roster_op_event(
+                &admin_keys,
+                subject(),
+                IdentityRosterOp::AddKey {
+                    key: identity_key(
+                        admin_pubkey.clone(),
+                        10,
+                        [IDENTITY_PURPOSE_APP.to_owned()],
+                        capabilities(IDENTITY_ADMIN_CAPABILITIES),
+                        None,
+                    )
+                    .unwrap(),
+                },
+                Vec::<String>::new(),
+                None,
+                "nonce-1",
+                10,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let add_recovery = parse_identity_roster_op_event(
+            &build_identity_roster_op_event(
+                &admin_keys,
+                subject(),
+                IdentityRosterOp::AddKey {
+                    key: identity_key(
+                        recovery_pubkey.clone(),
+                        11,
+                        [IDENTITY_PURPOSE_RECOVERY.to_owned()],
+                        [IDENTITY_CAPABILITY_RECOVER.to_owned()],
+                        Some("Recovery phrase".to_owned()),
+                    )
+                    .unwrap(),
+                },
+                [bootstrap.op_id.clone()],
+                None,
+                "nonce-2",
+                11,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let recover_app = parse_identity_roster_op_event(
+            &build_identity_roster_op_event(
+                &recovery_keys,
+                subject(),
+                IdentityRosterOp::AddKey {
+                    key: identity_key(
+                        app_pubkey.clone(),
+                        12,
+                        [IDENTITY_PURPOSE_APP.to_owned()],
+                        capabilities(IDENTITY_APP_KEY_CAPABILITIES),
+                        Some("Recovered app".to_owned()),
+                    )
+                    .unwrap(),
+                },
+                [add_recovery.op_id.clone()],
+                None,
+                "nonce-3",
+                12,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let recover_admin = parse_identity_roster_op_event(
+            &build_identity_roster_op_event(
+                &recovery_keys,
+                subject(),
+                IdentityRosterOp::AddKey {
+                    key: identity_key(
+                        Keys::generate().public_key().to_hex(),
+                        13,
+                        [IDENTITY_PURPOSE_APP.to_owned()],
+                        capabilities(IDENTITY_ADMIN_CAPABILITIES),
+                        Some("Recovered admin".to_owned()),
+                    )
+                    .unwrap(),
+                },
+                [recover_app.op_id.clone()],
+                None,
+                "nonce-4",
+                13,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let rotate = parse_identity_roster_op_event(
+            &build_identity_roster_op_event(
+                &recovery_keys,
+                subject(),
+                IdentityRosterOp::RotateSecretEpoch {
+                    epoch: 2,
+                    wrapped_secrets: BTreeMap::from([(app_pubkey.clone(), "wrap-app".to_owned())]),
+                },
+                [recover_app.op_id.clone()],
+                None,
+                "nonce-5",
+                14,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let repair = parse_identity_roster_op_event(
+            &build_identity_roster_op_event(
+                &recovery_keys,
+                subject(),
+                IdentityRosterOp::RepairSecretWraps {
+                    epoch: 2,
+                    wrapped_secrets: BTreeMap::from([(
+                        admin_pubkey.clone(),
+                        "wrap-admin".to_owned(),
+                    )]),
+                },
+                [rotate.op_id.clone()],
+                None,
+                "nonce-6",
+                15,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let remove_app_key = parse_identity_roster_op_event(
+            &build_identity_roster_op_event(
+                &recovery_keys,
+                subject(),
+                IdentityRosterOp::TombstoneKey {
+                    pubkey: app_pubkey.clone(),
+                    reason: Some("recovered".to_owned()),
+                },
+                [repair.op_id.clone()],
+                None,
+                "nonce-7",
+                16,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+
+        let projection = project_identity_roster(
+            subject(),
+            [
+                bootstrap,
+                add_recovery,
+                recover_app.clone(),
+                recover_admin.clone(),
+                rotate.clone(),
+                repair.clone(),
+                remove_app_key.clone(),
+            ],
+        );
+        assert_eq!(projection.accepted_op_ids.len(), 6);
+        assert_eq!(projection.rejected_op_ids, vec![recover_admin.op_id]);
+        assert!(!projection.active_keys.contains_key(&app_pubkey));
+        assert_eq!(
+            projection.tombstones[&app_pubkey].reason,
+            Some("recovered".to_owned())
+        );
+        assert_eq!(
+            projection.secret_epochs[&2].wrapped_secrets,
+            BTreeMap::from([
+                (admin_pubkey, "wrap-admin".to_owned()),
+                (app_pubkey, "wrap-app".to_owned()),
+            ])
+        );
+        assert!(projection.accepted_op_ids.contains(&recover_app.op_id));
+        assert!(projection.accepted_op_ids.contains(&rotate.op_id));
+        assert!(projection.accepted_op_ids.contains(&repair.op_id));
+        assert!(projection.accepted_op_ids.contains(&remove_app_key.op_id));
     }
 
     #[test]
