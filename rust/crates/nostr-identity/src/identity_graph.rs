@@ -299,12 +299,16 @@ pub fn apply_identity_roster_op(
         && matches!(&signed.content.op, IdentityRosterOp::AddKey { key } if key.pubkey == *signer && key_has_capability(key, IDENTITY_CAPABILITY_ADMIN));
     let can_admin = is_bootstrap || identity_key_can_admin(projection, signer);
     let can_recover = identity_key_can_recover(projection, signer);
+    let can_decrypt_secret_epochs = projection
+        .active_keys
+        .get(signer)
+        .is_some_and(|key| key_has_capability(key, IDENTITY_CAPABILITY_DECRYPT_SECRET_EPOCHS));
     let can_recover_roster = can_recover
         && match &signed.content.op {
-            IdentityRosterOp::AddKey { key } => !key_has_capability(key, IDENTITY_CAPABILITY_ADMIN),
+            IdentityRosterOp::AddKey { key } => key_has_purpose(key, IDENTITY_PURPOSE_APP),
             IdentityRosterOp::TombstoneKey { .. }
             | IdentityRosterOp::RotateSecretEpoch { .. }
-            | IdentityRosterOp::RepairSecretWraps { .. } => true,
+            | IdentityRosterOp::RepairSecretWraps { .. } => can_decrypt_secret_epochs,
             IdentityRosterOp::SetKeyCapabilities { .. } => false,
         };
     let can_repair_epoch = match &signed.content.op {
@@ -320,9 +324,7 @@ pub fn apply_identity_roster_op(
 
     match &signed.content.op {
         IdentityRosterOp::AddKey { key } => {
-            if projection.tombstones.contains_key(&key.pubkey) {
-                return false;
-            }
+            projection.tombstones.remove(&key.pubkey);
             projection
                 .active_keys
                 .entry(key.pubkey.clone())
@@ -721,6 +723,10 @@ fn key_has_capability(key: &IdentityKey, capability: &str) -> bool {
     key.capabilities.iter().any(|value| value == capability)
 }
 
+fn key_has_purpose(key: &IdentityKey, purpose: &str) -> bool {
+    key.purposes.iter().any(|value| value == purpose)
+}
+
 fn require_type(op: &FactOp, expected: &str) -> Result<()> {
     let value = required_scalar(op, "type")?;
     if value != expected {
@@ -1112,7 +1118,10 @@ mod tests {
                         recovery_pubkey.clone(),
                         11,
                         [IDENTITY_PURPOSE_RECOVERY.to_owned()],
-                        [IDENTITY_CAPABILITY_RECOVER.to_owned()],
+                        [
+                            IDENTITY_CAPABILITY_DECRYPT_SECRET_EPOCHS.to_owned(),
+                            IDENTITY_CAPABILITY_RECOVER.to_owned(),
+                        ],
                         Some("Recovery phrase".to_owned()),
                     )
                     .unwrap(),
@@ -1233,9 +1242,15 @@ mod tests {
                 remove_app_key.clone(),
             ],
         );
-        assert_eq!(projection.accepted_op_ids.len(), 6);
-        assert_eq!(projection.rejected_op_ids, vec![recover_admin.op_id]);
+        assert_eq!(projection.accepted_op_ids.len(), 7);
+        assert!(projection.rejected_op_ids.is_empty());
         assert!(!projection.active_keys.contains_key(&app_pubkey));
+        assert!(
+            projection
+                .active_keys
+                .values()
+                .any(|key| key_has_capability(key, IDENTITY_CAPABILITY_ADMIN))
+        );
         assert_eq!(
             projection.tombstones[&app_pubkey].reason,
             Some("recovered".to_owned())

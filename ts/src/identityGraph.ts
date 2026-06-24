@@ -272,11 +272,14 @@ export function applyIdentityRosterOp(
     && keyHasCapability(op.key, IDENTITY_CAPABILITY_ADMIN);
   const canAdmin = isBootstrap || identityKeyCanAdmin(projection, signer);
   const canRecover = identityKeyCanRecover(projection, signer);
+  const canDecryptSecretEpochs = keyHasCapability(
+    projection.activeKeys[signer],
+    IDENTITY_CAPABILITY_DECRYPT_SECRET_EPOCHS,
+  );
   const canRecoverRoster = canRecover && (
-    (op.op === 'add_key' && !keyHasCapability(op.key, IDENTITY_CAPABILITY_ADMIN))
+    (op.op === 'add_key' && keyHasPurpose(op.key, IDENTITY_PURPOSE_APP))
     || op.op === 'tombstone_key'
-    || op.op === 'rotate_secret_epoch'
-    || op.op === 'repair_secret_wraps'
+    || ((op.op === 'rotate_secret_epoch' || op.op === 'repair_secret_wraps') && canDecryptSecretEpochs)
   );
   const canRepairEpoch = op.op === 'repair_secret_wraps'
     && projection.secretEpochs[String(op.epoch)]?.signedByPubkey === signer;
@@ -284,7 +287,7 @@ export function applyIdentityRosterOp(
   if (!canAdmin && !canRecoverRoster && !canRepairEpoch) return false;
 
   if (op.op === 'add_key') {
-    if (projection.tombstones[op.key.pubkey]) return false;
+    delete projection.tombstones[op.key.pubkey];
     projection.activeKeys[op.key.pubkey] ??= {
       ...op.key,
       purposes: op.key.purposes ?? [],
@@ -619,6 +622,10 @@ function wrappedSecretsFromFacts(op: FactOp): Record<string, string> {
 
 function keyHasCapability(key: IdentityKey | undefined, capability: string): boolean {
   return Boolean(key?.capabilities?.includes(capability));
+}
+
+function keyHasPurpose(key: IdentityKey | undefined, purpose: string): boolean {
+  return Boolean(key?.purposes?.includes(purpose));
 }
 
 function requireType(op: FactOp, expected: string): void {

@@ -210,7 +210,7 @@ describe('identity graph', () => {
         key: identityKey(recoveryPubkey, {
           addedAt: 11,
           purposes: [IDENTITY_PURPOSE_RECOVERY],
-          capabilities: [IDENTITY_CAPABILITY_RECOVER],
+          capabilities: [IDENTITY_CAPABILITY_DECRYPT_SECRET_EPOCHS, IDENTITY_CAPABILITY_RECOVER],
         }),
       },
     }), eventId('2'), adminPubkey));
@@ -296,17 +296,82 @@ describe('identity graph', () => {
       bootstrap.opId,
       addRecovery.opId,
       recoverAppKey.opId,
+      recoverAdmin.opId,
       rotate.opId,
       repair.opId,
       removeAppKey.opId,
     ]);
-    expect(projection.rejectedOpIds).toEqual([recoverAdmin.opId]);
+    expect(projection.rejectedOpIds).toEqual([]);
     expect(projection.activeKeys[appPubkey]).toBeUndefined();
+    expect(projection.activeKeys['d'.repeat(64)]?.capabilities).toContain(IDENTITY_CAPABILITY_ADMIN);
     expect(projection.tombstones[appPubkey]?.reason).toBe('recovered');
     expect(projection.secretEpochs['2']?.wrappedSecrets).toEqual({
       [adminPubkey]: 'wrap-admin',
       [appPubkey]: 'wrap-app',
     });
+  });
+
+  it('lets signer-only recovery add an app key without rotating secrets', () => {
+    const recoveryPubkey = otherPubkey;
+    const bootstrap = parseIdentityRosterOpEvent(eventFromDraft(buildIdentityRosterOpDraft({
+      signerPubkey: adminPubkey,
+      identity,
+      createdAt: 10,
+      clientNonce: 'nonce-1',
+      op: {
+        op: 'add_key',
+        key: identityKey(adminPubkey, {
+          addedAt: 10,
+          capabilities: IDENTITY_ADMIN_CAPABILITIES,
+        }),
+      },
+    }), eventId('1'), adminPubkey));
+    const addRecovery = parseIdentityRosterOpEvent(eventFromDraft(buildIdentityRosterOpDraft({
+      signerPubkey: adminPubkey,
+      identity,
+      parents: [bootstrap.opId],
+      createdAt: 11,
+      clientNonce: 'nonce-2',
+      op: {
+        op: 'add_key',
+        key: identityKey(recoveryPubkey, {
+          addedAt: 11,
+          purposes: [IDENTITY_PURPOSE_REMOTE_SIGNER],
+          capabilities: [IDENTITY_CAPABILITY_RECOVER],
+        }),
+      },
+    }), eventId('2'), adminPubkey));
+    const recoverAppKey = parseIdentityRosterOpEvent(eventFromDraft(buildIdentityRosterOpDraft({
+      signerPubkey: recoveryPubkey,
+      identity,
+      parents: [addRecovery.opId],
+      createdAt: 12,
+      clientNonce: 'nonce-3',
+      op: {
+        op: 'add_key',
+        key: identityKey(appPubkey, {
+          addedAt: 12,
+          capabilities: IDENTITY_ADMIN_CAPABILITIES,
+        }),
+      },
+    }), eventId('3'), recoveryPubkey));
+    const rotate = parseIdentityRosterOpEvent(eventFromDraft(buildIdentityRosterOpDraft({
+      signerPubkey: recoveryPubkey,
+      identity,
+      parents: [recoverAppKey.opId],
+      createdAt: 13,
+      clientNonce: 'nonce-4',
+      op: {
+        op: 'rotate_secret_epoch',
+        epoch: 2,
+        wrappedSecrets: { [appPubkey]: 'wrap-app' },
+      },
+    }), eventId('4'), recoveryPubkey));
+
+    const projection = projectIdentityRoster(identity, [bootstrap, addRecovery, recoverAppKey, rotate]);
+    expect(projection.activeKeys[appPubkey]?.capabilities).toContain(IDENTITY_CAPABILITY_ADMIN);
+    expect(projection.secretEpochs['2']).toBeUndefined();
+    expect(projection.rejectedOpIds).toEqual([rotate.opId]);
   });
 
   it('builds key self-acceptance fact events', () => {
