@@ -1,12 +1,13 @@
 use crate::{Fact, FactOp, FactOpLinks, build_fact_op_event_with_links, fact, parse_fact_op_event};
 use anyhow::{Result, anyhow, bail};
-use nostr_sdk::{Event, Keys};
+use nostr_sdk::nips::nip44::{self, Version as Nip44Version};
+use nostr_sdk::{Event, EventBuilder, Keys, Kind, PublicKey, Tag};
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use uuid::Uuid;
 
 pub const NOSTR_IDENTITY_ROSTER_SCHEMA: u64 = 1;
 pub const NOSTR_IDENTITY_KEY_ACCEPTANCE_SCHEMA: u64 = 1;
-pub const NOSTR_IDENTITY_LINK_REQUEST_SCHEMA: u64 = 1;
 pub const NOSTR_IDENTITY_ROSTER_TYPE: &str = "nostr_identity_roster_op";
 pub const NOSTR_IDENTITY_KEY_ACCEPTANCE_TYPE: &str = "nostr_identity_key_acceptance";
 pub const NOSTR_IDENTITY_LINK_REQUEST_TYPE: &str = "nostr_identity_link_request";
@@ -99,11 +100,10 @@ pub struct IdentityKeyAcceptanceContent {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IdentityLinkRequestContent {
-    pub schema: u64,
     pub identity: Uuid,
     pub admin_pubkey: String,
-    pub key_pubkey: String,
-    pub link_secret_hash: String,
+    pub invite_pubkey: String,
+    pub joining_pubkey: String,
     pub client_nonce: String,
     pub requested_at: u64,
     pub label: Option<String>,
@@ -121,6 +121,12 @@ pub struct SignedIdentityLinkRequest {
     pub request_id: String,
     pub signer_pubkey: String,
     pub content: IdentityLinkRequestContent,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IdentityLinkRequestPublicHeader {
+    pub identity: Uuid,
+    pub invite_pubkeys: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -243,30 +249,196 @@ pub fn build_identity_link_request_event(
     keys: &Keys,
     identity: Uuid,
     admin_pubkey: impl Into<String>,
-    link_secret_hash: impl Into<String>,
+    invite_pubkey: impl Into<String>,
     client_nonce: impl Into<String>,
     label: Option<String>,
     requested_at: u64,
 ) -> Result<Event> {
+    let invite_pubkey = require_pubkey(&invite_pubkey.into(), "identity link request invite")?;
     let content = IdentityLinkRequestContent {
-        schema: NOSTR_IDENTITY_LINK_REQUEST_SCHEMA,
         identity,
         admin_pubkey: require_pubkey(&admin_pubkey.into(), "identity link request admin")?,
-        key_pubkey: keys.public_key().to_hex(),
-        link_secret_hash: require_non_empty(link_secret_hash.into(), "link_secret_hash")?,
+        invite_pubkey: invite_pubkey.clone(),
+        joining_pubkey: keys.public_key().to_hex(),
         client_nonce: require_non_empty(client_nonce.into(), "client_nonce")?,
         requested_at,
         label: label
             .map(|value| value.trim().to_owned())
             .filter(|value| !value.is_empty()),
     };
-    build_fact_op_event_with_links(
-        keys,
-        identity,
-        link_request_content_facts(&content),
-        FactOpLinks::default(),
-        requested_at,
-    )
+    let invite_pk = PublicKey::from_hex(&invite_pubkey)?;
+    let content_json = serde_json::to_string(&IdentityLinkRequestWireContent::from(&content))?;
+    let encrypted = nip44::encrypt(
+        keys.secret_key(),
+        &invite_pk,
+        content_json,
+        Nip44Version::V2,
+    )?;
+    let identity_tag = identity.to_string();
+    let event = EventBuilder::new(Kind::from(crate::FACT_OP_KIND), encrypted)
+        .tag(Tag::parse(["i", identity_tag.as_str(), "subject"])?)
+        .tag(Tag::parse(["type", NOSTR_IDENTITY_LINK_REQUEST_TYPE])?)
+        .tag(Tag::parse(["p", invite_pubkey.as_str()])?)
+        .custom_created_at(nostr_sdk::Timestamp::from(requested_at))
+        .sign_with_keys(keys)?;
+    Ok(event)
+}
+
+pub fn parse_identity_link_request_event(
+    event: &Event,
+    invite_keys: &Keys,
+) -> Result<SignedIdentityLinkRequest> {
+    let header = parse_identity_link_request_public_header(event)?;
+    let invite_pubkey = invite_keys.public_key().to_hex();
+    let content = encrypted_link_request_content_from_event(event, invite_keys)?;
+    if content.identity != header.identity {
+        bail!("identity link request subject mismatch");
+    }
+    if content.joining_pubkey != event.pubkey.to_hex() {
+        bail!("identity link request signer mismatch");
+    }
+    if content.invite_pubkey != invite_pubkey || !header.invite_pubkeys.contains(&invite_pubkey) {
+        bail!("identity link request invite pubkey mismatch");
+    }
+    if content.requested_at != event.created_at.as_secs() {
+        bail!("identity link request requested_at mismatch");
+    }
+    Ok(SignedIdentityLinkRequest {
+        request_id: event.id.to_hex(),
+        signer_pubkey: event.pubkey.to_hex(),
+        content,
+    })
+}
+
+pub fn parse_identity_link_request_event_for_invite_pubkey(
+    event: &Event,
+    invite_keys: &Keys,
+    expected_invite_pubkey: impl Into<String>,
+) -> Result<SignedIdentityLinkRequest> {
+    let expected_invite_pubkey =
+        require_pubkey(&expected_invite_pubkey.into(), "identity link request invite")?;
+    if invite_keys.public_key().to_hex() != expected_invite_pubkey {
+        bail!("identity link request invite key mismatch");
+    }
+    parse_identity_link_request_event(event, invite_keys)
+}
+
+fn encrypted_link_request_content_from_event(
+    event: &Event,
+    invite_keys: &Keys,
+) -> Result<IdentityLinkRequestContent> {
+    let plaintext = nip44::decrypt(invite_keys.secret_key(), &event.pubkey, &event.content)?;
+    let wire: IdentityLinkRequestWireContent = serde_json::from_str(&plaintext)?;
+    link_request_content_from_wire(wire)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct IdentityLinkRequestWireContent {
+    identity: String,
+    admin_pubkey: String,
+    invite_pubkey: String,
+    joining_pubkey: String,
+    client_nonce: String,
+    requested_at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    label: Option<String>,
+}
+
+impl From<&IdentityLinkRequestContent> for IdentityLinkRequestWireContent {
+    fn from(content: &IdentityLinkRequestContent) -> Self {
+        Self {
+            identity: content.identity.to_string(),
+            admin_pubkey: content.admin_pubkey.clone(),
+            invite_pubkey: content.invite_pubkey.clone(),
+            joining_pubkey: content.joining_pubkey.clone(),
+            client_nonce: content.client_nonce.clone(),
+            requested_at: content.requested_at,
+            label: content.label.clone(),
+        }
+    }
+}
+
+fn link_request_content_from_wire(
+    wire: IdentityLinkRequestWireContent,
+) -> Result<IdentityLinkRequestContent> {
+    Ok(IdentityLinkRequestContent {
+        identity: parse_identity_id(&wire.identity)?,
+        admin_pubkey: require_pubkey(&wire.admin_pubkey, "identity link request admin")?,
+        invite_pubkey: require_pubkey(&wire.invite_pubkey, "identity link request invite")?,
+        joining_pubkey: require_pubkey(&wire.joining_pubkey, "identity link request signer")?,
+        client_nonce: require_non_empty(wire.client_nonce, "client_nonce")?,
+        requested_at: wire.requested_at,
+        label: wire
+            .label
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty()),
+    })
+}
+
+pub fn parse_identity_link_request_public_header(
+    event: &Event,
+) -> Result<IdentityLinkRequestPublicHeader> {
+    if event.kind != Kind::from(crate::FACT_OP_KIND) {
+        bail!(
+            "wrong fact op kind: expected {}, got {:?}",
+            crate::FACT_OP_KIND,
+            event.kind
+        );
+    }
+    event
+        .verify()
+        .map_err(|error| anyhow!("fact event signature failed: {error}"))?;
+
+    let mut identity = None;
+    let mut has_link_request_type = false;
+    let mut invite_pubkeys = Vec::new();
+    for tag in event.tags.iter() {
+        let parts = tag.as_slice();
+        let Some(kind) = parts.first().map(String::as_str) else {
+            continue;
+        };
+        match kind {
+            "i" if parts.get(2).is_some_and(|marker| marker == "subject") => {
+                let Some(value) = parts.get(1) else {
+                    bail!("identity link request i tag is missing value");
+                };
+                let parsed = parse_identity_id(value)?;
+                if identity.replace(parsed).is_some() {
+                    bail!("identity link request has multiple subject i tags");
+                }
+            }
+            "type" if parts
+                .get(1)
+                .is_some_and(|value| value == NOSTR_IDENTITY_LINK_REQUEST_TYPE) =>
+            {
+                has_link_request_type = true;
+            }
+            "p" => {
+                let Some(value) = parts.get(1) else {
+                    bail!("identity link request p tag is missing pubkey");
+                };
+                let pubkey = require_pubkey(value, "identity link request invite")?;
+                if !invite_pubkeys.contains(&pubkey) {
+                    invite_pubkeys.push(pubkey);
+                }
+            }
+            _ => {}
+        }
+    }
+    if !has_link_request_type {
+        bail!("identity link request type tag missing");
+    }
+    if invite_pubkeys.is_empty() {
+        bail!("identity link request invite p tag missing");
+    }
+    Ok(IdentityLinkRequestPublicHeader {
+        identity: identity.ok_or_else(|| anyhow!("identity link request subject missing"))?,
+        invite_pubkeys,
+    })
+}
+
+pub fn identity_link_request_invite_pubkeys(event: &Event) -> Result<Vec<String>> {
+    Ok(parse_identity_link_request_public_header(event)?.invite_pubkeys)
 }
 
 pub fn parse_identity_roster_op_event(event: &Event) -> Result<SignedIdentityRosterOp> {
@@ -296,22 +468,6 @@ pub fn parse_identity_key_acceptance_event(event: &Event) -> Result<SignedIdenti
     }
     Ok(SignedIdentityKeyAcceptance {
         acceptance_id: event.id.to_hex(),
-        signer_pubkey: event.pubkey.to_hex(),
-        content,
-    })
-}
-
-pub fn parse_identity_link_request_event(event: &Event) -> Result<SignedIdentityLinkRequest> {
-    let op = parse_fact_op_event(event)?;
-    let content = link_request_content_from_facts(&op)?;
-    if content.key_pubkey != event.pubkey.to_hex() {
-        bail!("identity link request signer mismatch");
-    }
-    if content.requested_at != event.created_at.as_secs() {
-        bail!("identity link request requested_at mismatch");
-    }
-    Ok(SignedIdentityLinkRequest {
-        request_id: event.id.to_hex(),
         signer_pubkey: event.pubkey.to_hex(),
         content,
     })
@@ -625,22 +781,6 @@ fn key_acceptance_content_facts(content: &IdentityKeyAcceptanceContent) -> Vec<F
     facts
 }
 
-fn link_request_content_facts(content: &IdentityLinkRequestContent) -> Vec<Fact> {
-    let mut facts = vec![
-        fact("type", &[NOSTR_IDENTITY_LINK_REQUEST_TYPE]),
-        fact("schema", &[&content.schema.to_string()]),
-        fact("admin_pubkey", &[&content.admin_pubkey]),
-        fact("key_pubkey", &[&content.key_pubkey]),
-        fact("link_secret_hash", &[&content.link_secret_hash]),
-        fact("client_nonce", &[&content.client_nonce]),
-        fact("requested_at", &[&content.requested_at.to_string()]),
-    ];
-    if let Some(label) = &content.label {
-        facts.push(fact("key_label", &[label]));
-    }
-    facts
-}
-
 fn roster_op_content_from_facts(op: &FactOp) -> Result<IdentityRosterOpContent> {
     require_type(op, NOSTR_IDENTITY_ROSTER_TYPE)?;
     let schema = required_integer(op, "schema")?;
@@ -714,24 +854,6 @@ fn key_acceptance_content_from_facts(op: &FactOp) -> Result<IdentityKeyAcceptanc
         bail!("identity key acceptance purposes must not be empty");
     }
     Ok(content)
-}
-
-fn link_request_content_from_facts(op: &FactOp) -> Result<IdentityLinkRequestContent> {
-    require_type(op, NOSTR_IDENTITY_LINK_REQUEST_TYPE)?;
-    let schema = required_integer(op, "schema")?;
-    if schema != NOSTR_IDENTITY_LINK_REQUEST_SCHEMA {
-        bail!("unsupported Nostr identity link request schema {schema}");
-    }
-    Ok(IdentityLinkRequestContent {
-        schema,
-        identity: op.subject,
-        admin_pubkey: required_pubkey(op, "admin_pubkey")?,
-        key_pubkey: required_pubkey(op, "key_pubkey")?,
-        link_secret_hash: required_non_empty_scalar(op, "link_secret_hash")?,
-        client_nonce: required_non_empty_scalar(op, "client_nonce")?,
-        requested_at: required_integer(op, "requested_at")?,
-        label: optional_scalar(op, "key_label")?,
-    })
 }
 
 fn normalize_identity_roster_op(op: IdentityRosterOp) -> Result<IdentityRosterOp> {
@@ -975,7 +1097,7 @@ fn is_lower_hex(value: &str, len: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nostr_sdk::JsonUtil;
+    use nostr_sdk::{JsonUtil, SecretKey};
 
     const SUBJECT: &str = "6b7f5df4-1d2d-43a7-9b87-873e41a2d99a";
 
@@ -985,6 +1107,10 @@ mod tests {
 
     fn capabilities(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| (*value).to_owned()).collect()
+    }
+
+    fn fixed_keys(byte: u8) -> Keys {
+        Keys::new(SecretKey::from_slice(&[byte; 32]).unwrap())
     }
 
     #[test]
@@ -1030,16 +1156,18 @@ mod tests {
     }
 
     #[test]
-    fn builds_and_parses_identity_link_request_fact_events() {
+    fn builds_and_parses_encrypted_identity_link_request_events() {
         let admin_keys = Keys::generate();
-        let device_keys = Keys::generate();
+        let device_keys = fixed_keys(1);
+        let invite_keys = fixed_keys(2);
         let admin_pubkey = admin_keys.public_key().to_hex();
         let device_pubkey = device_keys.public_key().to_hex();
+        let invite_pubkey = invite_keys.public_key().to_hex();
         let event = build_identity_link_request_event(
             &device_keys,
             subject(),
             admin_pubkey.clone(),
-            "hash-from-invite",
+            invite_pubkey.clone(),
             "nonce-link",
             Some("Phone".to_owned()),
             21,
@@ -1047,49 +1175,47 @@ mod tests {
         .unwrap();
 
         assert_eq!(event.kind.as_u16(), crate::FACT_OP_KIND);
-        assert_eq!(event.content, "");
+        assert!(!event.content.is_empty());
         let event_json = event.as_json();
         assert!(event_json.contains(NOSTR_IDENTITY_LINK_REQUEST_TYPE));
-        assert!(event_json.contains("hash-from-invite"));
-        assert!(!event_json.contains("join-secret"));
+        assert!(event_json.contains(&invite_pubkey));
+        assert!(!event_json.contains(&admin_pubkey));
+        assert!(!event_json.contains("hash-from-invite"));
+        assert!(!event.content.contains(&admin_pubkey));
+        assert!(!event.content.contains(&device_pubkey));
 
-        let parsed = parse_identity_link_request_event(&event).unwrap();
+        let parsed = parse_identity_link_request_event(&event, &invite_keys).unwrap();
         assert_eq!(parsed.signer_pubkey, device_pubkey);
         assert_eq!(parsed.content.identity, subject());
         assert_eq!(parsed.content.admin_pubkey, admin_pubkey);
-        assert_eq!(parsed.content.key_pubkey, device_pubkey);
-        assert_eq!(parsed.content.link_secret_hash, "hash-from-invite");
+        assert_eq!(parsed.content.invite_pubkey, invite_pubkey);
+        assert_eq!(parsed.content.joining_pubkey, device_pubkey);
         assert_eq!(parsed.content.client_nonce, "nonce-link");
         assert_eq!(parsed.content.requested_at, 21);
         assert_eq!(parsed.content.label, Some("Phone".to_owned()));
+        assert!(parse_identity_link_request_event(&event, &fixed_keys(3)).is_err());
     }
 
     #[test]
     fn parses_shared_ts_rust_identity_link_request_fixture() {
+        let device_keys = fixed_keys(1);
+        let invite_keys = fixed_keys(2);
+        let device_pubkey = device_keys.public_key().to_hex();
+        let invite_pubkey = invite_keys.public_key().to_hex();
         let event = Event::from_json(include_str!(
             "../../../../testdata/identity-link-request.json"
         ))
         .unwrap();
-        let parsed = parse_identity_link_request_event(&event).unwrap();
+        let parsed = parse_identity_link_request_event(&event, &invite_keys).unwrap();
 
-        assert_eq!(
-            parsed.request_id,
-            "7d8a323b036150abc71a886f71898107306632b126e8eb4e9ac3545790dd22fc"
-        );
-        assert_eq!(
-            parsed.signer_pubkey,
-            "84bf7562262bbd6940085748f3be6afa52ae317155181ece31b66351ccffa4b0"
-        );
+        assert_eq!(parsed.signer_pubkey, device_pubkey);
         assert_eq!(parsed.content.identity, subject());
         assert_eq!(
             parsed.content.admin_pubkey,
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         );
-        assert_eq!(
-            parsed.content.key_pubkey,
-            "84bf7562262bbd6940085748f3be6afa52ae317155181ece31b66351ccffa4b0"
-        );
-        assert_eq!(parsed.content.link_secret_hash, "fixture-secret-hash");
+        assert_eq!(parsed.content.invite_pubkey, invite_pubkey);
+        assert_eq!(parsed.content.joining_pubkey, device_pubkey);
         assert_eq!(parsed.content.client_nonce, "fixture-link-request");
         assert_eq!(parsed.content.requested_at, 1_720_000_021);
         assert_eq!(parsed.content.label, Some("Fixture Phone".to_owned()));

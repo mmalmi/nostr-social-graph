@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { getPublicKey } from 'nostr-tools';
 import { describe, expect, it } from 'vitest';
 import {
   IDENTITY_ADMIN_CAPABILITIES,
@@ -14,7 +15,7 @@ import {
   NOSTR_IDENTITY_LINK_REQUEST_TYPE,
   NOSTR_IDENTITY_ROSTER_TYPE,
   buildIdentityKeyAcceptanceDraft,
-  buildIdentityLinkRequestDraft,
+  buildIdentityLinkRequestEvent,
   buildIdentityRosterOpDraft,
   identityKey,
   parseIdentityKeyAcceptanceEvent,
@@ -30,6 +31,10 @@ const identity = '6b7f5df4-1d2d-43a7-9b87-873e41a2d99a';
 const adminPubkey = 'a'.repeat(64);
 const appPubkey = 'b'.repeat(64);
 const otherPubkey = 'c'.repeat(64);
+const linkRequestDeviceSecret = new Uint8Array(32).fill(1);
+const linkRequestInviteSecret = new Uint8Array(32).fill(2);
+const linkRequestDevicePubkey = getPublicKey(linkRequestDeviceSecret);
+const linkRequestInvitePubkey = getPublicKey(linkRequestInviteSecret);
 const fixtureLinkRequest = JSON.parse(
   readFileSync(new URL('../../testdata/identity-link-request.json', import.meta.url), 'utf8'),
 ) as NostrEvent;
@@ -407,35 +412,35 @@ describe('identity graph', () => {
     ]);
   });
 
-  it('builds device link requests as neutral identity fact events', () => {
-    const draft = buildIdentityLinkRequestDraft({
-      signerPubkey: appPubkey,
+  it('builds encrypted device link requests as neutral identity events', () => {
+    const event = buildIdentityLinkRequestEvent({
+      signerSecretKey: linkRequestDeviceSecret,
       identity,
       adminPubkey,
-      linkSecretHash: 'hash-from-invite',
+      invitePubkey: linkRequestInvitePubkey,
       requestedAt: 21,
       clientNonce: 'nonce-link',
       label: 'Phone',
     });
 
-    expect(draft.kind).toBe(7368);
-    expect(draft.content).toBe('');
-    expect(draft.created_at).toBe(21);
-    expect(draft.tags).toContainEqual(['type', NOSTR_IDENTITY_LINK_REQUEST_TYPE]);
-    expect(draft.tags).toContainEqual(['admin_pubkey', adminPubkey]);
-    expect(draft.tags).toContainEqual(['key_pubkey', appPubkey]);
-    expect(draft.tags).toContainEqual(['link_secret_hash', 'hash-from-invite']);
-    expect(draft.tags).toContainEqual(['key_label', 'Phone']);
-    expect(draft.tags).toContainEqual(['p', adminPubkey]);
-    expect(draft.tags).toContainEqual(['p', appPubkey]);
+    expect(event.kind).toBe(7368);
+    expect(event.content).not.toBe('');
+    expect(event.created_at).toBe(21);
+    expect(event.pubkey).toBe(linkRequestDevicePubkey);
+    expect(event.tags).toContainEqual(['type', NOSTR_IDENTITY_LINK_REQUEST_TYPE]);
+    expect(event.tags).toContainEqual(['i', identity, 'subject']);
+    expect(event.tags).toContainEqual(['p', linkRequestInvitePubkey]);
+    expect(event.tags.some((tag) => tag[0] === 'admin_pubkey')).toBe(false);
+    expect(event.tags.some((tag) => tag[0] === 'key_pubkey')).toBe(false);
+    expect(event.tags.some((tag) => tag[0] === 'joining_pubkey')).toBe(false);
+    expect(event.tags.some((tag) => tag[0] === 'link_secret_hash')).toBe(false);
 
-    const signed = parseIdentityLinkRequestEvent(eventFromDraft(draft, eventId('6'), appPubkey));
+    const signed = parseIdentityLinkRequestEvent(event, { inviteSecretKey: linkRequestInviteSecret });
     expect(signed.content).toEqual({
-      schema: 1,
       identity,
       adminPubkey,
-      keyPubkey: appPubkey,
-      linkSecretHash: 'hash-from-invite',
+      invitePubkey: linkRequestInvitePubkey,
+      joiningPubkey: linkRequestDevicePubkey,
       clientNonce: 'nonce-link',
       requestedAt: 21,
       label: 'Phone',
@@ -443,16 +448,16 @@ describe('identity graph', () => {
   });
 
   it('parses the shared TS/Rust identity link-request fixture', () => {
-    const signed = parseIdentityLinkRequestEvent(fixtureLinkRequest);
+    const signed = parseIdentityLinkRequestEvent(fixtureLinkRequest, {
+      inviteSecretKey: linkRequestInviteSecret,
+    });
 
-    expect(signed.requestId).toBe('7d8a323b036150abc71a886f71898107306632b126e8eb4e9ac3545790dd22fc');
-    expect(signed.signerPubkey).toBe('84bf7562262bbd6940085748f3be6afa52ae317155181ece31b66351ccffa4b0');
+    expect(signed.signerPubkey).toBe(linkRequestDevicePubkey);
     expect(signed.content).toEqual({
-      schema: 1,
       identity,
       adminPubkey,
-      keyPubkey: '84bf7562262bbd6940085748f3be6afa52ae317155181ece31b66351ccffa4b0',
-      linkSecretHash: 'fixture-secret-hash',
+      invitePubkey: linkRequestInvitePubkey,
+      joiningPubkey: linkRequestDevicePubkey,
       clientNonce: 'fixture-link-request',
       requestedAt: 1720000021,
       label: 'Fixture Phone',
@@ -485,16 +490,21 @@ describe('identity graph', () => {
       /actor signer mismatch/,
     );
 
-    const linkDraft = buildIdentityLinkRequestDraft({
-      signerPubkey: appPubkey,
+    const linkEvent = buildIdentityLinkRequestEvent({
+      signerSecretKey: linkRequestDeviceSecret,
       identity,
       adminPubkey,
-      linkSecretHash: 'hash-from-invite',
+      invitePubkey: linkRequestInvitePubkey,
       requestedAt: 21,
       clientNonce: 'nonce-link',
     });
-    expect(() => parseIdentityLinkRequestEvent(eventFromDraft(linkDraft, eventId('6'), adminPubkey))).toThrow(
-      /link request signer mismatch/,
-    );
+    expect(() => parseIdentityLinkRequestEvent({
+      ...linkEvent,
+      pubkey: adminPubkey,
+    }, { inviteSecretKey: linkRequestInviteSecret })).toThrow();
+    expect(() => parseIdentityLinkRequestEvent(
+      linkEvent,
+      { inviteSecretKey: new Uint8Array(32).fill(3) },
+    )).toThrow();
   });
 });

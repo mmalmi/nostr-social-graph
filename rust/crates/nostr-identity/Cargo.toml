@@ -10,5 +10,7 @@ readme = "../../README.md"
 
 [dependencies]
 anyhow.workspace = true
-nostr-sdk.workspace = true
+nostr-sdk = { workspace = true, features = ["nip44"] }
+serde.workspace = true
+serde_json.workspace = true
 uuid.workspace = true

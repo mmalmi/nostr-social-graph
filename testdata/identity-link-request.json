@@ -1,6 +1,6 @@
 {
   "kind": 7368,
-  "content": "",
+  "content": "AixxI1Rmroot/Ij22DDXJc8BhMCOSYlUlNuLcu4UiG0C6X5nhId9vHulxbCo+j0c928t3rQsuBCsaNQOfQ013/erMAMND85trq4iDH9ZKQe5robu57dhXm1QSX0trVsLtnQo+O3C17PW0CO8sEA/FOVSWQR/63WbuWm8pCYXAd2nMHTpt/Ri6eYb9B+ADrb0GTBBXsiu+rkFLr7GX9Js51FPLjZaZOoyJ+A10AD6+6LmhmtKeTSSKKuW2uAzzPgLWAHGIEu9h9QbxjZl18N1ADmvLABqOaT7ji0731GbiGvAw7m/JsFMzx3FNLO+k0POpX+FG391tgyUmGn7UfKsEIqgBkta38Xto8Xxkq6eLLUXOLfW5iqnj4lYfwm1ObT4ORQGq9KqQNfCaXs6eVexjeF93VBUXNS5c3LvXcxt/jlMc0EUyPcM0DTGomWnOYreDB3Cwt91cDSwYM1zch0RW1eWWLnGSUD6pwe8mNnoSCsItqAFp+f6QStsCM97JXf/JthDpsBdqxfhjYaAH+IcdCTOrqaAQOHT2qDkBQbKBlokJsZRJvWHylU8Asrm/91KtBRpCEF8FXj/KHC1+cpnODqDfGrqlIhDxbYcmPMOQY82Inru1NxuF9+FyPPtqUMuPxGoRMQmpI73M5um8VR9IlL95SfjRd5NfAL2CRaJzRzqaoc=",
   "created_at": 1720000021,
   "tags": [
     [
@@ -9,47 +9,15 @@
       "subject"
     ],
     [
-      "p",
-      "84bf7562262bbd6940085748f3be6afa52ae317155181ece31b66351ccffa4b0"
-    ],
-    [
-      "p",
-      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-    ],
-    [
-      "admin_pubkey",
-      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-    ],
-    [
-      "client_nonce",
-      "fixture-link-request"
-    ],
-    [
-      "key_label",
-      "Fixture Phone"
-    ],
-    [
-      "key_pubkey",
-      "84bf7562262bbd6940085748f3be6afa52ae317155181ece31b66351ccffa4b0"
-    ],
-    [
-      "link_secret_hash",
-      "fixture-secret-hash"
-    ],
-    [
-      "requested_at",
-      "1720000021"
-    ],
-    [
-      "schema",
-      "1"
-    ],
-    [
       "type",
       "nostr_identity_link_request"
+    ],
+    [
+      "p",
+      "4d4b6cd1361032ca9bd2aeb9d900aa4d45d9ead80ac9423374c451a7254d0766"
     ]
   ],
-  "pubkey": "84bf7562262bbd6940085748f3be6afa52ae317155181ece31b66351ccffa4b0",
-  "id": "7d8a323b036150abc71a886f71898107306632b126e8eb4e9ac3545790dd22fc",
-  "sig": "ab30a311ee80d7ce3b6369d11930dd8fe9fb6074ba0be1c87d577a8fdf00ae879dbbae4b8c5245e65af1b48b00cb2b495fa15163b12d86a301351d2fe463f73c"
+  "pubkey": "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+  "id": "a91cf933275c4465990a088d7644fb2577091ce68c0dbcf199e60e955b7d3855",
+  "sig": "c08b4e5de232af08d1d54ced499b1fbefa1aa96e50b3a46e54ce4719030187cd962ede523cc208d6432d35ead8b96edf26b02542678c8f2b5c278eba757c4fe8"
 }

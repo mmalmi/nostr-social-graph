@@ -1,4 +1,6 @@
 import {
+  FACT_OP_KIND,
+  buildFactOpTags,
   buildFactOpDraft,
   fact,
   parseFactOpEvent,
@@ -7,10 +9,10 @@ import {
   type FactOp,
 } from './factEvents';
 import type { NostrEvent } from './utils';
+import { finalizeEvent, getPublicKey, nip44, type Event } from 'nostr-tools';
 
 export const NOSTR_IDENTITY_ROSTER_SCHEMA = 1;
 export const NOSTR_IDENTITY_KEY_ACCEPTANCE_SCHEMA = 1;
-export const NOSTR_IDENTITY_LINK_REQUEST_SCHEMA = 1;
 export const NOSTR_IDENTITY_ROSTER_TYPE = 'nostr_identity_roster_op';
 export const NOSTR_IDENTITY_KEY_ACCEPTANCE_TYPE = 'nostr_identity_key_acceptance';
 export const NOSTR_IDENTITY_LINK_REQUEST_TYPE = 'nostr_identity_link_request';
@@ -78,11 +80,10 @@ export interface IdentityKeyAcceptanceContent {
 }
 
 export interface IdentityLinkRequestContent {
-  schema: number;
   identity: NostrIdentityId;
   adminPubkey: string;
-  keyPubkey: string;
-  linkSecretHash: string;
+  invitePubkey: string;
+  joiningPubkey: string;
   clientNonce: string;
   requestedAt: number;
   label?: string;
@@ -150,14 +151,21 @@ export interface BuildIdentityKeyAcceptanceDraftOptions {
   clientNonce?: string;
 }
 
-export interface BuildIdentityLinkRequestDraftOptions {
-  signerPubkey: string;
+export interface BuildIdentityLinkRequestEventOptions {
+  signerSecretKey: Uint8Array;
   identity: NostrIdentityId;
   adminPubkey: string;
-  linkSecretHash: string;
+  invitePubkey: string;
   requestedAt?: number;
   clientNonce?: string;
   label?: string;
+}
+
+export interface ParseIdentityLinkRequestEventOptions {
+  inviteSecretKey: Uint8Array;
+  identity?: NostrIdentityId;
+  adminPubkey?: string;
+  invitePubkey?: string;
 }
 
 export const IDENTITY_ADMIN_CAPABILITIES: IdentityKeyCapability[] = [
@@ -223,33 +231,33 @@ export function buildIdentityKeyAcceptanceDraft(
   };
 }
 
-export function buildIdentityLinkRequestDraft(
-  options: BuildIdentityLinkRequestDraftOptions,
-): IdentityEventDraft {
-  const keyPubkey = requireHexPubkey(options.signerPubkey, 'identity link request signer');
+export function buildIdentityLinkRequestEvent(
+  options: BuildIdentityLinkRequestEventOptions,
+): Event {
+  const joiningPubkey = requireHexPubkey(getPublicKey(options.signerSecretKey), 'identity link request signer');
   const requestedAt = options.requestedAt ?? currentUnixSeconds();
   const clientNonce = options.clientNonce ?? randomIdentityNonce();
   const content: IdentityLinkRequestContent = {
-    schema: NOSTR_IDENTITY_LINK_REQUEST_SCHEMA,
     identity: requireIdentityId(options.identity),
     adminPubkey: requireHexPubkey(options.adminPubkey, 'identity link request admin'),
-    keyPubkey,
-    linkSecretHash: requireNonEmpty(options.linkSecretHash, 'linkSecretHash'),
+    invitePubkey: requireHexPubkey(options.invitePubkey, 'identity link request invite'),
+    joiningPubkey,
     clientNonce: requireNonEmpty(clientNonce, 'clientNonce'),
     requestedAt: requireInteger(requestedAt, 'requestedAt'),
     ...(options.label?.trim() ? { label: options.label.trim() } : {}),
   };
-  const draft = buildFactOpDraft(content.identity, linkRequestContentFacts(content));
-  return {
-    kind: draft.kind,
-    content: draft.content,
+  const conversationKey = nip44.v2.utils.getConversationKey(options.signerSecretKey, content.invitePubkey);
+  const encrypted = nip44.v2.encrypt(JSON.stringify(linkRequestWireContent(content)), conversationKey);
+  return finalizeEvent({
+    kind: FACT_OP_KIND,
+    content: encrypted,
     created_at: requestedAt,
-    tags: draft.tags,
-  };
+    tags: linkRequestEventTags(content),
+  }, options.signerSecretKey);
 }
 
 export function parseIdentityRosterOpEvent(event: NostrEvent): SignedIdentityRosterOp {
-  const op = parseFactOpEvent(event);
+  const op = parseFactOpEvent({ ...event, content: '' });
   const content = rosterOpContentFromFacts(op);
   if (content.actorPubkey !== normalizeHexPubkey(event.pubkey)) {
     throw new Error('identity roster actor signer mismatch');
@@ -280,11 +288,38 @@ export function parseIdentityKeyAcceptanceEvent(event: NostrEvent): SignedIdenti
   };
 }
 
-export function parseIdentityLinkRequestEvent(event: NostrEvent): SignedIdentityLinkRequest {
-  const op = parseFactOpEvent(event);
-  const content = linkRequestContentFromFacts(op);
-  if (content.keyPubkey !== normalizeHexPubkey(event.pubkey)) {
+export function parseIdentityLinkRequestEvent(
+  event: NostrEvent,
+  options: ParseIdentityLinkRequestEventOptions,
+): SignedIdentityLinkRequest {
+  const op = parseFactOpEvent({ ...event, content: '' });
+  requireType(op, NOSTR_IDENTITY_LINK_REQUEST_TYPE);
+  const expectedInvitePubkey = options.invitePubkey !== undefined
+    ? requireHexPubkey(options.invitePubkey, 'identity link request invite')
+    : getPublicKey(options.inviteSecretKey);
+  if (!op.pubkeys.has(expectedInvitePubkey)) {
+    throw new Error('identity link request invite pubkey mismatch');
+  }
+  const conversationKey = nip44.v2.utils.getConversationKey(
+    options.inviteSecretKey,
+    requireHexPubkey(event.pubkey, 'identity link request signer'),
+  );
+  const plaintext = nip44.v2.decrypt(event.content, conversationKey);
+  const content = linkRequestContentFromWire(JSON.parse(plaintext) as IdentityLinkRequestWireContent);
+  if (content.identity !== op.subject) {
+    throw new Error('identity link request subject mismatch');
+  }
+  if (content.joiningPubkey !== normalizeHexPubkey(event.pubkey)) {
     throw new Error('identity link request signer mismatch');
+  }
+  if (content.invitePubkey !== expectedInvitePubkey) {
+    throw new Error('identity link request invite pubkey mismatch');
+  }
+  if (options.identity !== undefined && content.identity !== requireIdentityId(options.identity)) {
+    throw new Error('identity link request identity mismatch');
+  }
+  if (options.adminPubkey !== undefined && content.adminPubkey !== requireHexPubkey(options.adminPubkey, 'identity link request admin')) {
+    throw new Error('identity link request admin mismatch');
   }
   if (content.requestedAt !== event.created_at) {
     throw new Error('identity link request requested_at mismatch');
@@ -552,19 +587,6 @@ function keyAcceptanceContentFacts(content: IdentityKeyAcceptanceContent): Fact[
   ];
 }
 
-function linkRequestContentFacts(content: IdentityLinkRequestContent): Fact[] {
-  return [
-    fact('type', [NOSTR_IDENTITY_LINK_REQUEST_TYPE]),
-    fact('schema', [String(content.schema)]),
-    fact('admin_pubkey', [content.adminPubkey]),
-    fact('key_pubkey', [content.keyPubkey]),
-    fact('link_secret_hash', [content.linkSecretHash]),
-    fact('client_nonce', [content.clientNonce]),
-    fact('requested_at', [String(content.requestedAt)]),
-    ...(content.label !== undefined ? [fact('key_label', [content.label])] : []),
-  ];
-}
-
 function rosterOpContentFromFacts(op: FactOp): IdentityRosterOpContent {
   requireType(op, NOSTR_IDENTITY_ROSTER_TYPE);
   const schema = requiredInteger(op, 'schema');
@@ -647,24 +669,6 @@ function keyAcceptanceContentFromFacts(op: FactOp): IdentityKeyAcceptanceContent
   return content;
 }
 
-function linkRequestContentFromFacts(op: FactOp): IdentityLinkRequestContent {
-  requireType(op, NOSTR_IDENTITY_LINK_REQUEST_TYPE);
-  const schema = requiredInteger(op, 'schema');
-  if (schema !== NOSTR_IDENTITY_LINK_REQUEST_SCHEMA) {
-    throw new Error(`unsupported Nostr identity link request schema ${schema}`);
-  }
-  return {
-    schema,
-    identity: op.subject,
-    adminPubkey: requiredPubkey(op, 'admin_pubkey'),
-    keyPubkey: requiredPubkey(op, 'key_pubkey'),
-    linkSecretHash: requiredNonEmptyScalar(op, 'link_secret_hash'),
-    clientNonce: requiredNonEmptyScalar(op, 'client_nonce'),
-    requestedAt: requiredInteger(op, 'requested_at'),
-    ...(optionalScalar(op, 'key_label') !== undefined ? { label: optionalScalar(op, 'key_label') } : {}),
-  };
-}
-
 function normalizeIdentityRosterOp(op: IdentityRosterOp): IdentityRosterOp {
   if (op.op === 'add_key') {
     return { op: 'add_key', key: normalizeIdentityKey(op.key) };
@@ -688,6 +692,62 @@ function normalizeIdentityRosterOp(op: IdentityRosterOp): IdentityRosterOp {
     epoch: requireInteger(op.epoch, 'secret epoch'),
     wrappedSecrets: normalizeWrappedSecrets(op.wrappedSecrets ?? {}),
   };
+}
+
+type IdentityLinkRequestWireContent = {
+  identity?: unknown;
+  admin_pubkey?: unknown;
+  invite_pubkey?: unknown;
+  joining_pubkey?: unknown;
+  client_nonce?: unknown;
+  requested_at?: unknown;
+  label?: unknown;
+};
+
+function linkRequestEventTags(content: IdentityLinkRequestContent): string[][] {
+  const tags = buildFactOpTags(content.identity, [
+    fact('type', [NOSTR_IDENTITY_LINK_REQUEST_TYPE]),
+  ]);
+  tags.push(['p', content.invitePubkey]);
+  return tags;
+}
+
+function linkRequestWireContent(content: IdentityLinkRequestContent): Record<string, string | number> {
+  return {
+    identity: content.identity,
+    admin_pubkey: content.adminPubkey,
+    invite_pubkey: content.invitePubkey,
+    joining_pubkey: content.joiningPubkey,
+    client_nonce: content.clientNonce,
+    requested_at: content.requestedAt,
+    ...(content.label !== undefined ? { label: content.label } : {}),
+  };
+}
+
+function linkRequestContentFromWire(wire: IdentityLinkRequestWireContent): IdentityLinkRequestContent {
+  return {
+    identity: requireIdentityId(requiredWireString(wire.identity, 'identity')),
+    adminPubkey: requireHexPubkey(requiredWireString(wire.admin_pubkey, 'admin_pubkey'), 'identity link request admin'),
+    invitePubkey: requireHexPubkey(requiredWireString(wire.invite_pubkey, 'invite_pubkey'), 'identity link request invite'),
+    joiningPubkey: requireHexPubkey(requiredWireString(wire.joining_pubkey, 'joining_pubkey'), 'identity link request signer'),
+    clientNonce: requireNonEmpty(requiredWireString(wire.client_nonce, 'client_nonce'), 'clientNonce'),
+    requestedAt: requireInteger(requiredWireNumber(wire.requested_at, 'requested_at'), 'requestedAt'),
+    ...(typeof wire.label === 'string' && wire.label.trim() ? { label: wire.label.trim() } : {}),
+  };
+}
+
+function requiredWireString(value: unknown, label: string): string {
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new Error(`identity link request ${label} is required`);
+  }
+  return value;
+}
+
+function requiredWireNumber(value: unknown, label: string): number {
+  if (typeof value !== 'number' || !Number.isInteger(value)) {
+    throw new Error(`identity link request ${label} must be an integer`);
+  }
+  return value;
 }
 
 function normalizeIdentityKey(key: IdentityKey): IdentityKey {
