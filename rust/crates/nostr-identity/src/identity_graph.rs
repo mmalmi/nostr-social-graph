@@ -6,8 +6,10 @@ use uuid::Uuid;
 
 pub const NOSTR_IDENTITY_ROSTER_SCHEMA: u64 = 1;
 pub const NOSTR_IDENTITY_KEY_ACCEPTANCE_SCHEMA: u64 = 1;
+pub const NOSTR_IDENTITY_LINK_REQUEST_SCHEMA: u64 = 1;
 pub const NOSTR_IDENTITY_ROSTER_TYPE: &str = "nostr_identity_roster_op";
 pub const NOSTR_IDENTITY_KEY_ACCEPTANCE_TYPE: &str = "nostr_identity_key_acceptance";
+pub const NOSTR_IDENTITY_LINK_REQUEST_TYPE: &str = "nostr_identity_link_request";
 
 pub const IDENTITY_CAPABILITY_ADMIN: &str = "admin";
 pub const IDENTITY_CAPABILITY_WRITE: &str = "write";
@@ -96,10 +98,29 @@ pub struct IdentityKeyAcceptanceContent {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IdentityLinkRequestContent {
+    pub schema: u64,
+    pub identity: Uuid,
+    pub admin_pubkey: String,
+    pub key_pubkey: String,
+    pub link_secret_hash: String,
+    pub client_nonce: String,
+    pub requested_at: u64,
+    pub label: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SignedIdentityKeyAcceptance {
     pub acceptance_id: String,
     pub signer_pubkey: String,
     pub content: IdentityKeyAcceptanceContent,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SignedIdentityLinkRequest {
+    pub request_id: String,
+    pub signer_pubkey: String,
+    pub content: IdentityLinkRequestContent,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -218,6 +239,36 @@ pub fn build_identity_key_acceptance_event(
     )
 }
 
+pub fn build_identity_link_request_event(
+    keys: &Keys,
+    identity: Uuid,
+    admin_pubkey: impl Into<String>,
+    link_secret_hash: impl Into<String>,
+    client_nonce: impl Into<String>,
+    label: Option<String>,
+    requested_at: u64,
+) -> Result<Event> {
+    let content = IdentityLinkRequestContent {
+        schema: NOSTR_IDENTITY_LINK_REQUEST_SCHEMA,
+        identity,
+        admin_pubkey: require_pubkey(&admin_pubkey.into(), "identity link request admin")?,
+        key_pubkey: keys.public_key().to_hex(),
+        link_secret_hash: require_non_empty(link_secret_hash.into(), "link_secret_hash")?,
+        client_nonce: require_non_empty(client_nonce.into(), "client_nonce")?,
+        requested_at,
+        label: label
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty()),
+    };
+    build_fact_op_event_with_links(
+        keys,
+        identity,
+        link_request_content_facts(&content),
+        FactOpLinks::default(),
+        requested_at,
+    )
+}
+
 pub fn parse_identity_roster_op_event(event: &Event) -> Result<SignedIdentityRosterOp> {
     let op = parse_fact_op_event(event)?;
     let content = roster_op_content_from_facts(&op)?;
@@ -245,6 +296,22 @@ pub fn parse_identity_key_acceptance_event(event: &Event) -> Result<SignedIdenti
     }
     Ok(SignedIdentityKeyAcceptance {
         acceptance_id: event.id.to_hex(),
+        signer_pubkey: event.pubkey.to_hex(),
+        content,
+    })
+}
+
+pub fn parse_identity_link_request_event(event: &Event) -> Result<SignedIdentityLinkRequest> {
+    let op = parse_fact_op_event(event)?;
+    let content = link_request_content_from_facts(&op)?;
+    if content.key_pubkey != event.pubkey.to_hex() {
+        bail!("identity link request signer mismatch");
+    }
+    if content.requested_at != event.created_at.as_secs() {
+        bail!("identity link request requested_at mismatch");
+    }
+    Ok(SignedIdentityLinkRequest {
+        request_id: event.id.to_hex(),
         signer_pubkey: event.pubkey.to_hex(),
         content,
     })
@@ -558,6 +625,22 @@ fn key_acceptance_content_facts(content: &IdentityKeyAcceptanceContent) -> Vec<F
     facts
 }
 
+fn link_request_content_facts(content: &IdentityLinkRequestContent) -> Vec<Fact> {
+    let mut facts = vec![
+        fact("type", &[NOSTR_IDENTITY_LINK_REQUEST_TYPE]),
+        fact("schema", &[&content.schema.to_string()]),
+        fact("admin_pubkey", &[&content.admin_pubkey]),
+        fact("key_pubkey", &[&content.key_pubkey]),
+        fact("link_secret_hash", &[&content.link_secret_hash]),
+        fact("client_nonce", &[&content.client_nonce]),
+        fact("requested_at", &[&content.requested_at.to_string()]),
+    ];
+    if let Some(label) = &content.label {
+        facts.push(fact("key_label", &[label]));
+    }
+    facts
+}
+
 fn roster_op_content_from_facts(op: &FactOp) -> Result<IdentityRosterOpContent> {
     require_type(op, NOSTR_IDENTITY_ROSTER_TYPE)?;
     let schema = required_integer(op, "schema")?;
@@ -631,6 +714,24 @@ fn key_acceptance_content_from_facts(op: &FactOp) -> Result<IdentityKeyAcceptanc
         bail!("identity key acceptance purposes must not be empty");
     }
     Ok(content)
+}
+
+fn link_request_content_from_facts(op: &FactOp) -> Result<IdentityLinkRequestContent> {
+    require_type(op, NOSTR_IDENTITY_LINK_REQUEST_TYPE)?;
+    let schema = required_integer(op, "schema")?;
+    if schema != NOSTR_IDENTITY_LINK_REQUEST_SCHEMA {
+        bail!("unsupported Nostr identity link request schema {schema}");
+    }
+    Ok(IdentityLinkRequestContent {
+        schema,
+        identity: op.subject,
+        admin_pubkey: required_pubkey(op, "admin_pubkey")?,
+        key_pubkey: required_pubkey(op, "key_pubkey")?,
+        link_secret_hash: required_non_empty_scalar(op, "link_secret_hash")?,
+        client_nonce: required_non_empty_scalar(op, "client_nonce")?,
+        requested_at: required_integer(op, "requested_at")?,
+        label: optional_scalar(op, "key_label")?,
+    })
 }
 
 fn normalize_identity_roster_op(op: IdentityRosterOp) -> Result<IdentityRosterOp> {
@@ -874,6 +975,7 @@ fn is_lower_hex(value: &str, len: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nostr_sdk::JsonUtil;
 
     const SUBJECT: &str = "6b7f5df4-1d2d-43a7-9b87-873e41a2d99a";
 
@@ -925,6 +1027,72 @@ mod tests {
                 }
             }
         );
+    }
+
+    #[test]
+    fn builds_and_parses_identity_link_request_fact_events() {
+        let admin_keys = Keys::generate();
+        let device_keys = Keys::generate();
+        let admin_pubkey = admin_keys.public_key().to_hex();
+        let device_pubkey = device_keys.public_key().to_hex();
+        let event = build_identity_link_request_event(
+            &device_keys,
+            subject(),
+            admin_pubkey.clone(),
+            "hash-from-invite",
+            "nonce-link",
+            Some("Phone".to_owned()),
+            21,
+        )
+        .unwrap();
+
+        assert_eq!(event.kind.as_u16(), crate::FACT_OP_KIND);
+        assert_eq!(event.content, "");
+        let event_json = event.as_json();
+        assert!(event_json.contains(NOSTR_IDENTITY_LINK_REQUEST_TYPE));
+        assert!(event_json.contains("hash-from-invite"));
+        assert!(!event_json.contains("join-secret"));
+
+        let parsed = parse_identity_link_request_event(&event).unwrap();
+        assert_eq!(parsed.signer_pubkey, device_pubkey);
+        assert_eq!(parsed.content.identity, subject());
+        assert_eq!(parsed.content.admin_pubkey, admin_pubkey);
+        assert_eq!(parsed.content.key_pubkey, device_pubkey);
+        assert_eq!(parsed.content.link_secret_hash, "hash-from-invite");
+        assert_eq!(parsed.content.client_nonce, "nonce-link");
+        assert_eq!(parsed.content.requested_at, 21);
+        assert_eq!(parsed.content.label, Some("Phone".to_owned()));
+    }
+
+    #[test]
+    fn parses_shared_ts_rust_identity_link_request_fixture() {
+        let event = Event::from_json(include_str!(
+            "../../../../testdata/identity-link-request.json"
+        ))
+        .unwrap();
+        let parsed = parse_identity_link_request_event(&event).unwrap();
+
+        assert_eq!(
+            parsed.request_id,
+            "7d8a323b036150abc71a886f71898107306632b126e8eb4e9ac3545790dd22fc"
+        );
+        assert_eq!(
+            parsed.signer_pubkey,
+            "84bf7562262bbd6940085748f3be6afa52ae317155181ece31b66351ccffa4b0"
+        );
+        assert_eq!(parsed.content.identity, subject());
+        assert_eq!(
+            parsed.content.admin_pubkey,
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        );
+        assert_eq!(
+            parsed.content.key_pubkey,
+            "84bf7562262bbd6940085748f3be6afa52ae317155181ece31b66351ccffa4b0"
+        );
+        assert_eq!(parsed.content.link_secret_hash, "fixture-secret-hash");
+        assert_eq!(parsed.content.client_nonce, "fixture-link-request");
+        assert_eq!(parsed.content.requested_at, 1_720_000_021);
+        assert_eq!(parsed.content.label, Some("Fixture Phone".to_owned()));
     }
 
     #[test]

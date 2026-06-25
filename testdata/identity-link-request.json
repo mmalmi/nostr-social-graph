@@ -1,0 +1,55 @@
+{
+  "kind": 7368,
+  "content": "",
+  "created_at": 1720000021,
+  "tags": [
+    [
+      "i",
+      "6b7f5df4-1d2d-43a7-9b87-873e41a2d99a",
+      "subject"
+    ],
+    [
+      "p",
+      "84bf7562262bbd6940085748f3be6afa52ae317155181ece31b66351ccffa4b0"
+    ],
+    [
+      "p",
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    ],
+    [
+      "admin_pubkey",
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    ],
+    [
+      "client_nonce",
+      "fixture-link-request"
+    ],
+    [
+      "key_label",
+      "Fixture Phone"
+    ],
+    [
+      "key_pubkey",
+      "84bf7562262bbd6940085748f3be6afa52ae317155181ece31b66351ccffa4b0"
+    ],
+    [
+      "link_secret_hash",
+      "fixture-secret-hash"
+    ],
+    [
+      "requested_at",
+      "1720000021"
+    ],
+    [
+      "schema",
+      "1"
+    ],
+    [
+      "type",
+      "nostr_identity_link_request"
+    ]
+  ],
+  "pubkey": "84bf7562262bbd6940085748f3be6afa52ae317155181ece31b66351ccffa4b0",
+  "id": "7d8a323b036150abc71a886f71898107306632b126e8eb4e9ac3545790dd22fc",
+  "sig": "ab30a311ee80d7ce3b6369d11930dd8fe9fb6074ba0be1c87d577a8fdf00ae879dbbae4b8c5245e65af1b48b00cb2b495fa15163b12d86a301351d2fe463f73c"
+}

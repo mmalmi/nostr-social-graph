@@ -10,8 +10,10 @@ import type { NostrEvent } from './utils';
 
 export const NOSTR_IDENTITY_ROSTER_SCHEMA = 1;
 export const NOSTR_IDENTITY_KEY_ACCEPTANCE_SCHEMA = 1;
+export const NOSTR_IDENTITY_LINK_REQUEST_SCHEMA = 1;
 export const NOSTR_IDENTITY_ROSTER_TYPE = 'nostr_identity_roster_op';
 export const NOSTR_IDENTITY_KEY_ACCEPTANCE_TYPE = 'nostr_identity_key_acceptance';
+export const NOSTR_IDENTITY_LINK_REQUEST_TYPE = 'nostr_identity_link_request';
 
 export const IDENTITY_CAPABILITY_ADMIN = 'admin';
 export const IDENTITY_CAPABILITY_WRITE = 'write';
@@ -75,10 +77,27 @@ export interface IdentityKeyAcceptanceContent {
   acceptedAt: number;
 }
 
+export interface IdentityLinkRequestContent {
+  schema: number;
+  identity: NostrIdentityId;
+  adminPubkey: string;
+  keyPubkey: string;
+  linkSecretHash: string;
+  clientNonce: string;
+  requestedAt: number;
+  label?: string;
+}
+
 export interface SignedIdentityKeyAcceptance {
   acceptanceId: string;
   signerPubkey: string;
   content: IdentityKeyAcceptanceContent;
+}
+
+export interface SignedIdentityLinkRequest {
+  requestId: string;
+  signerPubkey: string;
+  content: IdentityLinkRequestContent;
 }
 
 export interface IdentitySecretEpoch {
@@ -129,6 +148,16 @@ export interface BuildIdentityKeyAcceptanceDraftOptions {
   rosterOpId?: string;
   acceptedAt?: number;
   clientNonce?: string;
+}
+
+export interface BuildIdentityLinkRequestDraftOptions {
+  signerPubkey: string;
+  identity: NostrIdentityId;
+  adminPubkey: string;
+  linkSecretHash: string;
+  requestedAt?: number;
+  clientNonce?: string;
+  label?: string;
 }
 
 export const IDENTITY_ADMIN_CAPABILITIES: IdentityKeyCapability[] = [
@@ -194,6 +223,31 @@ export function buildIdentityKeyAcceptanceDraft(
   };
 }
 
+export function buildIdentityLinkRequestDraft(
+  options: BuildIdentityLinkRequestDraftOptions,
+): IdentityEventDraft {
+  const keyPubkey = requireHexPubkey(options.signerPubkey, 'identity link request signer');
+  const requestedAt = options.requestedAt ?? currentUnixSeconds();
+  const clientNonce = options.clientNonce ?? randomIdentityNonce();
+  const content: IdentityLinkRequestContent = {
+    schema: NOSTR_IDENTITY_LINK_REQUEST_SCHEMA,
+    identity: requireIdentityId(options.identity),
+    adminPubkey: requireHexPubkey(options.adminPubkey, 'identity link request admin'),
+    keyPubkey,
+    linkSecretHash: requireNonEmpty(options.linkSecretHash, 'linkSecretHash'),
+    clientNonce: requireNonEmpty(clientNonce, 'clientNonce'),
+    requestedAt: requireInteger(requestedAt, 'requestedAt'),
+    ...(options.label?.trim() ? { label: options.label.trim() } : {}),
+  };
+  const draft = buildFactOpDraft(content.identity, linkRequestContentFacts(content));
+  return {
+    kind: draft.kind,
+    content: draft.content,
+    created_at: requestedAt,
+    tags: draft.tags,
+  };
+}
+
 export function parseIdentityRosterOpEvent(event: NostrEvent): SignedIdentityRosterOp {
   const op = parseFactOpEvent(event);
   const content = rosterOpContentFromFacts(op);
@@ -222,6 +276,22 @@ export function parseIdentityKeyAcceptanceEvent(event: NostrEvent): SignedIdenti
   return {
     acceptanceId: requireEventId(event.id, 'identity key acceptance id'),
     signerPubkey: requireHexPubkey(event.pubkey, 'identity key acceptance signer'),
+    content,
+  };
+}
+
+export function parseIdentityLinkRequestEvent(event: NostrEvent): SignedIdentityLinkRequest {
+  const op = parseFactOpEvent(event);
+  const content = linkRequestContentFromFacts(op);
+  if (content.keyPubkey !== normalizeHexPubkey(event.pubkey)) {
+    throw new Error('identity link request signer mismatch');
+  }
+  if (content.requestedAt !== event.created_at) {
+    throw new Error('identity link request requested_at mismatch');
+  }
+  return {
+    requestId: requireEventId(event.id, 'identity link request id'),
+    signerPubkey: requireHexPubkey(event.pubkey, 'identity link request signer'),
     content,
   };
 }
@@ -482,6 +552,19 @@ function keyAcceptanceContentFacts(content: IdentityKeyAcceptanceContent): Fact[
   ];
 }
 
+function linkRequestContentFacts(content: IdentityLinkRequestContent): Fact[] {
+  return [
+    fact('type', [NOSTR_IDENTITY_LINK_REQUEST_TYPE]),
+    fact('schema', [String(content.schema)]),
+    fact('admin_pubkey', [content.adminPubkey]),
+    fact('key_pubkey', [content.keyPubkey]),
+    fact('link_secret_hash', [content.linkSecretHash]),
+    fact('client_nonce', [content.clientNonce]),
+    fact('requested_at', [String(content.requestedAt)]),
+    ...(content.label !== undefined ? [fact('key_label', [content.label])] : []),
+  ];
+}
+
 function rosterOpContentFromFacts(op: FactOp): IdentityRosterOpContent {
   requireType(op, NOSTR_IDENTITY_ROSTER_TYPE);
   const schema = requiredInteger(op, 'schema');
@@ -562,6 +645,24 @@ function keyAcceptanceContentFromFacts(op: FactOp): IdentityKeyAcceptanceContent
     content.rosterOpId = requireEventId(content.rosterOpId, 'roster_op_id');
   }
   return content;
+}
+
+function linkRequestContentFromFacts(op: FactOp): IdentityLinkRequestContent {
+  requireType(op, NOSTR_IDENTITY_LINK_REQUEST_TYPE);
+  const schema = requiredInteger(op, 'schema');
+  if (schema !== NOSTR_IDENTITY_LINK_REQUEST_SCHEMA) {
+    throw new Error(`unsupported Nostr identity link request schema ${schema}`);
+  }
+  return {
+    schema,
+    identity: op.subject,
+    adminPubkey: requiredPubkey(op, 'admin_pubkey'),
+    keyPubkey: requiredPubkey(op, 'key_pubkey'),
+    linkSecretHash: requiredNonEmptyScalar(op, 'link_secret_hash'),
+    clientNonce: requiredNonEmptyScalar(op, 'client_nonce'),
+    requestedAt: requiredInteger(op, 'requested_at'),
+    ...(optionalScalar(op, 'key_label') !== undefined ? { label: optionalScalar(op, 'key_label') } : {}),
+  };
 }
 
 function normalizeIdentityRosterOp(op: IdentityRosterOp): IdentityRosterOp {

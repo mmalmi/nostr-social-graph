@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
   IDENTITY_ADMIN_CAPABILITIES,
@@ -10,11 +11,14 @@ import {
   IDENTITY_PURPOSE_RECOVERY,
   IDENTITY_PURPOSE_REMOTE_SIGNER,
   NOSTR_IDENTITY_KEY_ACCEPTANCE_TYPE,
+  NOSTR_IDENTITY_LINK_REQUEST_TYPE,
   NOSTR_IDENTITY_ROSTER_TYPE,
   buildIdentityKeyAcceptanceDraft,
+  buildIdentityLinkRequestDraft,
   buildIdentityRosterOpDraft,
   identityKey,
   parseIdentityKeyAcceptanceEvent,
+  parseIdentityLinkRequestEvent,
   parseIdentityRosterOpEvent,
   projectIdentityKeyAcceptances,
   projectIdentityRoster,
@@ -26,6 +30,9 @@ const identity = '6b7f5df4-1d2d-43a7-9b87-873e41a2d99a';
 const adminPubkey = 'a'.repeat(64);
 const appPubkey = 'b'.repeat(64);
 const otherPubkey = 'c'.repeat(64);
+const fixtureLinkRequest = JSON.parse(
+  readFileSync(new URL('../../testdata/identity-link-request.json', import.meta.url), 'utf8'),
+) as NostrEvent;
 
 function eventId(byte: string): string {
   return byte.repeat(64);
@@ -400,6 +407,58 @@ describe('identity graph', () => {
     ]);
   });
 
+  it('builds device link requests as neutral identity fact events', () => {
+    const draft = buildIdentityLinkRequestDraft({
+      signerPubkey: appPubkey,
+      identity,
+      adminPubkey,
+      linkSecretHash: 'hash-from-invite',
+      requestedAt: 21,
+      clientNonce: 'nonce-link',
+      label: 'Phone',
+    });
+
+    expect(draft.kind).toBe(7368);
+    expect(draft.content).toBe('');
+    expect(draft.created_at).toBe(21);
+    expect(draft.tags).toContainEqual(['type', NOSTR_IDENTITY_LINK_REQUEST_TYPE]);
+    expect(draft.tags).toContainEqual(['admin_pubkey', adminPubkey]);
+    expect(draft.tags).toContainEqual(['key_pubkey', appPubkey]);
+    expect(draft.tags).toContainEqual(['link_secret_hash', 'hash-from-invite']);
+    expect(draft.tags).toContainEqual(['key_label', 'Phone']);
+    expect(draft.tags).toContainEqual(['p', adminPubkey]);
+    expect(draft.tags).toContainEqual(['p', appPubkey]);
+
+    const signed = parseIdentityLinkRequestEvent(eventFromDraft(draft, eventId('6'), appPubkey));
+    expect(signed.content).toEqual({
+      schema: 1,
+      identity,
+      adminPubkey,
+      keyPubkey: appPubkey,
+      linkSecretHash: 'hash-from-invite',
+      clientNonce: 'nonce-link',
+      requestedAt: 21,
+      label: 'Phone',
+    });
+  });
+
+  it('parses the shared TS/Rust identity link-request fixture', () => {
+    const signed = parseIdentityLinkRequestEvent(fixtureLinkRequest);
+
+    expect(signed.requestId).toBe('7d8a323b036150abc71a886f71898107306632b126e8eb4e9ac3545790dd22fc');
+    expect(signed.signerPubkey).toBe('84bf7562262bbd6940085748f3be6afa52ae317155181ece31b66351ccffa4b0');
+    expect(signed.content).toEqual({
+      schema: 1,
+      identity,
+      adminPubkey,
+      keyPubkey: '84bf7562262bbd6940085748f3be6afa52ae317155181ece31b66351ccffa4b0',
+      linkSecretHash: 'fixture-secret-hash',
+      clientNonce: 'fixture-link-request',
+      requestedAt: 1720000021,
+      label: 'Fixture Phone',
+    });
+  });
+
   it('rejects invalid identity facts', () => {
     expect(() => buildIdentityKeyAcceptanceDraft({
       signerPubkey: appPubkey,
@@ -424,6 +483,18 @@ describe('identity graph', () => {
     });
     expect(() => parseIdentityRosterOpEvent(eventFromDraft(draft, eventId('5'), appPubkey))).toThrow(
       /actor signer mismatch/,
+    );
+
+    const linkDraft = buildIdentityLinkRequestDraft({
+      signerPubkey: appPubkey,
+      identity,
+      adminPubkey,
+      linkSecretHash: 'hash-from-invite',
+      requestedAt: 21,
+      clientNonce: 'nonce-link',
+    });
+    expect(() => parseIdentityLinkRequestEvent(eventFromDraft(linkDraft, eventId('6'), adminPubkey))).toThrow(
+      /link request signer mismatch/,
     );
   });
 });
