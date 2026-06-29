@@ -20,6 +20,7 @@ use crate::{
     build_identity_key_acceptance_event, build_identity_roster_op_event_with_options, fact,
     parse_identity_key_acceptance_event, parse_identity_roster_op_event, project_identity_roster,
 };
+use nostr_sdk::ToBech32;
 use nostr_sdk::nips::nip44::{self, Version as Nip44Version};
 use nostr_sdk::{Alphabet, Event, EventId, JsonUtil, Keys, PublicKey, SingleLetterTag, TagKind};
 use nostr_sdk::{EventBuilder, Kind, Tag};
@@ -33,9 +34,16 @@ pub const NOSTR_IDENTITY_FACET_ACCEPTANCE_SCHEMA: u32 = 1;
 pub const KIND_NOSTR_IDENTITY_FACET_ACCEPTANCE: u16 = FACT_OP_KIND;
 pub const NOSTR_IDENTITY_ENCRYPTED_DEVICE_LABELS_FACT: &str = "encrypted_device_labels";
 pub const NOSTR_IDENTITY_ENCRYPTED_DEVICE_LABELS_SCHEMA: u32 = 1;
+pub const NOSTR_IDENTITY_DEVICE_LINK_INVITE_PREFIX: &str = "nostr-identity://device-link/";
+pub const NOSTR_IDENTITY_DEVICE_LINK_INVITE_VERSION: u32 = 1;
 pub const NOSTR_IDENTITY_DEVICE_APPROVAL_RECEIPT_TYPE: &str =
     "nostr_identity_device_approval_receipt";
 pub const NOSTR_IDENTITY_DEVICE_APPROVAL_RECEIPT_SCHEMA: u32 = 1;
+pub const NOSTR_IDENTITY_DEVICE_APPROVAL_REQUEST_PREFIX: &str = "nostr-identity://device-approval/";
+pub const NOSTR_IDENTITY_DEVICE_APPROVAL_REQUEST_VERSION: u32 = 1;
+pub const NOSTR_IDENTITY_DEVICE_APPROVAL_PROOF_TYPE: &str = "nostr_identity_device_approval_proof";
+pub const NOSTR_IDENTITY_DEVICE_APPROVAL_CLIENT_NONCE_PREFIX: &str =
+    "nostr_identity_device_approval:";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -459,6 +467,121 @@ pub struct NostrIdentityDeviceApprovalReceipt {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NostrIdentityDeviceLinkInvite {
+    pub profile_id: NostrIdentityId,
+    pub admin_app_key_pubkey: String,
+    pub invite_pubkey: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct CreateNostrIdentityDeviceLinkInviteOptions {
+    pub profile_id: NostrIdentityId,
+    pub admin_app_key_pubkey: String,
+    pub invite_keys: Option<Keys>,
+}
+
+#[derive(Debug, Clone)]
+pub struct LocalNostrIdentityDeviceLinkInvite {
+    pub invite: NostrIdentityDeviceLinkInvite,
+    pub invite_keys: Keys,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct NostrIdentityDeviceLinkInvitePayload {
+    v: u32,
+    profile_id: NostrIdentityId,
+    admin_app_key_npub: String,
+    invite_npub: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NostrIdentityDeviceApprovalRequest {
+    pub request_pubkey: String,
+    pub device_app_key_pubkey: String,
+    pub request_secret: String,
+    pub device_app_key_proof: String,
+    pub requested_at: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub resources: Vec<NostrIdentityDeviceApprovalRequestedResource>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile_id: Option<NostrIdentityId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub admin_app_key_pubkey: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NostrIdentityDeviceApprovalRequestedResource {
+    #[serde(rename = "type")]
+    pub resource_type: String,
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scopes: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CreateNostrIdentityDeviceApprovalRequestOptions {
+    pub request_keys: Option<Keys>,
+    pub request_secret: Option<String>,
+    pub requested_at: i64,
+    pub request_type: Option<String>,
+    pub resources: Vec<NostrIdentityDeviceApprovalRequestedResource>,
+    pub expires_at: Option<i64>,
+    pub profile_id: Option<NostrIdentityId>,
+    pub admin_app_key_pubkey: Option<String>,
+    pub label: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct LocalNostrIdentityDeviceApprovalRequest {
+    pub request: NostrIdentityDeviceApprovalRequest,
+    pub request_keys: Keys,
+}
+
+#[derive(Debug, Clone)]
+pub struct ApproveNostrIdentityDeviceApprovalRequestOptions {
+    pub request: NostrIdentityDeviceApprovalRequest,
+    pub profile_id: NostrIdentityId,
+    pub roster_ops: Vec<SignedNostrIdentityRosterOp>,
+    pub approved_by_pubkey: String,
+    pub approved_at: i64,
+    pub client_nonce: Option<String>,
+    pub capabilities: Option<NostrIdentityCapabilities>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct NostrIdentityDeviceApprovalRequestPayload {
+    v: u32,
+    request_npub: String,
+    device_app_key_npub: String,
+    request_secret: String,
+    device_app_key_proof: String,
+    requested_at: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    request_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    resources: Vec<NostrIdentityDeviceApprovalRequestedResource>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    expires_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    profile_id: Option<NostrIdentityId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    admin_app_key_npub: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    label: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NostrIdentityFacetAcceptanceContent {
     pub schema: u32,
@@ -709,6 +832,245 @@ pub fn parse_nostr_identity_roster_op_event(
         content,
         event_json: event.as_json(),
     })
+}
+
+pub fn create_nostr_identity_device_link_invite(
+    options: CreateNostrIdentityDeviceLinkInviteOptions,
+) -> Result<LocalNostrIdentityDeviceLinkInvite, NostrIdentityError> {
+    let invite_keys = options.invite_keys.unwrap_or_else(Keys::generate);
+    let invite = NostrIdentityDeviceLinkInvite {
+        profile_id: options.profile_id,
+        admin_app_key_pubkey: normalize_nostr_pubkey(
+            &options.admin_app_key_pubkey,
+            "admin AppKey",
+        )?,
+        invite_pubkey: invite_keys.public_key().to_hex(),
+    };
+    Ok(LocalNostrIdentityDeviceLinkInvite {
+        invite: normalize_device_link_invite(invite)?,
+        invite_keys,
+    })
+}
+
+pub fn encode_nostr_identity_device_link_invite(
+    invite: &NostrIdentityDeviceLinkInvite,
+    prefix: Option<&str>,
+) -> Result<String, NostrIdentityError> {
+    let invite = normalize_device_link_invite(invite.clone())?;
+    let payload = NostrIdentityDeviceLinkInvitePayload {
+        v: NOSTR_IDENTITY_DEVICE_LINK_INVITE_VERSION,
+        profile_id: invite.profile_id,
+        admin_app_key_npub: pubkey_to_npub(&invite.admin_app_key_pubkey)?,
+        invite_npub: pubkey_to_npub(&invite.invite_pubkey)?,
+    };
+    let json = serde_json::to_string(&payload)
+        .map_err(|error| NostrIdentityError::BadContent(error.to_string()))?;
+    Ok(format!(
+        "{}{}",
+        prefix.unwrap_or(NOSTR_IDENTITY_DEVICE_LINK_INVITE_PREFIX),
+        base64_url_encode(json.as_bytes())
+    ))
+}
+
+pub fn parse_nostr_identity_device_link_invite(
+    input: &str,
+    prefixes: &[&str],
+) -> Result<Option<NostrIdentityDeviceLinkInvite>, NostrIdentityError> {
+    let Some(payload) =
+        payload_from_prefixed_url(input, prefixes, NOSTR_IDENTITY_DEVICE_LINK_INVITE_PREFIX)
+    else {
+        return Ok(None);
+    };
+    let payload: NostrIdentityDeviceLinkInvitePayload =
+        serde_json::from_str(&base64_url_decode_utf8(payload)?)
+            .map_err(|error| NostrIdentityError::BadContent(error.to_string()))?;
+    if payload.v != NOSTR_IDENTITY_DEVICE_LINK_INVITE_VERSION {
+        return Err(NostrIdentityError::UnsupportedSchema(payload.v));
+    }
+    let invite = NostrIdentityDeviceLinkInvite {
+        profile_id: payload.profile_id,
+        admin_app_key_pubkey: npub_or_hex_to_pubkey(&payload.admin_app_key_npub, "admin AppKey")?,
+        invite_pubkey: npub_or_hex_to_pubkey(&payload.invite_npub, "invite")?,
+    };
+    Ok(Some(normalize_device_link_invite(invite)?))
+}
+
+pub fn create_nostr_identity_device_approval_request(
+    device_app_key_keys: &Keys,
+    options: CreateNostrIdentityDeviceApprovalRequestOptions,
+) -> Result<LocalNostrIdentityDeviceApprovalRequest, NostrIdentityError> {
+    let request_keys = options.request_keys.unwrap_or_else(Keys::generate);
+    let request_secret = require_request_secret(
+        options
+            .request_secret
+            .unwrap_or_else(random_device_approval_secret),
+    )?;
+    let requested_at = non_negative_u64(options.requested_at, "requested_at")?;
+    let request_type =
+        normalize_optional_device_approval_string(options.request_type, "request_type", 128)?;
+    let resources = normalize_device_approval_resources(options.resources)?;
+    let admin_app_key_pubkey = options
+        .admin_app_key_pubkey
+        .map(|value| normalize_nostr_pubkey(&value, "admin AppKey"))
+        .transpose()?;
+    let label = normalize_optional_label(options.label);
+    let proof = build_nostr_identity_device_approval_proof_event(
+        device_app_key_keys,
+        NostrIdentityDeviceApprovalProofOptions {
+            request_pubkey: request_keys.public_key().to_hex(),
+            requested_at: options.requested_at,
+            request_type: request_type.clone(),
+            resources: resources.clone(),
+            expires_at: options.expires_at,
+            profile_id: options.profile_id,
+            admin_app_key_pubkey: admin_app_key_pubkey.clone(),
+            label: label.clone(),
+        },
+    )?;
+    let request = NostrIdentityDeviceApprovalRequest {
+        request_pubkey: request_keys.public_key().to_hex(),
+        device_app_key_pubkey: device_app_key_keys.public_key().to_hex(),
+        request_secret,
+        device_app_key_proof: proof.as_json(),
+        requested_at: i64::try_from(requested_at).unwrap_or(i64::MAX),
+        request_type,
+        resources,
+        expires_at: options.expires_at,
+        profile_id: options.profile_id,
+        admin_app_key_pubkey,
+        label,
+    };
+    Ok(LocalNostrIdentityDeviceApprovalRequest {
+        request: normalize_device_approval_request(request)?,
+        request_keys,
+    })
+}
+
+pub fn encode_nostr_identity_device_approval_request(
+    request: &NostrIdentityDeviceApprovalRequest,
+    prefix: Option<&str>,
+) -> Result<String, NostrIdentityError> {
+    let request = normalize_device_approval_request(request.clone())?;
+    let payload = NostrIdentityDeviceApprovalRequestPayload {
+        v: NOSTR_IDENTITY_DEVICE_APPROVAL_REQUEST_VERSION,
+        request_npub: pubkey_to_npub(&request.request_pubkey)?,
+        device_app_key_npub: pubkey_to_npub(&request.device_app_key_pubkey)?,
+        request_secret: request.request_secret,
+        device_app_key_proof: request.device_app_key_proof,
+        requested_at: request.requested_at,
+        request_type: request.request_type,
+        resources: request.resources,
+        expires_at: request.expires_at,
+        profile_id: request.profile_id,
+        admin_app_key_npub: request
+            .admin_app_key_pubkey
+            .as_deref()
+            .map(pubkey_to_npub)
+            .transpose()?,
+        label: request.label,
+    };
+    let json = serde_json::to_string(&payload)
+        .map_err(|error| NostrIdentityError::BadContent(error.to_string()))?;
+    Ok(format!(
+        "{}{}",
+        prefix.unwrap_or(NOSTR_IDENTITY_DEVICE_APPROVAL_REQUEST_PREFIX),
+        base64_url_encode(json.as_bytes())
+    ))
+}
+
+pub fn parse_nostr_identity_device_approval_request(
+    input: &str,
+    prefixes: &[&str],
+) -> Result<Option<NostrIdentityDeviceApprovalRequest>, NostrIdentityError> {
+    let Some(payload) = payload_from_prefixed_url(
+        input,
+        prefixes,
+        NOSTR_IDENTITY_DEVICE_APPROVAL_REQUEST_PREFIX,
+    ) else {
+        return Ok(None);
+    };
+    let payload: NostrIdentityDeviceApprovalRequestPayload =
+        serde_json::from_str(&base64_url_decode_utf8(payload)?)
+            .map_err(|error| NostrIdentityError::BadContent(error.to_string()))?;
+    if payload.v != NOSTR_IDENTITY_DEVICE_APPROVAL_REQUEST_VERSION {
+        return Err(NostrIdentityError::UnsupportedSchema(payload.v));
+    }
+    let request = NostrIdentityDeviceApprovalRequest {
+        request_pubkey: npub_or_hex_to_pubkey(&payload.request_npub, "request")?,
+        device_app_key_pubkey: npub_or_hex_to_pubkey(
+            &payload.device_app_key_npub,
+            "device AppKey",
+        )?,
+        request_secret: payload.request_secret,
+        device_app_key_proof: payload.device_app_key_proof,
+        requested_at: payload.requested_at,
+        request_type: payload.request_type,
+        resources: payload.resources,
+        expires_at: payload.expires_at,
+        profile_id: payload.profile_id,
+        admin_app_key_pubkey: payload
+            .admin_app_key_npub
+            .map(|value| npub_or_hex_to_pubkey(&value, "admin AppKey"))
+            .transpose()?,
+        label: payload.label,
+    };
+    Ok(Some(normalize_device_approval_request(request)?))
+}
+
+pub fn approve_nostr_identity_device_approval_request(
+    options: ApproveNostrIdentityDeviceApprovalRequestOptions,
+) -> Result<NostrIdentityRosterOpContent, NostrIdentityError> {
+    let request = normalize_device_approval_request(options.request)?;
+    if let Some(request_profile_id) = request.profile_id
+        && request_profile_id != options.profile_id
+    {
+        return Err(NostrIdentityError::BadContent(
+            "device approval request profile mismatch".to_string(),
+        ));
+    }
+    let approved_by_pubkey =
+        normalize_nostr_pubkey(&options.approved_by_pubkey, "approving AppKey")?;
+    if let Some(admin_app_key_pubkey) = &request.admin_app_key_pubkey
+        && admin_app_key_pubkey != &approved_by_pubkey
+    {
+        return Err(NostrIdentityError::BadContent(
+            "device approval request admin mismatch".to_string(),
+        ));
+    }
+    let client_nonce = match options.client_nonce {
+        Some(value) => require_non_empty(value, "client_nonce")?,
+        None => nostr_identity_device_approval_client_nonce(&random_device_approval_secret())?,
+    };
+    let capabilities = options
+        .capabilities
+        .unwrap_or_else(NostrIdentityCapabilities::app_writer);
+    Ok(NostrIdentityRosterOpContent {
+        schema: NOSTR_IDENTITY_ROSTER_SCHEMA,
+        profile_id: options.profile_id,
+        actor_pubkey: approved_by_pubkey,
+        actor_seq: None,
+        parents: nostr_identity_roster_parent_ids(&options.roster_ops),
+        client_nonce,
+        created_at: options.approved_at,
+        op: NostrIdentityRosterOp::AddFacet {
+            facet: NostrIdentityFacet::app_key(
+                request.device_app_key_pubkey,
+                options.approved_at,
+                None,
+                capabilities,
+            )
+            .with_profile_id(options.profile_id),
+        },
+    })
+}
+
+pub fn nostr_identity_device_approval_client_nonce(
+    random_value: &str,
+) -> Result<String, NostrIdentityError> {
+    Ok(format!(
+        "{NOSTR_IDENTITY_DEVICE_APPROVAL_CLIENT_NONCE_PREFIX}{}",
+        require_request_secret(random_value.to_string())?
+    ))
 }
 
 pub fn build_nostr_identity_device_approval_receipt_event(
@@ -1302,6 +1664,435 @@ fn encrypted_device_labels_extension_facts(payload: Option<String>) -> Vec<crate
         .collect()
 }
 
+fn normalize_device_link_invite(
+    invite: NostrIdentityDeviceLinkInvite,
+) -> Result<NostrIdentityDeviceLinkInvite, NostrIdentityError> {
+    Ok(NostrIdentityDeviceLinkInvite {
+        profile_id: invite.profile_id,
+        admin_app_key_pubkey: normalize_nostr_pubkey(&invite.admin_app_key_pubkey, "admin AppKey")?,
+        invite_pubkey: normalize_nostr_pubkey(&invite.invite_pubkey, "invite")?,
+    })
+}
+
+#[derive(Debug, Clone)]
+struct NostrIdentityDeviceApprovalProofOptions {
+    request_pubkey: String,
+    requested_at: i64,
+    request_type: Option<String>,
+    resources: Vec<NostrIdentityDeviceApprovalRequestedResource>,
+    expires_at: Option<i64>,
+    profile_id: Option<NostrIdentityId>,
+    admin_app_key_pubkey: Option<String>,
+    label: Option<String>,
+}
+
+fn build_nostr_identity_device_approval_proof_event(
+    device_app_key_keys: &Keys,
+    options: NostrIdentityDeviceApprovalProofOptions,
+) -> Result<Event, NostrIdentityError> {
+    let request_pubkey = normalize_nostr_pubkey(&options.request_pubkey, "request")?;
+    let requested_at = non_negative_u64(options.requested_at, "requested_at")?;
+    let request_type =
+        normalize_optional_device_approval_string(options.request_type, "request_type", 128)?;
+    let resources = normalize_device_approval_resources(options.resources)?;
+    let admin_app_key_pubkey = options
+        .admin_app_key_pubkey
+        .map(|value| normalize_nostr_pubkey(&value, "admin AppKey"))
+        .transpose()?;
+    let label = normalize_optional_label(options.label);
+    let mut tag_parts = vec![
+        vec![
+            "type".to_string(),
+            NOSTR_IDENTITY_DEVICE_APPROVAL_PROOF_TYPE.to_string(),
+        ],
+        vec!["request_pubkey".to_string(), request_pubkey],
+        vec!["requested_at".to_string(), options.requested_at.to_string()],
+    ];
+    if let Some(request_type) = request_type {
+        tag_parts.push(vec!["request_type".to_string(), request_type]);
+    }
+    if !resources.is_empty() {
+        tag_parts.push(vec![
+            "requested_resources".to_string(),
+            serde_json::to_string(&resources)
+                .map_err(|error| NostrIdentityError::BadContent(error.to_string()))?,
+        ]);
+    }
+    if let Some(expires_at) = options.expires_at {
+        tag_parts.push(vec!["expires_at".to_string(), expires_at.to_string()]);
+    }
+    if let Some(profile_id) = options.profile_id {
+        tag_parts.push(vec!["profile_id".to_string(), profile_id.to_string()]);
+    }
+    if let Some(admin_app_key_pubkey) = admin_app_key_pubkey {
+        tag_parts.push(vec!["admin_pubkey".to_string(), admin_app_key_pubkey]);
+    }
+    if let Some(label) = label {
+        tag_parts.push(vec!["label".to_string(), label]);
+    }
+    let tags = tag_parts
+        .into_iter()
+        .map(tag_from_parts)
+        .collect::<Result<Vec<_>, _>>()?;
+    EventBuilder::new(Kind::from(FACT_OP_KIND), "")
+        .tags(tags)
+        .custom_created_at(nostr_sdk::Timestamp::from(requested_at))
+        .sign_with_keys(device_app_key_keys)
+        .map_err(|error| NostrIdentityError::Event(error.to_string()))
+}
+
+fn normalize_device_approval_request(
+    request: NostrIdentityDeviceApprovalRequest,
+) -> Result<NostrIdentityDeviceApprovalRequest, NostrIdentityError> {
+    let mut normalized = NostrIdentityDeviceApprovalRequest {
+        request_pubkey: normalize_nostr_pubkey(&request.request_pubkey, "request")?,
+        device_app_key_pubkey: normalize_nostr_pubkey(
+            &request.device_app_key_pubkey,
+            "device AppKey",
+        )?,
+        request_secret: require_request_secret(request.request_secret)?,
+        device_app_key_proof: require_non_empty(
+            request.device_app_key_proof,
+            "device_app_key_proof",
+        )?,
+        requested_at: request.requested_at,
+        request_type: normalize_optional_device_approval_string(
+            request.request_type,
+            "request_type",
+            128,
+        )?,
+        resources: normalize_device_approval_resources(request.resources)?,
+        expires_at: request.expires_at,
+        profile_id: request.profile_id,
+        admin_app_key_pubkey: request
+            .admin_app_key_pubkey
+            .map(|value| normalize_nostr_pubkey(&value, "admin AppKey"))
+            .transpose()?,
+        label: normalize_optional_label(request.label),
+    };
+    normalized.device_app_key_proof = require_valid_device_approval_proof(&normalized)?;
+    Ok(normalized)
+}
+
+fn require_valid_device_approval_proof(
+    request: &NostrIdentityDeviceApprovalRequest,
+) -> Result<String, NostrIdentityError> {
+    let raw = require_non_empty(request.device_app_key_proof.clone(), "device_app_key_proof")?;
+    let event = Event::from_json(&raw)
+        .map_err(|error| NostrIdentityError::BadContent(error.to_string()))?;
+    event
+        .verify()
+        .map_err(|error| NostrIdentityError::SignatureFailed(error.to_string()))?;
+    if event.kind.as_u16() != FACT_OP_KIND {
+        return Err(NostrIdentityError::WrongKind {
+            expected: FACT_OP_KIND,
+            got: event.kind.as_u16(),
+        });
+    }
+    if !event.content.is_empty() {
+        return Err(NostrIdentityError::BadContent(
+            "device approval proof content must be empty".to_string(),
+        ));
+    }
+    let signer = event.pubkey.to_hex();
+    if signer != request.device_app_key_pubkey {
+        return Err(NostrIdentityError::BadContent(
+            "device approval proof signer mismatch".to_string(),
+        ));
+    }
+    let requested_at = non_negative_u64(request.requested_at, "requested_at")?;
+    if event.created_at.as_secs() != requested_at {
+        return Err(NostrIdentityError::CreatedAtMismatch {
+            event_created_at: i64::try_from(event.created_at.as_secs()).unwrap_or(i64::MAX),
+            content_created_at: request.requested_at,
+        });
+    }
+    require_proof_tag(&event, "type", NOSTR_IDENTITY_DEVICE_APPROVAL_PROOF_TYPE)?;
+    require_proof_tag(&event, "request_pubkey", &request.request_pubkey)?;
+    require_proof_tag(&event, "requested_at", &request.requested_at.to_string())?;
+    require_optional_proof_tag(&event, "request_type", request.request_type.as_deref())?;
+    let resources_json = if request.resources.is_empty() {
+        None
+    } else {
+        Some(
+            serde_json::to_string(&request.resources)
+                .map_err(|error| NostrIdentityError::BadContent(error.to_string()))?,
+        )
+    };
+    require_optional_proof_tag(&event, "requested_resources", resources_json.as_deref())?;
+    let expires_at = request.expires_at.map(|value| value.to_string());
+    require_optional_proof_tag(&event, "expires_at", expires_at.as_deref())?;
+    let profile_id = request.profile_id.map(|value| value.to_string());
+    require_optional_proof_tag(&event, "profile_id", profile_id.as_deref())?;
+    require_optional_proof_tag(
+        &event,
+        "admin_pubkey",
+        request.admin_app_key_pubkey.as_deref(),
+    )?;
+    require_optional_proof_tag(&event, "label", request.label.as_deref())?;
+    Ok(raw)
+}
+
+fn normalize_device_approval_resources(
+    resources: Vec<NostrIdentityDeviceApprovalRequestedResource>,
+) -> Result<Vec<NostrIdentityDeviceApprovalRequestedResource>, NostrIdentityError> {
+    resources
+        .into_iter()
+        .map(|resource| {
+            let mut scopes = Vec::new();
+            for scope in resource.scopes {
+                let scope = normalize_required_device_approval_string(scope, "scope", 256)?;
+                if !scopes.contains(&scope) {
+                    scopes.push(scope);
+                }
+            }
+            Ok(NostrIdentityDeviceApprovalRequestedResource {
+                resource_type: normalize_required_device_approval_string(
+                    resource.resource_type,
+                    "resource type",
+                    256,
+                )?,
+                id: normalize_required_device_approval_string(resource.id, "resource id", 256)?,
+                scopes,
+            })
+        })
+        .collect()
+}
+
+fn normalize_optional_device_approval_string(
+    value: Option<String>,
+    label: &str,
+    max_len: usize,
+) -> Result<Option<String>, NostrIdentityError> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let value = value.trim().to_string();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    if value.len() > max_len {
+        return Err(NostrIdentityError::BadContent(format!(
+            "NostrIdentity {label} is too long"
+        )));
+    }
+    Ok(Some(value))
+}
+
+fn normalize_required_device_approval_string(
+    value: String,
+    label: &str,
+    max_len: usize,
+) -> Result<String, NostrIdentityError> {
+    let value = value.trim().to_string();
+    if value.is_empty() {
+        return Err(NostrIdentityError::BadContent(format!(
+            "NostrIdentity {label} is required"
+        )));
+    }
+    if value.len() > max_len {
+        return Err(NostrIdentityError::BadContent(format!(
+            "NostrIdentity {label} is too long"
+        )));
+    }
+    Ok(value)
+}
+
+fn normalize_optional_label(value: Option<String>) -> Option<String> {
+    value
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn require_request_secret(value: String) -> Result<String, NostrIdentityError> {
+    let value = value.trim().to_string();
+    if value.len() < 32
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+    {
+        return Err(NostrIdentityError::BadContent(
+            "device approval request secret must be at least 32 base64url characters".to_string(),
+        ));
+    }
+    Ok(value)
+}
+
+fn random_device_approval_secret() -> String {
+    let mut bytes = Vec::with_capacity(32);
+    bytes.extend_from_slice(Uuid::new_v4().as_bytes());
+    bytes.extend_from_slice(Uuid::new_v4().as_bytes());
+    base64_url_encode(&bytes)
+}
+
+fn normalize_nostr_pubkey(value: &str, label: &str) -> Result<String, NostrIdentityError> {
+    npub_or_hex_to_pubkey(value, label)
+}
+
+fn npub_or_hex_to_pubkey(value: &str, label: &str) -> Result<String, NostrIdentityError> {
+    PublicKey::parse(value.trim())
+        .map(|pubkey| pubkey.to_hex())
+        .map_err(|error| NostrIdentityError::BadContent(format!("invalid {label} pubkey: {error}")))
+}
+
+fn pubkey_to_npub(pubkey: &str) -> Result<String, NostrIdentityError> {
+    PublicKey::from_hex(pubkey)
+        .map_err(|error| NostrIdentityError::InvalidPubkey(error.to_string()))?
+        .to_bech32()
+        .map_err(|error| NostrIdentityError::BadContent(error.to_string()))
+}
+
+fn tag_from_parts(parts: Vec<String>) -> Result<Tag, NostrIdentityError> {
+    Tag::parse(parts.iter().map(String::as_str))
+        .map_err(|error| NostrIdentityError::Event(error.to_string()))
+}
+
+fn require_proof_tag(event: &Event, name: &str, expected: &str) -> Result<(), NostrIdentityError> {
+    if proof_tag_value(event, name) == Some(expected) {
+        return Ok(());
+    }
+    Err(NostrIdentityError::BadContent(format!(
+        "device approval proof {name} mismatch"
+    )))
+}
+
+fn require_optional_proof_tag(
+    event: &Event,
+    name: &str,
+    expected: Option<&str>,
+) -> Result<(), NostrIdentityError> {
+    let actual = proof_tag_value(event, name);
+    match (actual, expected) {
+        (None, None) => Ok(()),
+        (Some(actual), Some(expected)) if actual == expected => Ok(()),
+        (Some(_), None) => Err(NostrIdentityError::BadContent(format!(
+            "device approval proof unexpected {name}"
+        ))),
+        _ => Err(NostrIdentityError::BadContent(format!(
+            "device approval proof {name} mismatch"
+        ))),
+    }
+}
+
+fn proof_tag_value<'a>(event: &'a Event, name: &str) -> Option<&'a str> {
+    event.tags.iter().find_map(|tag| {
+        let parts = tag.as_slice();
+        (parts.first().is_some_and(|kind| kind == name))
+            .then(|| parts.get(1).map(String::as_str))
+            .flatten()
+    })
+}
+
+fn payload_from_prefixed_url<'a>(
+    input: &'a str,
+    prefixes: &[&str],
+    default_prefix: &str,
+) -> Option<&'a str> {
+    let value = strip_nostr_scheme(input.trim());
+    if value.is_empty() {
+        return None;
+    }
+    prefixes
+        .iter()
+        .copied()
+        .filter(|prefix| !prefix.trim().is_empty())
+        .chain(std::iter::once(default_prefix))
+        .find_map(|prefix| {
+            let prefix = prefix.trim();
+            starts_with_ignore_ascii_case(value, prefix).then(|| {
+                value[prefix.len()..]
+                    .split(['?', '#'])
+                    .next()
+                    .unwrap_or("")
+                    .trim()
+            })
+        })
+        .filter(|payload| !payload.is_empty())
+}
+
+fn strip_nostr_scheme(value: &str) -> &str {
+    if starts_with_ignore_ascii_case(value, "nostr:") {
+        &value["nostr:".len()..]
+    } else {
+        value
+    }
+}
+
+fn starts_with_ignore_ascii_case(value: &str, prefix: &str) -> bool {
+    value.len() >= prefix.len() && value[..prefix.len()].eq_ignore_ascii_case(prefix)
+}
+
+fn base64_url_encode(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let mut out = String::with_capacity((bytes.len() * 4).div_ceil(3));
+    let mut chunks = bytes.chunks_exact(3);
+    for chunk in &mut chunks {
+        out.push(TABLE[(chunk[0] >> 2) as usize] as char);
+        out.push(TABLE[(((chunk[0] & 0x03) << 4) | (chunk[1] >> 4)) as usize] as char);
+        out.push(TABLE[(((chunk[1] & 0x0f) << 2) | (chunk[2] >> 6)) as usize] as char);
+        out.push(TABLE[(chunk[2] & 0x3f) as usize] as char);
+    }
+    let remainder = chunks.remainder();
+    if let [first] = remainder {
+        out.push(TABLE[(first >> 2) as usize] as char);
+        out.push(TABLE[((first & 0x03) << 4) as usize] as char);
+    } else if let [first, second] = remainder {
+        out.push(TABLE[(first >> 2) as usize] as char);
+        out.push(TABLE[(((first & 0x03) << 4) | (second >> 4)) as usize] as char);
+        out.push(TABLE[((second & 0x0f) << 2) as usize] as char);
+    }
+    out
+}
+
+fn base64_url_decode_utf8(value: &str) -> Result<String, NostrIdentityError> {
+    String::from_utf8(base64_url_decode(value)?)
+        .map_err(|error| NostrIdentityError::BadContent(error.to_string()))
+}
+
+fn base64_url_decode(value: &str) -> Result<Vec<u8>, NostrIdentityError> {
+    let value = value.trim();
+    if value.contains("...") || matches!(value, "<code>" | "<payload>" | "<invite>") {
+        return Err(NostrIdentityError::BadContent(
+            "device approval payload is a placeholder".to_string(),
+        ));
+    }
+    if value.len() % 4 == 1 {
+        return Err(NostrIdentityError::BadContent(
+            "device approval payload is not base64url".to_string(),
+        ));
+    }
+    let mut out = Vec::with_capacity(value.len() * 3 / 4);
+    let mut buffer = 0u32;
+    let mut bits = 0u8;
+    for byte in value.bytes() {
+        let value = match byte {
+            b'A'..=b'Z' => u32::from(byte - b'A'),
+            b'a'..=b'z' => u32::from(byte - b'a' + 26),
+            b'0'..=b'9' => u32::from(byte - b'0' + 52),
+            b'-' => 62,
+            b'_' => 63,
+            _ => {
+                return Err(NostrIdentityError::BadContent(
+                    "device approval payload is not base64url".to_string(),
+                ));
+            }
+        };
+        buffer = (buffer << 6) | value;
+        bits += 6;
+        while bits >= 8 {
+            bits -= 8;
+            out.push(((buffer >> bits) & 0xff) as u8);
+            buffer &= (1 << bits) - 1;
+        }
+    }
+    if bits > 0 && buffer != 0 {
+        return Err(NostrIdentityError::BadContent(
+            "device approval payload has invalid base64url padding bits".to_string(),
+        ));
+    }
+    Ok(out)
+}
+
 fn non_negative_u64(value: i64, label: &str) -> Result<u64, NostrIdentityError> {
     u64::try_from(value).map_err(|_| {
         NostrIdentityError::BadContent(format!("NostrIdentity {label} must be non-negative"))
@@ -1747,6 +2538,156 @@ mod tests {
         let receipt_roster_op =
             parse_nostr_identity_device_approval_receipt_roster_op(&parsed).unwrap();
         assert_eq!(receipt_roster_op.op_id, approval.op_id);
+    }
+
+    #[test]
+    fn device_link_invite_url_roundtrips_with_custom_or_default_prefix() {
+        let profile_id = NostrIdentityId::new_v4();
+        let admin = Keys::generate();
+        let invite_keys = Keys::generate();
+        let local =
+            create_nostr_identity_device_link_invite(CreateNostrIdentityDeviceLinkInviteOptions {
+                profile_id,
+                admin_app_key_pubkey: admin.public_key().to_bech32().unwrap(),
+                invite_keys: Some(invite_keys.clone()),
+            })
+            .unwrap();
+
+        assert_eq!(local.invite_keys.public_key(), invite_keys.public_key());
+        assert_eq!(local.invite.profile_id, profile_id);
+        assert_eq!(
+            local.invite.admin_app_key_pubkey,
+            admin.public_key().to_hex()
+        );
+        assert_eq!(
+            local.invite.invite_pubkey,
+            invite_keys.public_key().to_hex()
+        );
+
+        let default_encoded =
+            encode_nostr_identity_device_link_invite(&local.invite, None).unwrap();
+        let default_parsed = parse_nostr_identity_device_link_invite(&default_encoded, &[])
+            .unwrap()
+            .unwrap();
+        assert_eq!(default_parsed, local.invite);
+
+        let prefix = "https://drive.iris.to/invite/";
+        let encoded =
+            encode_nostr_identity_device_link_invite(&local.invite, Some(prefix)).unwrap();
+        let parsed = parse_nostr_identity_device_link_invite(&encoded, &[prefix])
+            .unwrap()
+            .unwrap();
+        assert_eq!(parsed, local.invite);
+        assert!(encoded.starts_with(prefix));
+        assert!(
+            parse_nostr_identity_device_link_invite("https://example.com/nope", &[prefix])
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn device_approval_request_url_roundtrips_and_rejects_tampering() {
+        let profile_id = NostrIdentityId::new_v4();
+        let admin = Keys::generate();
+        let device = Keys::generate();
+        let request_keys = Keys::generate();
+        let request_secret = "secret_abcdefghijklmnopqrstuvwxyz123456".to_string();
+        let local = create_nostr_identity_device_approval_request(
+            &device,
+            CreateNostrIdentityDeviceApprovalRequestOptions {
+                request_keys: Some(request_keys.clone()),
+                request_secret: Some(request_secret.clone()),
+                requested_at: 41,
+                request_type: Some("device_link".to_string()),
+                resources: vec![NostrIdentityDeviceApprovalRequestedResource {
+                    resource_type: "chat_group".to_string(),
+                    id: profile_id.to_string(),
+                    scopes: vec!["admin".to_string()],
+                }],
+                expires_at: Some(101),
+                profile_id: Some(profile_id),
+                admin_app_key_pubkey: Some(admin.public_key().to_hex()),
+                label: Some(" This device ".to_string()),
+            },
+        )
+        .unwrap();
+        let request = local.request;
+
+        assert_eq!(local.request_keys.public_key(), request_keys.public_key());
+        assert_eq!(request.request_pubkey, request_keys.public_key().to_hex());
+        assert_eq!(request.device_app_key_pubkey, device.public_key().to_hex());
+        assert_eq!(request.request_secret, request_secret);
+        assert_eq!(request.label.as_deref(), Some("This device"));
+        assert!(
+            !request
+                .device_app_key_proof
+                .contains(&request.request_secret)
+        );
+
+        let prefix = "https://chat.iris.to/approve-device/";
+        let encoded =
+            encode_nostr_identity_device_approval_request(&request, Some(prefix)).unwrap();
+        let parsed = parse_nostr_identity_device_approval_request(&encoded, &[prefix])
+            .unwrap()
+            .unwrap();
+        assert_eq!(parsed, request);
+        assert!(
+            parse_nostr_identity_device_approval_request("https://example.com/nope", &[prefix])
+                .unwrap()
+                .is_none()
+        );
+
+        let proof_event = Event::from_json(&request.device_app_key_proof).unwrap();
+        assert_eq!(proof_event.kind, Kind::from(FACT_OP_KIND));
+        assert_eq!(proof_event.pubkey, device.public_key());
+        assert!(proof_event.content.is_empty());
+        assert!(!proof_event.as_json().contains(&request.request_secret));
+        assert!(proof_event.tags.iter().any(|tag| {
+            tag.as_slice() == ["request_pubkey".to_string(), request.request_pubkey.clone()]
+        }));
+
+        let payload = encoded.trim_start_matches(prefix);
+        let mut tampered_payload: serde_json::Value =
+            serde_json::from_str(&base64_url_decode_utf8(payload).unwrap()).unwrap();
+        tampered_payload["resources"][0]["scopes"][0] = "read".into();
+        let tampered = format!(
+            "{prefix}{}",
+            base64_url_encode(tampered_payload.to_string().as_bytes())
+        );
+        assert!(parse_nostr_identity_device_approval_request(&tampered, &[prefix]).is_err());
+
+        let bootstrap = bootstrap_op(&admin, profile_id, 40);
+        let approval_content = approve_nostr_identity_device_approval_request(
+            ApproveNostrIdentityDeviceApprovalRequestOptions {
+                request: parsed,
+                profile_id,
+                roster_ops: vec![bootstrap],
+                approved_by_pubkey: admin.public_key().to_hex(),
+                approved_at: 42,
+                client_nonce: Some(
+                    nostr_identity_device_approval_client_nonce(
+                        "public_nonce_abcdefghijklmnopqrstuvwxyz123456",
+                    )
+                    .unwrap(),
+                ),
+                capabilities: None,
+            },
+        )
+        .unwrap();
+        assert!(
+            approval_content
+                .client_nonce
+                .starts_with(NOSTR_IDENTITY_DEVICE_APPROVAL_CLIENT_NONCE_PREFIX)
+        );
+        match approval_content.op {
+            NostrIdentityRosterOp::AddFacet { facet } => {
+                assert_eq!(facet.pubkey, device.public_key().to_hex());
+                assert_eq!(facet.profile_id, Some(profile_id));
+                assert_eq!(facet.capabilities, NostrIdentityCapabilities::app_writer());
+            }
+            other => panic!("expected add facet, got {other:?}"),
+        }
     }
 
     #[test]
