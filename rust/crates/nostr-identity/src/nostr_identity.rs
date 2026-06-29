@@ -20,7 +20,9 @@ use crate::{
     build_identity_key_acceptance_event, build_identity_roster_op_event_with_options, fact,
     parse_identity_key_acceptance_event, parse_identity_roster_op_event, project_identity_roster,
 };
+use nostr_sdk::nips::nip44::{self, Version as Nip44Version};
 use nostr_sdk::{Alphabet, Event, EventId, JsonUtil, Keys, PublicKey, SingleLetterTag, TagKind};
+use nostr_sdk::{EventBuilder, Kind, Tag};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
@@ -31,6 +33,9 @@ pub const NOSTR_IDENTITY_FACET_ACCEPTANCE_SCHEMA: u32 = 1;
 pub const KIND_NOSTR_IDENTITY_FACET_ACCEPTANCE: u16 = FACT_OP_KIND;
 pub const NOSTR_IDENTITY_ENCRYPTED_DEVICE_LABELS_FACT: &str = "encrypted_device_labels";
 pub const NOSTR_IDENTITY_ENCRYPTED_DEVICE_LABELS_SCHEMA: u32 = 1;
+pub const NOSTR_IDENTITY_DEVICE_APPROVAL_RECEIPT_TYPE: &str =
+    "nostr_identity_device_approval_receipt";
+pub const NOSTR_IDENTITY_DEVICE_APPROVAL_RECEIPT_SCHEMA: u32 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -436,6 +441,24 @@ pub struct SignedNostrIdentityRosterOp {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NostrIdentityDeviceApprovalReceipt {
+    pub schema: u32,
+    pub profile_id: NostrIdentityId,
+    pub request_pubkey: String,
+    pub device_app_key_pubkey: String,
+    pub approved_by_pubkey: String,
+    pub approved_at: i64,
+    pub request_secret: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject_pubkey: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub roster_op_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signed_roster_event: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NostrIdentityFacetAcceptanceContent {
     pub schema: u32,
@@ -499,7 +522,30 @@ pub fn build_nostr_identity_roster_op_event_with_encrypted_device_labels(
     created_at: i64,
     encrypted_device_labels: Option<String>,
 ) -> Result<Event, NostrIdentityError> {
-    let client_nonce = Uuid::new_v4().to_string();
+    build_nostr_identity_roster_op_event_with_client_nonce(
+        signer_keys,
+        profile_id,
+        parents,
+        actor_seq,
+        op,
+        created_at,
+        Uuid::new_v4().to_string(),
+        encrypted_device_labels,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn build_nostr_identity_roster_op_event_with_client_nonce(
+    signer_keys: &Keys,
+    profile_id: NostrIdentityId,
+    parents: Vec<String>,
+    actor_seq: Option<u64>,
+    op: NostrIdentityRosterOp,
+    created_at: i64,
+    client_nonce: impl Into<String>,
+    encrypted_device_labels: Option<String>,
+) -> Result<Event, NostrIdentityError> {
+    let client_nonce = require_non_empty(client_nonce.into(), "client_nonce")?;
     let content = NostrIdentityRosterOpContent {
         schema: NOSTR_IDENTITY_ROSTER_SCHEMA,
         profile_id,
@@ -663,6 +709,130 @@ pub fn parse_nostr_identity_roster_op_event(
         content,
         event_json: event.as_json(),
     })
+}
+
+pub fn build_nostr_identity_device_approval_receipt_event(
+    signer_keys: &Keys,
+    receipt: NostrIdentityDeviceApprovalReceipt,
+) -> Result<Event, NostrIdentityError> {
+    validate_device_approval_receipt(&receipt)?;
+    let signer_pubkey = signer_keys.public_key().to_hex();
+    if receipt.approved_by_pubkey != signer_pubkey {
+        return Err(NostrIdentityError::BadContent(
+            "device approval receipt signer mismatch".to_string(),
+        ));
+    }
+    if let Some(signed_roster_event) = &receipt.signed_roster_event {
+        let event = Event::from_json(signed_roster_event)
+            .map_err(|error| NostrIdentityError::BadContent(error.to_string()))?;
+        let signed = parse_nostr_identity_roster_op_event(&event)?;
+        validate_device_approval_receipt_roster_op(&receipt, &signed)?;
+    }
+    let request_pubkey = PublicKey::from_hex(&receipt.request_pubkey)
+        .map_err(|error| NostrIdentityError::InvalidPubkey(error.to_string()))?;
+    let encrypted = nip44::encrypt(
+        signer_keys.secret_key(),
+        &request_pubkey,
+        serde_json::to_string(&receipt)
+            .map_err(|error| NostrIdentityError::BadContent(error.to_string()))?,
+        Nip44Version::V2,
+    )
+    .map_err(|error| NostrIdentityError::Event(error.to_string()))?;
+    let profile_id = receipt.profile_id.to_string();
+    EventBuilder::new(Kind::from(FACT_OP_KIND), encrypted)
+        .tag(
+            Tag::parse(["type", NOSTR_IDENTITY_DEVICE_APPROVAL_RECEIPT_TYPE])
+                .map_err(|error| NostrIdentityError::Event(error.to_string()))?,
+        )
+        .tag(
+            Tag::parse(["p", receipt.request_pubkey.as_str()])
+                .map_err(|error| NostrIdentityError::Event(error.to_string()))?,
+        )
+        .tag(
+            Tag::parse(["i", profile_id.as_str(), "subject"])
+                .map_err(|error| NostrIdentityError::Event(error.to_string()))?,
+        )
+        .custom_created_at(nostr_sdk::Timestamp::from(non_negative_u64(
+            receipt.approved_at,
+            "approved_at",
+        )?))
+        .sign_with_keys(signer_keys)
+        .map_err(|error| NostrIdentityError::Event(error.to_string()))
+}
+
+pub fn parse_nostr_identity_device_approval_receipt_event(
+    event: &Event,
+    request_keys: &Keys,
+) -> Result<NostrIdentityDeviceApprovalReceipt, NostrIdentityError> {
+    if event.kind.as_u16() != FACT_OP_KIND {
+        return Err(NostrIdentityError::WrongKind {
+            expected: FACT_OP_KIND,
+            got: event.kind.as_u16(),
+        });
+    }
+    if !fact_event_has_type(event, NOSTR_IDENTITY_DEVICE_APPROVAL_RECEIPT_TYPE) {
+        return Err(NostrIdentityError::BadContent(
+            "device approval receipt type tag missing".to_string(),
+        ));
+    }
+    let request_pubkey = request_keys.public_key().to_hex();
+    if !event.tags.iter().any(|tag| {
+        let parts = tag.as_slice();
+        parts.first().is_some_and(|name| name == "p")
+            && parts.get(1).is_some_and(|value| value == &request_pubkey)
+    }) {
+        return Err(NostrIdentityError::BadContent(
+            "device approval receipt request pubkey mismatch".to_string(),
+        ));
+    }
+    let plaintext = nip44::decrypt(request_keys.secret_key(), &event.pubkey, &event.content)
+        .map_err(|error| NostrIdentityError::BadContent(error.to_string()))?;
+    let receipt: NostrIdentityDeviceApprovalReceipt = serde_json::from_str(&plaintext)
+        .map_err(|error| NostrIdentityError::BadContent(error.to_string()))?;
+    validate_device_approval_receipt(&receipt)?;
+    if receipt.request_pubkey != request_pubkey {
+        return Err(NostrIdentityError::BadContent(
+            "device approval receipt request mismatch".to_string(),
+        ));
+    }
+    if receipt.approved_by_pubkey != event.pubkey.to_hex() {
+        return Err(NostrIdentityError::BadContent(
+            "device approval receipt signer mismatch".to_string(),
+        ));
+    }
+    let event_created_at = i64::try_from(event.created_at.as_secs()).map_err(|_| {
+        NostrIdentityError::BadContent(
+            "device approval receipt timestamp overflows i64".to_string(),
+        )
+    })?;
+    if receipt.approved_at != event_created_at {
+        return Err(NostrIdentityError::CreatedAtMismatch {
+            event_created_at,
+            content_created_at: receipt.approved_at,
+        });
+    }
+    if let Some(signed_roster_event) = &receipt.signed_roster_event {
+        let roster_event = Event::from_json(signed_roster_event)
+            .map_err(|error| NostrIdentityError::BadContent(error.to_string()))?;
+        let signed = parse_nostr_identity_roster_op_event(&roster_event)?;
+        validate_device_approval_receipt_roster_op(&receipt, &signed)?;
+    }
+    Ok(receipt)
+}
+
+pub fn parse_nostr_identity_device_approval_receipt_roster_op(
+    receipt: &NostrIdentityDeviceApprovalReceipt,
+) -> Result<SignedNostrIdentityRosterOp, NostrIdentityError> {
+    let Some(signed_roster_event) = &receipt.signed_roster_event else {
+        return Err(NostrIdentityError::BadContent(
+            "device approval receipt missing signed roster event".to_string(),
+        ));
+    };
+    let event = Event::from_json(signed_roster_event)
+        .map_err(|error| NostrIdentityError::BadContent(error.to_string()))?;
+    let signed = parse_nostr_identity_roster_op_event(&event)?;
+    validate_device_approval_receipt_roster_op(receipt, &signed)?;
+    Ok(signed)
 }
 
 pub fn validate_signed_nostr_identity_roster_op(
@@ -1335,6 +1505,69 @@ fn validate_pubkey(pubkey: &str) -> Result<(), NostrIdentityError> {
     Ok(())
 }
 
+fn validate_device_approval_receipt(
+    receipt: &NostrIdentityDeviceApprovalReceipt,
+) -> Result<(), NostrIdentityError> {
+    if receipt.schema != NOSTR_IDENTITY_DEVICE_APPROVAL_RECEIPT_SCHEMA {
+        return Err(NostrIdentityError::UnsupportedSchema(receipt.schema));
+    }
+    validate_pubkey(&receipt.request_pubkey)?;
+    validate_pubkey(&receipt.device_app_key_pubkey)?;
+    validate_pubkey(&receipt.approved_by_pubkey)?;
+    if let Some(subject_pubkey) = &receipt.subject_pubkey {
+        validate_pubkey(subject_pubkey)?;
+    }
+    if let Some(roster_op_id) = &receipt.roster_op_id {
+        event_id_from_hex(roster_op_id)?;
+    }
+    require_non_empty(receipt.request_secret.clone(), "request_secret")?;
+    non_negative_u64(receipt.approved_at, "approved_at")?;
+    Ok(())
+}
+
+fn validate_device_approval_receipt_roster_op(
+    receipt: &NostrIdentityDeviceApprovalReceipt,
+    signed: &SignedNostrIdentityRosterOp,
+) -> Result<(), NostrIdentityError> {
+    if signed.content.profile_id != receipt.profile_id {
+        return Err(NostrIdentityError::BadContent(
+            "device approval receipt roster profile mismatch".to_string(),
+        ));
+    }
+    if signed.content.actor_pubkey != receipt.approved_by_pubkey {
+        return Err(NostrIdentityError::BadContent(
+            "device approval receipt roster signer mismatch".to_string(),
+        ));
+    }
+    if let Some(roster_op_id) = &receipt.roster_op_id
+        && &signed.op_id != roster_op_id
+    {
+        return Err(NostrIdentityError::BadContent(
+            "device approval receipt roster op id mismatch".to_string(),
+        ));
+    }
+    match &signed.content.op {
+        NostrIdentityRosterOp::AddFacet { facet }
+            if facet.pubkey == receipt.device_app_key_pubkey =>
+        {
+            Ok(())
+        }
+        _ => Err(NostrIdentityError::BadContent(
+            "device approval receipt roster does not add device".to_string(),
+        )),
+    }
+}
+
+fn require_non_empty(value: String, label: &str) -> Result<String, NostrIdentityError> {
+    let trimmed = value.trim().to_string();
+    if trimmed.is_empty() {
+        return Err(NostrIdentityError::BadContent(format!(
+            "NostrIdentity {label} is required"
+        )));
+    }
+    Ok(trimmed)
+}
+
 fn event_id_from_hex(event_id: &str) -> Result<EventId, NostrIdentityError> {
     EventId::from_hex(event_id).map_err(|e| NostrIdentityError::InvalidEventId(e.to_string()))
 }
@@ -1450,6 +1683,70 @@ mod tests {
         assert!(event.tags.iter().any(|tag| {
             tag.as_slice() == ["type".to_string(), IDENTITY_GRAPH_ROSTER_TYPE.to_string()]
         }));
+    }
+
+    #[test]
+    fn device_approval_receipt_encrypts_secret_and_signed_roster_event() {
+        let profile_id = NostrIdentityId::new_v4();
+        let admin = Keys::generate();
+        let device = Keys::generate();
+        let request = Keys::generate();
+        let bootstrap = bootstrap_op(&admin, profile_id, 40);
+        let approval_event = build_nostr_identity_roster_op_event_with_client_nonce(
+            &admin,
+            profile_id,
+            vec![bootstrap.op_id],
+            None,
+            NostrIdentityRosterOp::AddFacet {
+                facet: NostrIdentityFacet::app_key(
+                    device.public_key().to_hex(),
+                    42,
+                    None,
+                    NostrIdentityCapabilities::app_writer(),
+                ),
+            },
+            42,
+            "approval-public-nonce",
+            None,
+        )
+        .unwrap();
+        let approval = parse_nostr_identity_roster_op_event(&approval_event).unwrap();
+        let request_secret = "secret_abcdefghijklmnopqrstuvwxyz123456".to_string();
+        let receipt = NostrIdentityDeviceApprovalReceipt {
+            schema: NOSTR_IDENTITY_DEVICE_APPROVAL_RECEIPT_SCHEMA,
+            profile_id,
+            request_pubkey: request.public_key().to_hex(),
+            device_app_key_pubkey: device.public_key().to_hex(),
+            approved_by_pubkey: admin.public_key().to_hex(),
+            approved_at: 42,
+            request_secret: request_secret.clone(),
+            subject_pubkey: Some(admin.public_key().to_hex()),
+            roster_op_id: Some(approval.op_id.clone()),
+            signed_roster_event: Some(approval_event.as_json()),
+        };
+
+        let receipt_event =
+            build_nostr_identity_device_approval_receipt_event(&admin, receipt).unwrap();
+        assert!(fact_event_has_type(
+            &receipt_event,
+            NOSTR_IDENTITY_DEVICE_APPROVAL_RECEIPT_TYPE
+        ));
+        assert!(!receipt_event.content.contains(&request_secret));
+        assert!(
+            !receipt_event
+                .tags
+                .iter()
+                .flat_map(|tag| tag.as_slice())
+                .any(|value| value == &request_secret)
+        );
+
+        let parsed =
+            parse_nostr_identity_device_approval_receipt_event(&receipt_event, &request).unwrap();
+        assert_eq!(parsed.request_secret, request_secret);
+        assert_eq!(parsed.subject_pubkey, Some(admin.public_key().to_hex()));
+        let receipt_roster_op =
+            parse_nostr_identity_device_approval_receipt_roster_op(&parsed).unwrap();
+        assert_eq!(receipt_roster_op.op_id, approval.op_id);
     }
 
     #[test]
