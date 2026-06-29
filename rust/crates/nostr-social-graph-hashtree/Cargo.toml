@@ -1,0 +1,18 @@
+[package]
+name = "nostr-social-graph-hashtree"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+futures = "0.3"
+hashtree-core.workspace = true
+hashtree-fs.workspace = true
+nostr-social-graph = { version = "0.1.0", path = "../nostr-social-graph" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
