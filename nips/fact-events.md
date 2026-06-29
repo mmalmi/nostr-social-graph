@@ -4,9 +4,49 @@
 
 `draft` `optional`
 
-Subject-predicate-object events for signed facts about one UUID subject.
-Generic facts are tag-only. Extensions MAY define non-empty encrypted content
-when their public tags still identify the subject and event type.
+Fact events are tag-native statements about one stable UUID subject. They let
+Nostr apps publish small signed facts, update or dispute previous facts, and
+materialize trusted views without putting every application data model into a
+new event kind.
+
+## What This Is For
+
+Many apps need a way to say things like:
+
+- this UUID represents the same entity as `github:alice`
+- this pubkey controls this UUID entity
+- this review was written by this reviewer about this place
+- this app key is part of this profile's key roster
+
+Nostr already gives us signed events, relay-searchable tags, and local trust
+decisions. What is missing is a simple envelope for subject-scoped facts that
+different apps can reuse.
+
+This NIP defines that envelope:
+
+- one canonical UUID subject per event
+- facts encoded directly as tags, so they are easy to index and filter
+- append-only operations for changes over time
+- optional addressable snapshots for compact current state
+- explicit links for previous operations, replacements, and disputes
+- local trust: consumers decide which authors, relays, snapshots, and
+  predicates they accept
+
+This NIP does not define global truth, global uniqueness, or a universal
+predicate registry. Profiles can define their own predicates on top of the base
+event shape.
+
+## Mental Model
+
+A fact operation says:
+
+> The event author asserts these facts about this UUID subject.
+
+The event `pubkey` is the author of the claim. The subject is the entity the
+claim is about. Different authors can publish facts about the same subject, and
+consumers choose which authors and predicates to trust.
+
+Single-character tags are indexes or references. Multi-character tags are facts.
 
 ## Kinds
 
@@ -15,42 +55,53 @@ when their public tags still identify the subject and event type.
 
 ## Subject
 
-Each event MUST have exactly one subject tag:
+Each fact event MUST have exactly one subject tag:
 
 ```json
 ["i", "<subject>", "subject"]
 ```
 
-The event `pubkey` is the claim author. The subject is what the facts are about.
+The subject MUST be a canonical lowercase hyphenated UUID string.
 
-UUID subjects MUST be canonical lowercase hyphenated UUID strings.
+Example:
+
+```json
+["i", "6b7f5df4-1d2d-43a7-9b87-873e41a2d99a", "subject"]
+```
+
+The subject is not the event author. It is the entity, review, roster, or other
+object being described.
 
 ## Content
 
-Generic fact operation and snapshot `content` MUST be empty.
+Generic fact operations and snapshots MUST have empty `content`.
 
-An extension that carries private data MAY use non-empty encrypted content. Such
-events MUST still include public fact/index tags sufficient to identify the
-subject and extension `type`. The current identity link-request extension uses
-NIP-44 encrypted `content` and public tags only for `subject`, `type`, and the
-invite pubkey.
+Profiles that need private payloads MAY define extension events with non-empty
+encrypted `content`, but those events MUST still expose enough public tags to
+identify the subject and extension `type`. Generic fact parsers MAY ignore such
+extension events unless they implement that profile.
+
+The current identity link-request extension uses kind `7368` with NIP-44
+encrypted `content`; its public tags identify only the subject, extension
+`type`, and invite pubkey.
 
 ## Index Tags
 
-Reserved/index tags:
+These single-character tags are reserved for indexing and references:
 
 - `i`: subject and other searchable identifiers
 - `p`: pubkeys
 - `e`: event links
 - `d`: snapshot address
 
-Single-character tags are index/reference tags, not facts. Unknown
-single-character tags SHOULD be ignored by fact parsers. `d`, `e`, `i`, and `p`
-MUST NOT be used as fact predicates.
+Single-character tags are not facts. Unknown single-character tags SHOULD be
+ignored by fact parsers. `d`, `e`, `i`, and `p` MUST NOT be used as fact
+predicates.
 
-`i` tags without the `subject` marker are index-only. They do not assert facts.
+`i` tags without the `subject` marker are index-only. They make an event easier
+to find, but they do not assert a fact.
 
-Example crawled unsigned source:
+Example:
 
 ```json
 [
@@ -61,17 +112,20 @@ Example crawled unsigned source:
 ]
 ```
 
-The `same_as` tag is the fact. The URL `i` tag is only searchable context.
+In this example, `same_as` is the fact. The other non-subject `i` tags are
+searchable context.
 
 ## Fact Tags
 
 Fact tags use a multi-character predicate as the tag name:
 
 ```json
-["<predicate>", "<object>", "<argument-1>", "..."]
+["<predicate>", "<value-1>", "<value-2>", "..."]
 ```
 
-Predicates MUST be at least two characters and MUST NOT contain whitespace.
+The predicate MUST be at least two characters and MUST NOT contain whitespace.
+The remaining tag fields are ordered string values. For simple binary facts,
+the first value is the object. Additional values can qualify the fact.
 
 UUID and pubkey values SHOULD be bare canonical strings, without `uuid:` or `p:`
 prefixes.
@@ -84,11 +138,12 @@ Examples:
 ["same_as", "github:alice"]
 ["member_of", "<uuid>"]
 ["not_member_of", "<uuid>"]
+["rating", "4", "5"]
 ```
 
 ## Operation Links
 
-Kind `7368` events MAY link other operations:
+Kind `7368` events MAY link other fact operations:
 
 ```json
 ["e", "<event-id>", "", "prev"]
@@ -96,15 +151,16 @@ Kind `7368` events MAY link other operations:
 ["e", "<event-id>", "", "dispute"]
 ```
 
-- `prev`: previous op by the same author for the same subject
-- `replace`: op this author supersedes
-- `dispute`: op this author disputes
+- `prev`: previous operation by the same author for the same subject
+- `replace`: operation this author intends to supersede
+- `dispute`: operation this author disputes
 
 Kind `7368` operation events MUST NOT use a `d` tag.
 
 ## Snapshots
 
-Kind `37368` events MUST include:
+Kind `37368` events are addressable snapshots of a subject's materialized facts.
+They MUST include:
 
 ```json
 ["d", "<subject>"]
@@ -124,15 +180,41 @@ Snapshot tags SHOULD be deduplicated and sorted before signing.
 Snapshot parsers MAY ignore `expiration` as snapshot metadata rather than a fact
 predicate.
 
+A snapshot is a convenience, not universal truth. Consumers still decide whether
+they trust the snapshot author and the facts inside it.
+
 ## Projection
 
-Consumers that materialize a subject SHOULD sort operations by `created_at`, then
-event id. A `replace` link removes the referenced operation from the projected
-fact set. A `dispute` link records dispute metadata but does not remove facts by
-itself. `prev` links identify previous operations by the same author for the same
-subject and are used to compute operation heads.
+To materialize a subject from operations, consumers SHOULD:
+
+1. Keep only operations for the target subject.
+2. Sort operations by `created_at`, then event id.
+3. Remove operations referenced by accepted `replace` links.
+4. Apply the remaining facts.
+5. Record accepted `dispute` links as metadata. A `dispute` link does not remove
+   facts by itself.
+6. Use `prev` links to compute operation heads.
+
+This leaves conflict resolution to the consumer's trust policy. For example, a
+client may accept only facts from selected authors, prefer recent operations, or
+show disputed facts with warnings.
+
+## Profiles
+
+The base format intentionally does not reserve most predicates. A profile can
+define a vocabulary for a domain by specifying:
+
+- expected `type` facts, if any
+- allowed or required predicates
+- how predicates map to application data
+- any profile-specific validation rules
+
+Consumers SHOULD ignore predicates and profiles they do not understand.
 
 ## UUID Entity Profile
+
+This profile describes a durable entity that may be known by external
+identifiers and controlled by Nostr pubkeys.
 
 Suggested predicates:
 
@@ -161,7 +243,8 @@ Example:
 
 ## Review Profile
 
-A review is a subject.
+This profile treats each review as its own UUID subject. The reviewed object and
+reviewer can be external identifiers, UUID subjects, or profile-defined values.
 
 Suggested predicates:
 
@@ -203,18 +286,18 @@ Example:
 }
 ```
 
-## Trust
-
-Consumers decide which authors, relays, snapshots, and predicates they trust.
-
 ## Nostr Identity Profile
 
-The current `nostr-identity` implementation defines app-facing profile identity
-events on top of fact operations. All event kinds are `7368`.
+The current `nostr-identity` implementation defines profile identity events on
+top of fact operations. This section documents that implemented profile; generic
+fact-event consumers do not need to implement it.
+
+Roster operations and facet acceptance events use kind `7368` with empty
+`content`. Link requests use kind `7368` with encrypted `content`.
 
 ### Roster Operation
 
-Public facts:
+Roster operations have these public facts:
 
 - `type`: `nostr_identity_roster_op`
 - `schema`: `1`
@@ -231,14 +314,14 @@ Operation-specific facts:
   zero or more `key_capability`, `key_added_at`, optional `key_label`
 - `tombstone_key`: `target_pubkey`, optional `reason`
 - `set_key_capabilities`: `target_pubkey`, zero or more `capability`
-- `rotate_secret_epoch` / `repair_secret_wraps`: `secret_epoch`, zero or more
+- `rotate_secret_epoch` and `repair_secret_wraps`: `secret_epoch`, zero or more
   `wrapped_secret` facts with `[pubkey, wrapped]`
 
 Supported neutral capabilities are `admin`, `write`, `recover`,
 `receive_secret_wraps`, and `decrypt_secret_epochs`. Supported neutral purposes
 are `app`, `recovery`, `remote_signer`, and `profile`.
 
-### NostrIdentity Names
+### NostrIdentity API Names
 
 The app-facing `NostrIdentity` API maps neutral keys to facets:
 
@@ -267,7 +350,7 @@ Facet self-acceptance events are fact operations with:
 
 ### Link Request
 
-Link requests are fact operations with encrypted content:
+Link requests are profile-defined extension events with encrypted content:
 
 - `type`: `nostr_identity_link_request`
 - subject `i` tag: profile UUID
