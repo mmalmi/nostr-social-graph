@@ -194,6 +194,9 @@ describe('NostrIdentity', () => {
       requestSecretKey,
       requestSecret: 'secret_abcdefghijklmnopqrstuvwxyz123456',
       requestedAt: 41,
+      requestType: 'device_link',
+      resources: [{ type: 'chat_group', id: profileId, scopes: ['admin'] }],
+      expiresAt: 101,
       label: 'This device',
     });
     expect(request.requestPubkey).toBe(requestPubkey);
@@ -210,8 +213,20 @@ describe('NostrIdentity', () => {
       requestSecret: request.requestSecret,
       deviceAppKeyProof: request.deviceAppKeyProof,
       requestedAt: request.requestedAt,
+      requestType: request.requestType,
+      resources: request.resources,
+      expiresAt: request.expiresAt,
       label: request.label,
     });
+
+    const approvalPrefix = 'https://chat.iris.to/approve-device/';
+    const tamperedPayload = JSON.parse(Buffer.from(encoded.slice(approvalPrefix.length), 'base64url').toString('utf8'));
+    tamperedPayload.resources = [{ type: 'chat_group', id: profileId, scopes: ['read'] }];
+    const tampered = parseNostrIdentityDeviceApprovalRequest(
+      `${approvalPrefix}${Buffer.from(JSON.stringify(tamperedPayload), 'utf8').toString('base64url')}`,
+      { prefixes: [approvalPrefix] },
+    );
+    expect(tampered).toBeNull();
 
     expect(request.deviceAppKeyProof).not.toContain(request.requestSecret);
 

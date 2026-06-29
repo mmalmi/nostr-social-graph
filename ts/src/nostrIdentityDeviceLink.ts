@@ -67,9 +67,18 @@ export interface NostrIdentityDeviceApprovalRequest {
   requestSecret: string;
   deviceAppKeyProof: string;
   requestedAt: number;
+  requestType?: string;
+  resources?: NostrIdentityDeviceApprovalRequestedResource[];
+  expiresAt?: number;
   profileId?: NostrIdentityId;
   adminAppKeyPubkey?: string;
   label?: string;
+}
+
+export interface NostrIdentityDeviceApprovalRequestedResource {
+  type: string;
+  id: string;
+  scopes?: string[];
 }
 
 export interface LocalNostrIdentityDeviceApprovalRequest extends NostrIdentityDeviceApprovalRequest {
@@ -103,6 +112,9 @@ interface NostrIdentityDeviceApprovalRequestPayload {
   requestSecret: string;
   deviceAppKeyProof: string;
   requestedAt: number;
+  requestType?: string;
+  resources?: NostrIdentityDeviceApprovalRequestedResource[];
+  expiresAt?: number;
   profileId?: string;
   adminAppKeyNpub?: string;
   label?: string;
@@ -260,6 +272,9 @@ export function createNostrIdentityDeviceApprovalRequest(options: {
   requestSecretKey?: Uint8Array;
   requestSecret?: string;
   requestedAt: number;
+  requestType?: string;
+  resources?: NostrIdentityDeviceApprovalRequestedResource[];
+  expiresAt?: number;
   profileId?: NostrIdentityId;
   adminAppKeyPubkey?: string;
   label?: string;
@@ -269,6 +284,9 @@ export function createNostrIdentityDeviceApprovalRequest(options: {
   const requestPubkey = getPublicKey(requestSecretKey);
   const requestSecret = requireRequestSecret(options.requestSecret ?? randomDeviceApprovalSecret());
   const requestedAt = requireInteger(options.requestedAt, 'requestedAt');
+  const requestType = normalizeOptionalDeviceApprovalString(options.requestType, 'requestType');
+  const resources = normalizeDeviceApprovalResources(options.resources);
+  const expiresAt = options.expiresAt !== undefined ? requireInteger(options.expiresAt, 'expiresAt') : undefined;
   const profileId = options.profileId !== undefined ? requireProfileId(options.profileId) : undefined;
   const adminAppKeyPubkey = options.adminAppKeyPubkey !== undefined
     ? requirePubkey(options.adminAppKeyPubkey, 'admin AppKey')
@@ -279,6 +297,9 @@ export function createNostrIdentityDeviceApprovalRequest(options: {
     requestPubkey,
     requestSecret,
     requestedAt,
+    ...(requestType !== undefined ? { requestType } : {}),
+    ...(resources !== undefined ? { resources } : {}),
+    ...(expiresAt !== undefined ? { expiresAt } : {}),
     ...(profileId !== undefined ? { profileId } : {}),
     ...(adminAppKeyPubkey !== undefined ? { adminAppKeyPubkey } : {}),
     ...(label !== undefined ? { label } : {}),
@@ -290,6 +311,9 @@ export function createNostrIdentityDeviceApprovalRequest(options: {
     requestSecret,
     deviceAppKeyProof: JSON.stringify(proof),
     requestedAt,
+    ...(requestType !== undefined ? { requestType } : {}),
+    ...(resources !== undefined ? { resources } : {}),
+    ...(expiresAt !== undefined ? { expiresAt } : {}),
     ...(profileId !== undefined ? { profileId } : {}),
     ...(adminAppKeyPubkey !== undefined ? { adminAppKeyPubkey } : {}),
     ...(label !== undefined ? { label } : {}),
@@ -307,6 +331,11 @@ export function encodeNostrIdentityDeviceApprovalRequest(
     requestSecret: requireRequestSecret(request.requestSecret),
     deviceAppKeyProof: requireValidDeviceApprovalProof(request),
     requestedAt: requireInteger(request.requestedAt, 'requestedAt'),
+    ...(request.requestType !== undefined
+      ? { requestType: normalizeOptionalDeviceApprovalString(request.requestType, 'requestType') }
+      : {}),
+    ...(request.resources !== undefined ? { resources: normalizeDeviceApprovalResources(request.resources) } : {}),
+    ...(request.expiresAt !== undefined ? { expiresAt: requireInteger(request.expiresAt, 'expiresAt') } : {}),
     ...(request.profileId !== undefined ? { profileId: requireProfileId(request.profileId) } : {}),
     ...(request.adminAppKeyPubkey !== undefined ? { adminAppKeyNpub: pubkeyToNpub(request.adminAppKeyPubkey) } : {}),
     ...(request.label?.trim() ? { label: request.label.trim() } : {}),
@@ -551,6 +580,11 @@ function normalizeDeviceApprovalRequestPayload(
     requestSecret: requireRequestSecret(String(payload.requestSecret ?? '')),
     deviceAppKeyProof: String(payload.deviceAppKeyProof ?? ''),
     requestedAt: requireInteger(payload.requestedAt, 'requestedAt'),
+    ...(payload.requestType !== undefined
+      ? { requestType: normalizeOptionalDeviceApprovalString(payload.requestType, 'requestType') }
+      : {}),
+    ...(payload.resources !== undefined ? { resources: normalizeDeviceApprovalResources(payload.resources) } : {}),
+    ...(payload.expiresAt !== undefined ? { expiresAt: requireInteger(payload.expiresAt, 'expiresAt') } : {}),
     ...(payload.profileId !== undefined ? { profileId: requireProfileId(String(payload.profileId)) } : {}),
     ...(adminAppKeyPubkey !== undefined ? { adminAppKeyPubkey } : {}),
     ...(typeof payload.label === 'string' && payload.label.trim() ? { label: payload.label.trim() } : {}),
@@ -610,11 +644,17 @@ function buildNostrIdentityDeviceApprovalProofEvent(options: {
   requestPubkey: string;
   requestSecret: string;
   requestedAt: number;
+  requestType?: string;
+  resources?: NostrIdentityDeviceApprovalRequestedResource[];
+  expiresAt?: number;
   profileId?: NostrIdentityId;
   adminAppKeyPubkey?: string;
   label?: string;
 }): Event {
   const requestedAt = requireInteger(options.requestedAt, 'requestedAt');
+  const requestType = normalizeOptionalDeviceApprovalString(options.requestType, 'requestType');
+  const resources = normalizeDeviceApprovalResources(options.resources);
+  const expiresAt = options.expiresAt !== undefined ? requireInteger(options.expiresAt, 'expiresAt') : undefined;
   return finalizeEvent({
     kind: FACT_OP_KIND,
     content: '',
@@ -623,6 +663,9 @@ function buildNostrIdentityDeviceApprovalProofEvent(options: {
       ['type', NOSTR_IDENTITY_DEVICE_APPROVAL_PROOF_TYPE],
       ['request_pubkey', requirePubkey(options.requestPubkey, 'request')],
       ['requested_at', String(requestedAt)],
+      ...(requestType !== undefined ? [['request_type', requestType]] : []),
+      ...(resources !== undefined ? [['requested_resources', JSON.stringify(resources)]] : []),
+      ...(expiresAt !== undefined ? [['expires_at', String(expiresAt)]] : []),
       ...(options.profileId !== undefined ? [['profile_id', requireProfileId(options.profileId)]] : []),
       ...(options.adminAppKeyPubkey !== undefined ? [['admin_pubkey', requirePubkey(options.adminAppKeyPubkey, 'admin AppKey')]] : []),
       ...(options.label?.trim() ? [['label', options.label.trim()]] : []),
@@ -645,10 +688,63 @@ function requireValidDeviceApprovalProof(request: NostrIdentityDeviceApprovalReq
   requireProofTag(event, 'type', NOSTR_IDENTITY_DEVICE_APPROVAL_PROOF_TYPE);
   requireProofTag(event, 'request_pubkey', requirePubkey(request.requestPubkey, 'request'));
   requireProofTag(event, 'requested_at', String(request.requestedAt));
+  requireOptionalProofTag(event, 'request_type', request.requestType);
+  requireOptionalProofTag(
+    event,
+    'requested_resources',
+    request.resources !== undefined ? JSON.stringify(normalizeDeviceApprovalResources(request.resources)) : undefined,
+  );
+  requireOptionalProofTag(event, 'expires_at', request.expiresAt !== undefined ? String(request.expiresAt) : undefined);
   requireOptionalProofTag(event, 'profile_id', request.profileId);
   requireOptionalProofTag(event, 'admin_pubkey', request.adminAppKeyPubkey);
   requireOptionalProofTag(event, 'label', request.label);
   return raw;
+}
+
+function normalizeOptionalDeviceApprovalString(value: unknown, label: string): string | undefined {
+  if (value === undefined) return undefined;
+  const normalized = String(value).trim();
+  if (!normalized) return undefined;
+  if (normalized.length > 128) throw new Error(`${label} is too long`);
+  return normalized;
+}
+
+function normalizeDeviceApprovalResources(
+  resources: unknown,
+): NostrIdentityDeviceApprovalRequestedResource[] | undefined {
+  if (resources === undefined) return undefined;
+  if (!Array.isArray(resources)) throw new Error('resources must be an array');
+  const normalized = resources.map((resource, index) => {
+    if (resource === null || typeof resource !== 'object' || Array.isArray(resource)) {
+      throw new Error(`resources[${index}] must be an object`);
+    }
+    const record = resource as Record<string, unknown>;
+    const type = normalizeRequiredDeviceApprovalString(record.type, `resources[${index}].type`);
+    const id = normalizeRequiredDeviceApprovalString(record.id, `resources[${index}].id`);
+    const scopes = normalizeDeviceApprovalScopes(record.scopes, `resources[${index}].scopes`);
+    return {
+      type,
+      id,
+      ...(scopes !== undefined ? { scopes } : {}),
+    };
+  });
+  return normalized.length ? normalized : undefined;
+}
+
+function normalizeRequiredDeviceApprovalString(value: unknown, label: string): string {
+  const normalized = String(value ?? '').trim();
+  if (!normalized) throw new Error(`${label} is required`);
+  if (normalized.length > 256) throw new Error(`${label} is too long`);
+  return normalized;
+}
+
+function normalizeDeviceApprovalScopes(value: unknown, label: string): string[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) throw new Error(`${label} must be an array`);
+  const scopes = value
+    .map((scope) => normalizeRequiredDeviceApprovalString(scope, label))
+    .filter((scope, index, array) => array.indexOf(scope) === index);
+  return scopes.length ? scopes : undefined;
 }
 
 function requireProofTag(event: Event, name: string, expected: string): void {
