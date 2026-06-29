@@ -4,7 +4,9 @@
 
 `draft` `optional`
 
-Tag-only subject-predicate-object events for signed facts about one subject.
+Subject-predicate-object events for signed facts about one UUID subject.
+Generic facts are tag-only. Extensions MAY define non-empty encrypted content
+when their public tags still identify the subject and event type.
 
 ## Kinds
 
@@ -25,18 +27,26 @@ UUID subjects MUST be canonical lowercase hyphenated UUID strings.
 
 ## Content
 
-`content` MUST be empty.
+Generic fact operation and snapshot `content` MUST be empty.
+
+An extension that carries private data MAY use non-empty encrypted content. Such
+events MUST still include public fact/index tags sufficient to identify the
+subject and extension `type`. The current identity link-request extension uses
+NIP-44 encrypted `content` and public tags only for `subject`, `type`, and the
+invite pubkey.
 
 ## Index Tags
 
-Single-character tags are index/reference tags, not facts.
-
-Defined tags:
+Reserved/index tags:
 
 - `i`: subject and other searchable identifiers
 - `p`: pubkeys
 - `e`: event links
-- `a`: addressable event links
+- `d`: snapshot address
+
+Single-character tags are index/reference tags, not facts. Unknown
+single-character tags SHOULD be ignored by fact parsers. `d`, `e`, `i`, and `p`
+MUST NOT be used as fact predicates.
 
 `i` tags without the `subject` marker are index-only. They do not assert facts.
 
@@ -90,6 +100,8 @@ Kind `7368` events MAY link other operations:
 - `replace`: op this author supersedes
 - `dispute`: op this author disputes
 
+Kind `7368` operation events MUST NOT use a `d` tag.
+
 ## Snapshots
 
 Kind `37368` events MUST include:
@@ -108,6 +120,17 @@ Snapshot events MAY link operation heads:
 ```
 
 Snapshot tags SHOULD be deduplicated and sorted before signing.
+
+Snapshot parsers MAY ignore `expiration` as snapshot metadata rather than a fact
+predicate.
+
+## Projection
+
+Consumers that materialize a subject SHOULD sort operations by `created_at`, then
+event id. A `replace` link removes the referenced operation from the projected
+fact set. A `dispute` link records dispute metadata but does not remove facts by
+itself. `prev` links identify previous operations by the same author for the same
+subject and are used to compute operation heads.
 
 ## UUID Entity Profile
 
@@ -183,3 +206,75 @@ Example:
 ## Trust
 
 Consumers decide which authors, relays, snapshots, and predicates they trust.
+
+## Nostr Identity Profile
+
+The current `nostr-identity` implementation defines app-facing profile identity
+events on top of fact operations. All event kinds are `7368`.
+
+### Roster Operation
+
+Public facts:
+
+- `type`: `nostr_identity_roster_op`
+- `schema`: `1`
+- `actor_pubkey`: signer pubkey
+- `actor_seq`: optional integer
+- `client_nonce`: caller nonce
+- `created_at`: event timestamp as decimal text
+- `op`: one of `add_key`, `tombstone_key`, `set_key_capabilities`,
+  `rotate_secret_epoch`, `repair_secret_wraps`
+
+Operation-specific facts:
+
+- `add_key`: `key_pubkey`, optional `key_subject`, zero or more `key_purpose`,
+  zero or more `key_capability`, `key_added_at`, optional `key_label`
+- `tombstone_key`: `target_pubkey`, optional `reason`
+- `set_key_capabilities`: `target_pubkey`, zero or more `capability`
+- `rotate_secret_epoch` / `repair_secret_wraps`: `secret_epoch`, zero or more
+  `wrapped_secret` facts with `[pubkey, wrapped]`
+
+Supported neutral capabilities are `admin`, `write`, `recover`,
+`receive_secret_wraps`, and `decrypt_secret_epochs`. Supported neutral purposes
+are `app`, `recovery`, `remote_signer`, and `profile`.
+
+### NostrIdentity Names
+
+The app-facing `NostrIdentity` API maps neutral keys to facets:
+
+- purposes: `app_key`, `recovery_phrase`, `nip46_signer`, `social_profile`
+- capabilities: `can_write_roots`, `can_admin_profile`,
+  `can_recover_app_keys`, `can_receive_secret_wraps`,
+  `can_decrypt_secret_epochs`
+- ops: `add_facet`, `tombstone_facet`, `set_capabilities`,
+  `rotate_secret_epoch`, `repair_secret_wraps`
+
+App-key labels are not published as `key_label` facts. Device labels are carried
+only by the optional `encrypted_device_labels` extension fact, whose payload is
+app-encrypted. Non-app facets such as `social_profile` MAY publish `key_label`.
+
+### Facet Acceptance
+
+Facet self-acceptance events are fact operations with:
+
+- `type`: `nostr_identity_key_acceptance`
+- `schema`: `1`
+- `key_pubkey`: accepting facet pubkey, which MUST equal the event signer
+- one or more `purpose`
+- optional `roster_op_id`
+- `client_nonce`
+- `accepted_at`, which MUST equal event `created_at`
+
+### Link Request
+
+Link requests are fact operations with encrypted content:
+
+- `type`: `nostr_identity_link_request`
+- subject `i` tag: profile UUID
+- `p` tag: invite pubkey
+- `content`: NIP-44 ciphertext encrypted from the joining key to the invite key
+
+The encrypted JSON contains `identity`, `admin_pubkey`, `invite_pubkey`,
+`joining_pubkey`, `client_nonce`, `requested_at`, and optional `label`.
+`requested_at` MUST equal event `created_at`; `joining_pubkey` MUST equal the
+event signer; `invite_pubkey` MUST match the public `p` tag.
