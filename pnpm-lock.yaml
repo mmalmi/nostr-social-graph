@@ -31,6 +31,9 @@ importers:
       cors:
         specifier: ^2.8.5
         version: 2.8.5
+      nostr-tools:
+        specifier: ^2.12.0
+        version: 2.12.0(typescript@5.8.3)
     devDependencies:
       '@hashtree/core':
         specifier: link:../../hashtree/ts/packages/hashtree
@@ -119,9 +122,6 @@ importers:
       node-fetch:
         specifier: ^3.3.2
         version: 3.3.2
-      nostr-tools:
-        specifier: ^2.12.0
-        version: 2.12.0(typescript@5.8.3)
       postcss:
         specifier: ^8.5.3
         version: 8.5.3
