@@ -20,8 +20,9 @@ const PREV_MARKER: &str = "prev";
 const REPLACE_MARKER: &str = "replace";
 const DISPUTE_MARKER: &str = "dispute";
 const HEAD_MARKER: &str = "head";
+const SNAPSHOT_MS_TAG: &str = "ms";
 
-const RESERVED_TAGS: &[&str] = &["d", "e", "i", "p"];
+const RESERVED_TAGS: &[&str] = &["d", "e", "i", "p", SNAPSHOT_MS_TAG];
 
 /// A tag-native predicate assertion for one UUID subject.
 ///
@@ -75,6 +76,7 @@ pub struct FactSnapshot {
     pub mentioned_subjects: BTreeSet<Uuid>,
     pub heads: Vec<String>,
     pub created_at: u64,
+    pub created_at_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -192,10 +194,76 @@ pub fn build_fact_snapshot_event_with_identifiers(
     heads: impl IntoIterator<Item = String>,
     created_at: u64,
 ) -> Result<Event> {
+    build_fact_snapshot_event_inner(
+        keys,
+        subject,
+        facts,
+        external_identifiers,
+        heads,
+        created_at,
+        None,
+    )
+}
+
+pub fn build_fact_snapshot_event_with_created_at_ms(
+    keys: &Keys,
+    subject: Uuid,
+    facts: impl IntoIterator<Item = Fact>,
+    heads: impl IntoIterator<Item = String>,
+    created_at: u64,
+    created_at_ms: u64,
+) -> Result<Event> {
+    build_fact_snapshot_event_with_identifiers_and_created_at_ms(
+        keys,
+        subject,
+        facts,
+        [],
+        heads,
+        created_at,
+        created_at_ms,
+    )
+}
+
+pub fn build_fact_snapshot_event_with_identifiers_and_created_at_ms(
+    keys: &Keys,
+    subject: Uuid,
+    facts: impl IntoIterator<Item = Fact>,
+    external_identifiers: impl IntoIterator<Item = String>,
+    heads: impl IntoIterator<Item = String>,
+    created_at: u64,
+    created_at_ms: u64,
+) -> Result<Event> {
+    build_fact_snapshot_event_inner(
+        keys,
+        subject,
+        facts,
+        external_identifiers,
+        heads,
+        created_at,
+        Some(created_at_ms),
+    )
+}
+
+fn build_fact_snapshot_event_inner(
+    keys: &Keys,
+    subject: Uuid,
+    facts: impl IntoIterator<Item = Fact>,
+    external_identifiers: impl IntoIterator<Item = String>,
+    heads: impl IntoIterator<Item = String>,
+    created_at: u64,
+    created_at_ms: Option<u64>,
+) -> Result<Event> {
     let facts = normalize_facts(facts)?;
     let external_identifiers = normalize_external_identifiers(external_identifiers)?;
     let heads = normalize_event_ids(heads, HEAD_MARKER)?;
-    let tags = fact_snapshot_tags(subject, &facts, &external_identifiers, &heads)?;
+    let created_at_ms = validate_created_at_ms(created_at, created_at_ms)?;
+    let tags = fact_snapshot_tags(
+        subject,
+        &facts,
+        &external_identifiers,
+        &heads,
+        created_at_ms,
+    )?;
     EventBuilder::new(Kind::from(FACT_SNAPSHOT_KIND), "")
         .tags(tags)
         .custom_created_at(Timestamp::from(created_at))
@@ -247,6 +315,7 @@ pub fn parse_fact_snapshot_event(event: &Event) -> Result<FactSnapshot> {
             parsed.subject
         );
     }
+    let created_at_ms = validate_created_at_ms(event.created_at.as_secs(), parsed.created_at_ms)?;
     Ok(FactSnapshot {
         snapshot_id: event.id.to_hex(),
         author_pubkey: event.pubkey.to_hex(),
@@ -257,7 +326,15 @@ pub fn parse_fact_snapshot_event(event: &Event) -> Result<FactSnapshot> {
         mentioned_subjects: parsed.mentioned_subjects,
         heads: parsed.heads,
         created_at: event.created_at.as_secs(),
+        created_at_ms,
     })
+}
+
+pub fn compare_fact_snapshots(left: &FactSnapshot, right: &FactSnapshot) -> std::cmp::Ordering {
+    left.created_at
+        .cmp(&right.created_at)
+        .then_with(|| fact_snapshot_order_ms(left).cmp(&fact_snapshot_order_ms(right)))
+        .then_with(|| left.snapshot_id.cmp(&right.snapshot_id))
 }
 
 pub fn project_fact_ops(subject: Uuid, ops: impl IntoIterator<Item = FactOp>) -> FactProjection {
@@ -376,6 +453,7 @@ fn fact_snapshot_tags(
     facts: &[Fact],
     external_identifiers: &BTreeSet<String>,
     heads: &[String],
+    created_at_ms: Option<u64>,
 ) -> Result<Vec<Tag>> {
     let mut raw = Vec::new();
     raw.push(vec!["d".to_owned(), subject.to_string()]);
@@ -384,6 +462,9 @@ fn fact_snapshot_tags(
         subject.to_string(),
         SUBJECT_MARKER.to_owned(),
     ]);
+    if let Some(created_at_ms) = created_at_ms {
+        raw.push(vec![SNAPSHOT_MS_TAG.to_owned(), created_at_ms.to_string()]);
+    }
     for id in heads {
         raw.push(vec![
             "e".to_owned(),
@@ -538,6 +619,31 @@ fn normalize_event_ids(
     Ok(ids.into_iter().collect())
 }
 
+fn validate_created_at_ms(created_at: u64, created_at_ms: Option<u64>) -> Result<Option<u64>> {
+    let Some(created_at_ms) = created_at_ms else {
+        return Ok(None);
+    };
+    if created_at_ms / 1000 != created_at {
+        bail!("fact snapshot ms tag {created_at_ms} does not match created_at {created_at}");
+    }
+    Ok(Some(created_at_ms))
+}
+
+fn parse_created_at_ms(value: &str) -> Result<u64> {
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        bail!("fact snapshot ms tag must be decimal milliseconds: {value}");
+    }
+    value
+        .parse::<u64>()
+        .map_err(|error| anyhow!("invalid fact snapshot ms tag {value}: {error}"))
+}
+
+fn fact_snapshot_order_ms(snapshot: &FactSnapshot) -> u64 {
+    snapshot
+        .created_at_ms
+        .unwrap_or_else(|| snapshot.created_at.saturating_mul(1000))
+}
+
 fn raw_to_tags(raw: Vec<Vec<String>>) -> Result<Vec<Tag>> {
     raw.iter()
         .map(|parts| {
@@ -569,6 +675,7 @@ fn parse_common_event(event: &Event, snapshot: bool) -> Result<ParsedFactEvent> 
     let mut replace = Vec::new();
     let mut dispute = Vec::new();
     let mut heads = Vec::new();
+    let mut created_at_ms = None;
 
     for tag in event.tags.iter() {
         let parts = tag.as_slice();
@@ -621,6 +728,17 @@ fn parse_common_event(event: &Event, snapshot: bool) -> Result<ParsedFactEvent> 
                     None => bail!("fact e tag is missing marker"),
                 }
             }
+            SNAPSHOT_MS_TAG => {
+                if !snapshot {
+                    bail!("fact op event must not use ms tag");
+                }
+                let Some(value) = parts.get(1) else {
+                    bail!("fact snapshot ms tag is missing value");
+                };
+                if created_at_ms.replace(parse_created_at_ms(value)?).is_some() {
+                    bail!("fact snapshot has multiple ms tags");
+                }
+            }
             _ => {
                 if kind.chars().count() == 1 {
                     continue;
@@ -671,6 +789,7 @@ fn parse_common_event(event: &Event, snapshot: bool) -> Result<ParsedFactEvent> 
         replace,
         dispute,
         heads,
+        created_at_ms,
     })
 }
 
@@ -706,6 +825,7 @@ struct ParsedFactEvent {
     replace: Vec<String>,
     dispute: Vec<String>,
     heads: Vec<String>,
+    created_at_ms: Option<u64>,
 }
 
 #[cfg(test)]
@@ -804,12 +924,76 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_ms_tag_is_metadata_for_subsecond_ordering() {
+        let keys = Keys::generate();
+        let first = build_fact_snapshot_event_with_created_at_ms(
+            &keys,
+            subject(),
+            [fact("name", &["Alice"])],
+            [],
+            456,
+            456_123,
+        )
+        .unwrap();
+        let second = build_fact_snapshot_event_with_created_at_ms(
+            &keys,
+            subject(),
+            [fact("name", &["Alice later"])],
+            [],
+            456,
+            456_789,
+        )
+        .unwrap();
+
+        let raw = first
+            .tags
+            .iter()
+            .map(|tag| tag.as_slice().to_vec())
+            .collect::<Vec<_>>();
+        assert!(raw.contains(&vec![SNAPSHOT_MS_TAG.to_owned(), "456123".to_owned()]));
+
+        let parsed_first = parse_fact_snapshot_event(&first).unwrap();
+        let parsed_second = parse_fact_snapshot_event(&second).unwrap();
+        assert_eq!(parsed_first.created_at_ms, Some(456_123));
+        assert!(!parsed_first.facts.contains(&fact("ms", &["456123"])));
+        assert_eq!(
+            compare_fact_snapshots(&parsed_first, &parsed_second),
+            std::cmp::Ordering::Less
+        );
+    }
+
+    #[test]
+    fn rejects_snapshot_ms_that_does_not_match_created_at() {
+        let keys = Keys::generate();
+        let error = build_fact_snapshot_event_with_created_at_ms(
+            &keys,
+            subject(),
+            [fact("name", &["Alice"])],
+            [],
+            456,
+            457_000,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("does not match created_at"));
+    }
+
+    #[test]
     fn rejects_single_character_predicates() {
         let keys = Keys::generate();
         let error = build_fact_op_event(&keys, subject(), [fact("x", &["y"])], [], 789)
             .unwrap_err()
             .to_string();
         assert!(error.contains("predicate must be at least two characters"));
+    }
+
+    #[test]
+    fn rejects_ms_as_fact_predicate() {
+        let keys = Keys::generate();
+        let error = build_fact_op_event(&keys, subject(), [fact("ms", &["456123"])], [], 456)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("reserved fact event tag"));
     }
 
     #[test]

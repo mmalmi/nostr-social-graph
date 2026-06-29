@@ -73,9 +73,10 @@ Single-character tags are reserved for indexing and references:
 - `e`: event links
 - `d`: snapshot address
 
-Single-character tags are not facts. Unknown single-character tags SHOULD be
-ignored by fact parsers. `d`, `e`, `i`, and `p` MUST NOT be used as fact
-predicates.
+`ms` is reserved for snapshot millisecond metadata.
+
+Reserved tags are not facts. Unknown single-character tags SHOULD be ignored by
+fact parsers. `d`, `e`, `i`, `ms`, and `p` MUST NOT be used as fact predicates.
 
 `i` tags without the `subject` marker are index-only. They make the event easier
 to find, but do not assert a fact.
@@ -147,6 +148,19 @@ The `d` tag MUST equal the subject. Snapshot events MAY link operation heads:
 
 Snapshot tags SHOULD be deduplicated and sorted before signing. Snapshot parsers
 MAY ignore `expiration` as snapshot metadata rather than a fact predicate.
+
+Snapshots MAY include millisecond metadata:
+
+```json
+["ms", "<unix-ms>"]
+```
+
+If present, `ms` MUST be a decimal Unix timestamp in milliseconds and
+`floor(ms / 1000)` MUST equal event `created_at`. When multiple snapshots for
+the same address are available, consumers SHOULD prefer the snapshot with the
+larger `created_at`, then larger `ms`, then event id. The `ms` tag helps
+clients order snapshots created in the same second; it does not change relay
+replacement rules by itself.
 
 Snapshots are conveniences, not universal truth. Consumers still decide whether
 to trust the snapshot author and facts.

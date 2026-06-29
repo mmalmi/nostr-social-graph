@@ -4,6 +4,7 @@ import {
   FACT_SNAPSHOT_KIND,
   buildFactOpDraft,
   buildFactSnapshotDraft,
+  compareFactSnapshots,
   fact,
   parseFactOpEvent,
   parseFactSnapshotDraft,
@@ -21,13 +22,17 @@ function eventId(byte: string): string {
   return byte.repeat(64);
 }
 
-function eventFromDraft(draft: { kind: number; content: string; tags: string[][] }, id: string): NostrEvent {
+function eventFromDraft(
+  draft: { kind: number; content: string; tags: string[][] },
+  id: string,
+  createdAt = 123,
+): NostrEvent {
   return {
     ...draft,
     id,
     pubkey,
     sig: eventId('b'),
-    created_at: 123,
+    created_at: createdAt,
   };
 }
 
@@ -96,9 +101,47 @@ describe('fact events', () => {
     expect(parsed.facts).toContainEqual(fact('name', ['Alice']));
   });
 
+  it('uses snapshot ms tags as metadata for sub-second ordering', () => {
+    const draft = buildFactSnapshotDraft(
+      subject,
+      [fact('name', ['Alice'])],
+      [eventId('3')],
+      {},
+      { createdAtMs: 123456 },
+    );
+
+    expect(draft.tags).toContainEqual(['ms', '123456']);
+
+    const snapshot = parseFactSnapshotEvent(eventFromDraft(draft, eventId('4'), 123));
+    expect(snapshot.createdAtMs).toBe(123456);
+    expect(snapshot.facts).not.toContainEqual(fact('ms', ['123456']));
+
+    const later = parseFactSnapshotEvent(
+      eventFromDraft(
+        buildFactSnapshotDraft(subject, [fact('name', ['Alice later'])], [], {}, { createdAtMs: 123789 }),
+        eventId('5'),
+        123,
+      ),
+    );
+    expect(compareFactSnapshots(snapshot, later)).toBeLessThan(0);
+  });
+
+  it('rejects snapshot ms tags that do not match created_at seconds', () => {
+    const draft = buildFactSnapshotDraft(subject, [fact('name', ['Alice'])], [], {}, { createdAtMs: 124000 });
+    expect(() => parseFactSnapshotEvent(eventFromDraft(draft, eventId('4'), 123))).toThrow(
+      /does not match created_at/,
+    );
+  });
+
   it('rejects single-character predicates', () => {
     expect(() => buildFactOpDraft(subject, [fact('x', ['y'])])).toThrow(
       /predicate must be at least two characters/,
+    );
+  });
+
+  it('rejects ms as a fact predicate', () => {
+    expect(() => buildFactOpDraft(subject, [fact('ms', ['123456'])])).toThrow(
+      /reserved fact event tag/,
     );
   });
 

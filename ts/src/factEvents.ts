@@ -8,7 +8,8 @@ const PREV_MARKER = 'prev';
 const REPLACE_MARKER = 'replace';
 const DISPUTE_MARKER = 'dispute';
 const HEAD_MARKER = 'head';
-const RESERVED_TAGS = new Set(['d', 'e', 'i', 'p']);
+const SNAPSHOT_MS_TAG = 'ms';
+const RESERVED_TAGS = new Set(['d', 'e', 'i', 'p', SNAPSHOT_MS_TAG]);
 
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const hex64Pattern = /^[0-9a-f]{64}$/;
@@ -26,6 +27,10 @@ export type FactOpLinks = {
 
 export type FactEventIndexes = {
   externalIdentifiers?: string[];
+};
+
+export type FactSnapshotMetadata = {
+  createdAtMs?: number;
 };
 
 export type FactEventDraft = {
@@ -58,6 +63,7 @@ export type FactSnapshot = {
   mentionedSubjects: Set<string>;
   heads: string[];
   createdAt: number;
+  createdAtMs?: number;
 };
 
 export type ParsedFactOpDraft = {
@@ -78,6 +84,7 @@ export type ParsedFactSnapshotDraft = {
   externalIdentifiers: Set<string>;
   mentionedSubjects: Set<string>;
   heads: string[];
+  createdAtMs?: number;
 };
 
 export type FactProjection = {
@@ -102,6 +109,7 @@ type ParsedFactEvent = {
   replace: string[];
   dispute: string[];
   heads: string[];
+  createdAtMs?: number;
 };
 
 export function fact(predicate: string, values: string[]): Fact {
@@ -126,11 +134,12 @@ export function buildFactSnapshotDraft(
   facts: Fact[],
   heads: string[],
   indexes: FactEventIndexes = {},
+  metadata: FactSnapshotMetadata = {},
 ): FactEventDraft {
   return {
     kind: FACT_SNAPSHOT_KIND,
     content: '',
-    tags: buildFactSnapshotTags(subject, facts, heads, indexes),
+    tags: buildFactSnapshotTags(subject, facts, heads, indexes, metadata),
   };
 }
 
@@ -158,15 +167,18 @@ export function buildFactSnapshotTags(
   facts: Fact[],
   heads: string[],
   indexes: FactEventIndexes = {},
+  metadata: FactSnapshotMetadata = {},
 ): string[][] {
   const normalizedSubject = normalizeUuid(subject);
   const normalizedFacts = normalizeFacts(facts);
   const externalIdentifiers = normalizeExternalIdentifiers(indexes.externalIdentifiers ?? []);
   const normalizedHeads = normalizeEventIds(heads, HEAD_MARKER);
+  const createdAtMs = normalizeCreatedAtMs(metadata.createdAtMs);
   const tags: string[][] = [
     ['d', normalizedSubject],
     ['i', normalizedSubject, SUBJECT_MARKER],
   ];
+  if (createdAtMs !== undefined) tags.push([SNAPSHOT_MS_TAG, createdAtMs.toString()]);
   for (const id of normalizedHeads) tags.push(['e', id, '', HEAD_MARKER]);
   tags.push(...indexTags(normalizedSubject, normalizedFacts, externalIdentifiers));
   tags.push(...normalizedFacts.map(factParts));
@@ -200,6 +212,7 @@ export function parseFactSnapshotEvent(event: NostrEvent): FactSnapshot {
     );
   }
   const parsed = parseCommonTags(event, true);
+  validateSnapshotCreatedAtMs(parsed.createdAtMs, event.created_at);
   return {
     snapshotId: normalizeEventId(event.id, 'snapshot id'),
     authorPubkey: normalizePubkey(event.pubkey),
@@ -210,6 +223,7 @@ export function parseFactSnapshotEvent(event: NostrEvent): FactSnapshot {
     mentionedSubjects: parsed.mentionedSubjects,
     heads: parsed.heads,
     createdAt: event.created_at,
+    ...(parsed.createdAtMs !== undefined ? { createdAtMs: parsed.createdAtMs } : {}),
   };
 }
 
@@ -242,7 +256,16 @@ export function parseFactSnapshotDraft(draft: FactEventDraft): ParsedFactSnapsho
     externalIdentifiers: parsed.externalIdentifiers,
     mentionedSubjects: parsed.mentionedSubjects,
     heads: parsed.heads,
+    ...(parsed.createdAtMs !== undefined ? { createdAtMs: parsed.createdAtMs } : {}),
   };
+}
+
+export function compareFactSnapshots(left: FactSnapshot, right: FactSnapshot): number {
+  const leftMs = left.createdAtMs ?? left.createdAt * 1000;
+  const rightMs = right.createdAtMs ?? right.createdAt * 1000;
+  return left.createdAt - right.createdAt
+    || leftMs - rightMs
+    || left.snapshotId.localeCompare(right.snapshotId);
 }
 
 export function projectFactOps(subject: string, ops: FactOp[]): FactProjection {
@@ -312,6 +335,7 @@ function parseCommonTags(event: Pick<FactEventDraft, 'content' | 'tags'>, snapsh
   const replace: string[] = [];
   const dispute: string[] = [];
   const heads: string[] = [];
+  let createdAtMs: number | undefined;
 
   for (const tag of event.tags) {
     const kind = tag[0];
@@ -353,6 +377,12 @@ function parseCommonTags(event: Pick<FactEventDraft, 'content' | 'tags'>, snapsh
       else throw new Error('fact e tag is missing marker');
       continue;
     }
+    if (kind === SNAPSHOT_MS_TAG) {
+      if (!snapshot) throw new Error('fact op event must not use ms tag');
+      if (createdAtMs !== undefined) throw new Error('fact snapshot has multiple ms tags');
+      createdAtMs = normalizeCreatedAtMsTag(tag[1]);
+      continue;
+    }
     if ([...kind].length === 1) continue;
     if (snapshot && kind === 'expiration') continue;
     facts.push({
@@ -390,6 +420,7 @@ function parseCommonTags(event: Pick<FactEventDraft, 'content' | 'tags'>, snapsh
     replace: uniqueSorted(replace),
     dispute: uniqueSorted(dispute),
     heads: uniqueSorted(heads),
+    ...(createdAtMs !== undefined ? { createdAtMs } : {}),
   };
 }
 
@@ -473,6 +504,29 @@ function normalizeEventId(value: string, role: string): string {
 
 function normalizeEventIds(values: string[], role: string): string[] {
   return uniqueSorted(values.map((value) => normalizeEventId(value, role)));
+}
+
+function normalizeCreatedAtMs(value: number | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  if (!Number.isInteger(value) || value < 0) {
+    throw new Error(`createdAtMs must be a non-negative integer: ${value}`);
+  }
+  return value;
+}
+
+function normalizeCreatedAtMsTag(value: string | undefined): number {
+  if (!value) throw new Error('fact snapshot ms tag is missing value');
+  if (!/^[0-9]+$/.test(value)) throw new Error(`fact snapshot ms tag must be decimal milliseconds: ${value}`);
+  const ms = Number(value);
+  if (!Number.isSafeInteger(ms)) throw new Error(`fact snapshot ms tag is not a safe integer: ${value}`);
+  return normalizeCreatedAtMs(ms)!;
+}
+
+function validateSnapshotCreatedAtMs(createdAtMs: number | undefined, createdAt: number): void {
+  if (createdAtMs === undefined) return;
+  if (Math.floor(createdAtMs / 1000) !== createdAt) {
+    throw new Error(`fact snapshot ms tag ${createdAtMs} does not match created_at ${createdAt}`);
+  }
 }
 
 function indexTags(subject: string, facts: Fact[], externalIdentifiers: Set<string>): string[][] {
