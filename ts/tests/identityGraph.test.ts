@@ -11,9 +11,9 @@ import {
   IDENTITY_PURPOSE_APP,
   IDENTITY_PURPOSE_RECOVERY,
   IDENTITY_PURPOSE_REMOTE_SIGNER,
-  NOSTR_IDENTITY_KEY_ACCEPTANCE_TYPE,
-  NOSTR_IDENTITY_LINK_REQUEST_TYPE,
-  NOSTR_IDENTITY_ROSTER_TYPE,
+  IDENTITY_GRAPH_KEY_ACCEPTANCE_TYPE,
+  IDENTITY_GRAPH_LINK_REQUEST_TYPE,
+  IDENTITY_GRAPH_ROSTER_TYPE,
   buildIdentityKeyAcceptanceDraft,
   buildIdentityLinkRequestEvent,
   buildIdentityRosterOpDraft,
@@ -24,6 +24,7 @@ import {
   projectIdentityKeyAcceptances,
   projectIdentityRoster,
 } from '../src/identityGraph';
+import { fact } from '../src/factEvents';
 import type { IdentityEventDraft } from '../src/identityGraph';
 import type { NostrEvent } from '../src/utils';
 
@@ -71,7 +72,7 @@ describe('identity graph', () => {
     });
 
     expect(draft.content).toBe('');
-    expect(draft.tags).toContainEqual(['type', NOSTR_IDENTITY_ROSTER_TYPE]);
+    expect(draft.tags).toContainEqual(['type', IDENTITY_GRAPH_ROSTER_TYPE]);
     expect(draft.tags).toContainEqual(['op', 'add_key']);
     expect(draft.tags).toContainEqual(['key_pubkey', adminPubkey]);
     expect(draft.tags).toContainEqual(['key_capability', IDENTITY_CAPABILITY_ADMIN]);
@@ -89,6 +90,31 @@ describe('identity graph', () => {
         addedAt: 10,
         label: 'Admin key',
       },
+    });
+  });
+
+  it('signs identity roster extension facts without changing roster parsing', () => {
+    const draft = buildIdentityRosterOpDraft({
+      signerPubkey: adminPubkey,
+      identity,
+      createdAt: 10,
+      clientNonce: 'nonce-1',
+      extensionFacts: [fact('encrypted_device_labels', ['ciphertext-v1'])],
+      op: {
+        op: 'add_key',
+        key: identityKey(adminPubkey, {
+          addedAt: 10,
+          purposes: [IDENTITY_PURPOSE_APP],
+          capabilities: IDENTITY_ADMIN_CAPABILITIES,
+        }),
+      },
+    });
+
+    expect(draft.tags).toContainEqual(['encrypted_device_labels', 'ciphertext-v1']);
+    const parsed = parseIdentityRosterOpEvent(eventFromDraft(draft, eventId('9'), adminPubkey));
+    expect(parsed.content.op).toMatchObject({
+      op: 'add_key',
+      key: { pubkey: adminPubkey },
     });
   });
 
@@ -397,7 +423,7 @@ describe('identity graph', () => {
       clientNonce: 'nonce-4',
     });
 
-    expect(draft.tags).toContainEqual(['type', NOSTR_IDENTITY_KEY_ACCEPTANCE_TYPE]);
+    expect(draft.tags).toContainEqual(['type', IDENTITY_GRAPH_KEY_ACCEPTANCE_TYPE]);
     expect(draft.tags).toContainEqual(['key_pubkey', appPubkey]);
     expect(draft.tags).toContainEqual(['purpose', IDENTITY_PURPOSE_APP]);
     expect(draft.tags).toContainEqual(['purpose', IDENTITY_PURPOSE_REMOTE_SIGNER]);
@@ -427,7 +453,7 @@ describe('identity graph', () => {
     expect(event.content).not.toBe('');
     expect(event.created_at).toBe(21);
     expect(event.pubkey).toBe(linkRequestDevicePubkey);
-    expect(event.tags).toContainEqual(['type', NOSTR_IDENTITY_LINK_REQUEST_TYPE]);
+    expect(event.tags).toContainEqual(['type', IDENTITY_GRAPH_LINK_REQUEST_TYPE]);
     expect(event.tags).toContainEqual(['i', identity, 'subject']);
     expect(event.tags).toContainEqual(['p', linkRequestInvitePubkey]);
     expect(event.tags.some((tag) => tag[0] === 'admin_pubkey')).toBe(false);

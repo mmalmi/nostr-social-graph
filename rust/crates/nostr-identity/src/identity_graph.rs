@@ -1,4 +1,7 @@
-use crate::{Fact, FactOp, FactOpLinks, build_fact_op_event_with_links, fact, parse_fact_op_event};
+use crate::{
+    Fact, FactOp, FactOpLinks, build_fact_op_event_with_links,
+    build_fact_op_event_with_links_identifiers_and_extension_facts, fact, parse_fact_op_event,
+};
 use anyhow::{Result, anyhow, bail};
 use nostr_sdk::nips::nip44::{self, Version as Nip44Version};
 use nostr_sdk::{Event, EventBuilder, Keys, Kind, PublicKey, Tag};
@@ -6,11 +9,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use uuid::Uuid;
 
-pub const NOSTR_IDENTITY_ROSTER_SCHEMA: u64 = 1;
-pub const NOSTR_IDENTITY_KEY_ACCEPTANCE_SCHEMA: u64 = 1;
-pub const NOSTR_IDENTITY_ROSTER_TYPE: &str = "nostr_identity_roster_op";
-pub const NOSTR_IDENTITY_KEY_ACCEPTANCE_TYPE: &str = "nostr_identity_key_acceptance";
-pub const NOSTR_IDENTITY_LINK_REQUEST_TYPE: &str = "nostr_identity_link_request";
+pub const IDENTITY_GRAPH_ROSTER_SCHEMA: u64 = 1;
+pub const IDENTITY_GRAPH_KEY_ACCEPTANCE_SCHEMA: u64 = 1;
+pub const IDENTITY_GRAPH_ROSTER_TYPE: &str = "nostr_identity_roster_op";
+pub const IDENTITY_GRAPH_KEY_ACCEPTANCE_TYPE: &str = "nostr_identity_key_acceptance";
+pub const IDENTITY_GRAPH_LINK_REQUEST_TYPE: &str = "nostr_identity_link_request";
 
 pub const IDENTITY_CAPABILITY_ADMIN: &str = "admin";
 pub const IDENTITY_CAPABILITY_WRITE: &str = "write";
@@ -164,6 +167,14 @@ pub struct IdentityKeyAcceptanceProjection {
     pub rejected_acceptance_ids: Vec<String>,
 }
 
+pub struct BuildIdentityRosterOpEventOptions {
+    pub parents: Vec<String>,
+    pub actor_seq: Option<u64>,
+    pub client_nonce: String,
+    pub created_at: u64,
+    pub extension_facts: Vec<Fact>,
+}
+
 pub fn identity_key(
     pubkey: impl Into<String>,
     added_at: u64,
@@ -190,19 +201,39 @@ pub fn build_identity_roster_op_event(
     client_nonce: impl Into<String>,
     created_at: u64,
 ) -> Result<Event> {
+    build_identity_roster_op_event_with_options(
+        keys,
+        identity,
+        op,
+        BuildIdentityRosterOpEventOptions {
+            parents: parents.into_iter().collect(),
+            actor_seq,
+            client_nonce: client_nonce.into(),
+            created_at,
+            extension_facts: Vec::new(),
+        },
+    )
+}
+
+pub fn build_identity_roster_op_event_with_options(
+    keys: &Keys,
+    identity: Uuid,
+    op: IdentityRosterOp,
+    options: BuildIdentityRosterOpEventOptions,
+) -> Result<Event> {
     let actor_pubkey = keys.public_key().to_hex();
-    let parents = normalize_event_ids(parents, "parent")?;
+    let parents = normalize_event_ids(options.parents, "parent")?;
     let content = IdentityRosterOpContent {
-        schema: NOSTR_IDENTITY_ROSTER_SCHEMA,
+        schema: IDENTITY_GRAPH_ROSTER_SCHEMA,
         identity,
         actor_pubkey,
-        actor_seq,
+        actor_seq: options.actor_seq,
         parents: parents.clone(),
-        client_nonce: require_non_empty(client_nonce.into(), "client_nonce")?,
-        created_at,
+        client_nonce: require_non_empty(options.client_nonce, "client_nonce")?,
+        created_at: options.created_at,
         op: normalize_identity_roster_op(op)?,
     };
-    build_fact_op_event_with_links(
+    build_fact_op_event_with_links_identifiers_and_extension_facts(
         keys,
         identity,
         roster_op_content_facts(&content),
@@ -210,7 +241,9 @@ pub fn build_identity_roster_op_event(
             prev: parents,
             ..FactOpLinks::default()
         },
-        created_at,
+        [],
+        options.extension_facts,
+        options.created_at,
     )
 }
 
@@ -223,7 +256,7 @@ pub fn build_identity_key_acceptance_event(
     accepted_at: u64,
 ) -> Result<Event> {
     let content = IdentityKeyAcceptanceContent {
-        schema: NOSTR_IDENTITY_KEY_ACCEPTANCE_SCHEMA,
+        schema: IDENTITY_GRAPH_KEY_ACCEPTANCE_SCHEMA,
         identity,
         key_pubkey: keys.public_key().to_hex(),
         purposes: normalize_tokens(purposes, "purpose")?,
@@ -277,7 +310,7 @@ pub fn build_identity_link_request_event(
     let identity_tag = identity.to_string();
     let event = EventBuilder::new(Kind::from(crate::FACT_OP_KIND), encrypted)
         .tag(Tag::parse(["i", identity_tag.as_str(), "subject"])?)
-        .tag(Tag::parse(["type", NOSTR_IDENTITY_LINK_REQUEST_TYPE])?)
+        .tag(Tag::parse(["type", IDENTITY_GRAPH_LINK_REQUEST_TYPE])?)
         .tag(Tag::parse(["p", invite_pubkey.as_str()])?)
         .custom_created_at(nostr_sdk::Timestamp::from(requested_at))
         .sign_with_keys(keys)?;
@@ -315,8 +348,10 @@ pub fn parse_identity_link_request_event_for_invite_pubkey(
     invite_keys: &Keys,
     expected_invite_pubkey: impl Into<String>,
 ) -> Result<SignedIdentityLinkRequest> {
-    let expected_invite_pubkey =
-        require_pubkey(&expected_invite_pubkey.into(), "identity link request invite")?;
+    let expected_invite_pubkey = require_pubkey(
+        &expected_invite_pubkey.into(),
+        "identity link request invite",
+    )?;
     if invite_keys.public_key().to_hex() != expected_invite_pubkey {
         bail!("identity link request invite key mismatch");
     }
@@ -407,9 +442,10 @@ pub fn parse_identity_link_request_public_header(
                     bail!("identity link request has multiple subject i tags");
                 }
             }
-            "type" if parts
-                .get(1)
-                .is_some_and(|value| value == NOSTR_IDENTITY_LINK_REQUEST_TYPE) =>
+            "type"
+                if parts
+                    .get(1)
+                    .is_some_and(|value| value == IDENTITY_GRAPH_LINK_REQUEST_TYPE) =>
             {
                 has_link_request_type = true;
             }
@@ -686,7 +722,7 @@ pub fn is_nostr_identity_id(value: &str) -> bool {
 
 fn roster_op_content_facts(content: &IdentityRosterOpContent) -> Vec<Fact> {
     let mut facts = vec![
-        fact("type", &[NOSTR_IDENTITY_ROSTER_TYPE]),
+        fact("type", &[IDENTITY_GRAPH_ROSTER_TYPE]),
         fact("schema", &[&content.schema.to_string()]),
         fact("actor_pubkey", &[&content.actor_pubkey]),
         fact("client_nonce", &[&content.client_nonce]),
@@ -763,7 +799,7 @@ fn roster_op_facts(op: &IdentityRosterOp) -> Vec<Fact> {
 
 fn key_acceptance_content_facts(content: &IdentityKeyAcceptanceContent) -> Vec<Fact> {
     let mut facts = vec![
-        fact("type", &[NOSTR_IDENTITY_KEY_ACCEPTANCE_TYPE]),
+        fact("type", &[IDENTITY_GRAPH_KEY_ACCEPTANCE_TYPE]),
         fact("schema", &[&content.schema.to_string()]),
         fact("key_pubkey", &[&content.key_pubkey]),
         fact("client_nonce", &[&content.client_nonce]),
@@ -782,9 +818,9 @@ fn key_acceptance_content_facts(content: &IdentityKeyAcceptanceContent) -> Vec<F
 }
 
 fn roster_op_content_from_facts(op: &FactOp) -> Result<IdentityRosterOpContent> {
-    require_type(op, NOSTR_IDENTITY_ROSTER_TYPE)?;
+    require_type(op, IDENTITY_GRAPH_ROSTER_TYPE)?;
     let schema = required_integer(op, "schema")?;
-    if schema != NOSTR_IDENTITY_ROSTER_SCHEMA {
+    if schema != IDENTITY_GRAPH_ROSTER_SCHEMA {
         bail!("unsupported Nostr identity roster schema {schema}");
     }
     Ok(IdentityRosterOpContent {
@@ -834,9 +870,9 @@ fn roster_op_from_facts(op: &FactOp) -> Result<IdentityRosterOp> {
 }
 
 fn key_acceptance_content_from_facts(op: &FactOp) -> Result<IdentityKeyAcceptanceContent> {
-    require_type(op, NOSTR_IDENTITY_KEY_ACCEPTANCE_TYPE)?;
+    require_type(op, IDENTITY_GRAPH_KEY_ACCEPTANCE_TYPE)?;
     let schema = required_integer(op, "schema")?;
-    if schema != NOSTR_IDENTITY_KEY_ACCEPTANCE_SCHEMA {
+    if schema != IDENTITY_GRAPH_KEY_ACCEPTANCE_SCHEMA {
         bail!("unsupported Nostr identity key acceptance schema {schema}");
     }
     let content = IdentityKeyAcceptanceContent {
@@ -1177,7 +1213,7 @@ mod tests {
         assert_eq!(event.kind.as_u16(), crate::FACT_OP_KIND);
         assert!(!event.content.is_empty());
         let event_json = event.as_json();
-        assert!(event_json.contains(NOSTR_IDENTITY_LINK_REQUEST_TYPE));
+        assert!(event_json.contains(IDENTITY_GRAPH_LINK_REQUEST_TYPE));
         assert!(event_json.contains(&invite_pubkey));
         assert!(!event_json.contains(&admin_pubkey));
         assert!(!event_json.contains("hash-from-invite"));

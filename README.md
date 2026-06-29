@@ -21,6 +21,7 @@ and trust scoring.
 - Server for maintaining and serving the up-to-date social graph, for quick initialization in web apps
 - Rust workspace with interchangeable in-memory and LMDB-backed backends
 - Tag-native UUID fact op and snapshot helpers
+- App-facing `NostrIdentity` roster/AppKey helpers with profile secret epochs, wrapped secrets, parent projection, and encrypted device-label payload tags
 - Optional social memory for entities, key/identifier attestations, and trust scoring
 
 ## Usage
@@ -93,7 +94,7 @@ The Rust workspace now has two interchangeable backends:
 
 - [`rust/crates/nostr-social-graph`](./rust/crates/nostr-social-graph): in-memory core graph and binary format
 - [`rust/crates/nostr-social-graph-heed`](./rust/crates/nostr-social-graph-heed): optional LMDB/`heed` backend for persistent large graphs
-- [`rust/crates/nostr-identity`](./rust/crates/nostr-identity): UUID fact ops, snapshots, projection, and Nostr event helpers
+- [`rust/crates/nostr-identity`](./rust/crates/nostr-identity): UUID fact ops, `IdentityGraph` roster primitives, and app-facing `NostrIdentity` AppKey/secret-epoch event helpers
 - [`rust/crates/nostr-social-memory`](./rust/crates/nostr-social-memory): entity memory, attestations, counter-attestations, and trust scoring
 
 Both Rust backends implement the shared `SocialGraphBackend` runtime trait from the core crate.

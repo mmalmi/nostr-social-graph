@@ -13,4 +13,5 @@ anyhow.workspace = true
 nostr-sdk = { workspace = true, features = ["nip44"] }
 serde.workspace = true
 serde_json.workspace = true
+thiserror.workspace = true
 uuid.workspace = true

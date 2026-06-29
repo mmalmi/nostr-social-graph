@@ -32,7 +32,7 @@ Crates:
 
 - [`crates/nostr-social-graph`](./crates/nostr-social-graph): in-memory core graph, binary format, and shared `SocialGraphBackend` trait
 - [`crates/nostr-social-graph-heed`](./crates/nostr-social-graph-heed): optional LMDB/`heed` backend implementing the same runtime trait
-- [`crates/nostr-identity`](./crates/nostr-identity): UUID fact ops, snapshots, event builders/parsers, and projection helpers
+- [`crates/nostr-identity`](./crates/nostr-identity): UUID fact ops, neutral `IdentityGraph` roster primitives, and app-facing `NostrIdentity` AppKey/secret-epoch event builders, parsers, projection, parent-id, and encrypted payload helpers
 - [`crates/nostr-social-memory`](./crates/nostr-social-memory): UUID-backed entities, Nostr attestations/counter-attestations, and trust scoring over a graph
 
 Common commands:

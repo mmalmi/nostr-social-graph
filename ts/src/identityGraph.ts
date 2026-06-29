@@ -11,11 +11,11 @@ import {
 import type { NostrEvent } from './utils';
 import { finalizeEvent, getPublicKey, nip44, type Event } from 'nostr-tools';
 
-export const NOSTR_IDENTITY_ROSTER_SCHEMA = 1;
-export const NOSTR_IDENTITY_KEY_ACCEPTANCE_SCHEMA = 1;
-export const NOSTR_IDENTITY_ROSTER_TYPE = 'nostr_identity_roster_op';
-export const NOSTR_IDENTITY_KEY_ACCEPTANCE_TYPE = 'nostr_identity_key_acceptance';
-export const NOSTR_IDENTITY_LINK_REQUEST_TYPE = 'nostr_identity_link_request';
+export const IDENTITY_GRAPH_ROSTER_SCHEMA = 1;
+export const IDENTITY_GRAPH_KEY_ACCEPTANCE_SCHEMA = 1;
+export const IDENTITY_GRAPH_ROSTER_TYPE = 'nostr_identity_roster_op';
+export const IDENTITY_GRAPH_KEY_ACCEPTANCE_TYPE = 'nostr_identity_key_acceptance';
+export const IDENTITY_GRAPH_LINK_REQUEST_TYPE = 'nostr_identity_link_request';
 
 export const IDENTITY_CAPABILITY_ADMIN = 'admin';
 export const IDENTITY_CAPABILITY_WRITE = 'write';
@@ -28,7 +28,7 @@ export const IDENTITY_PURPOSE_RECOVERY = 'recovery';
 export const IDENTITY_PURPOSE_REMOTE_SIGNER = 'remote_signer';
 export const IDENTITY_PURPOSE_PROFILE = 'profile';
 
-export type NostrIdentityId = string;
+export type IdentityGraphId = string;
 export type IdentityKeyPurpose = string;
 export type IdentityKeyCapability = string;
 
@@ -38,7 +38,7 @@ export type IdentityEventDraft = FactEventDraft & {
 
 export interface IdentityKey {
   pubkey: string;
-  subject?: NostrIdentityId;
+  subject?: IdentityGraphId;
   purposes?: IdentityKeyPurpose[];
   capabilities?: IdentityKeyCapability[];
   addedAt: number;
@@ -54,7 +54,7 @@ export type IdentityRosterOp =
 
 export interface IdentityRosterOpContent {
   schema: number;
-  identity: NostrIdentityId;
+  identity: IdentityGraphId;
   actorPubkey: string;
   actorSeq?: number;
   parents?: string[];
@@ -71,7 +71,7 @@ export interface SignedIdentityRosterOp {
 
 export interface IdentityKeyAcceptanceContent {
   schema: number;
-  identity: NostrIdentityId;
+  identity: IdentityGraphId;
   keyPubkey: string;
   purposes: IdentityKeyPurpose[];
   rosterOpId?: string;
@@ -80,7 +80,7 @@ export interface IdentityKeyAcceptanceContent {
 }
 
 export interface IdentityLinkRequestContent {
-  identity: NostrIdentityId;
+  identity: IdentityGraphId;
   adminPubkey: string;
   invitePubkey: string;
   joiningPubkey: string;
@@ -110,14 +110,14 @@ export interface IdentitySecretEpoch {
 
 export interface IdentityKeyTombstone {
   pubkey: string;
-  subject?: NostrIdentityId;
+  subject?: IdentityGraphId;
   removedByPubkey: string;
   removedAt: number;
   reason?: string;
 }
 
 export interface IdentityRosterProjection {
-  identity: NostrIdentityId;
+  identity: IdentityGraphId;
   activeKeys: Record<string, IdentityKey>;
   tombstones: Record<string, IdentityKeyTombstone>;
   secretEpochs: Record<string, IdentitySecretEpoch>;
@@ -126,7 +126,7 @@ export interface IdentityRosterProjection {
 }
 
 export interface IdentityKeyAcceptanceProjection {
-  identity: NostrIdentityId;
+  identity: IdentityGraphId;
   acceptedKeys: Record<string, IdentityKeyAcceptanceContent>;
   acceptedAcceptanceIds: string[];
   rejectedAcceptanceIds: string[];
@@ -134,17 +134,18 @@ export interface IdentityKeyAcceptanceProjection {
 
 export interface BuildIdentityRosterOpDraftOptions {
   signerPubkey: string;
-  identity: NostrIdentityId;
+  identity: IdentityGraphId;
   op: IdentityRosterOp;
   parents?: string[];
   actorSeq?: number;
   createdAt?: number;
   clientNonce?: string;
+  extensionFacts?: Fact[];
 }
 
 export interface BuildIdentityKeyAcceptanceDraftOptions {
   signerPubkey: string;
-  identity: NostrIdentityId;
+  identity: IdentityGraphId;
   purposes: IdentityKeyPurpose[];
   rosterOpId?: string;
   acceptedAt?: number;
@@ -153,7 +154,7 @@ export interface BuildIdentityKeyAcceptanceDraftOptions {
 
 export interface BuildIdentityLinkRequestEventOptions {
   signerSecretKey: Uint8Array;
-  identity: NostrIdentityId;
+  identity: IdentityGraphId;
   adminPubkey: string;
   invitePubkey: string;
   requestedAt?: number;
@@ -163,7 +164,7 @@ export interface BuildIdentityLinkRequestEventOptions {
 
 export interface ParseIdentityLinkRequestEventOptions {
   inviteSecretKey: Uint8Array;
-  identity?: NostrIdentityId;
+  identity?: IdentityGraphId;
   adminPubkey?: string;
   invitePubkey?: string;
 }
@@ -186,7 +187,7 @@ export function buildIdentityRosterOpDraft(options: BuildIdentityRosterOpDraftOp
   const clientNonce = options.clientNonce ?? randomIdentityNonce();
   const parents = normalizeEventIds(options.parents ?? [], 'parent');
   const content: IdentityRosterOpContent = {
-    schema: NOSTR_IDENTITY_ROSTER_SCHEMA,
+    schema: IDENTITY_GRAPH_ROSTER_SCHEMA,
     identity: requireIdentityId(options.identity),
     actorPubkey,
     ...(options.actorSeq !== undefined ? { actorSeq: requireInteger(options.actorSeq, 'actorSeq') } : {}),
@@ -195,7 +196,11 @@ export function buildIdentityRosterOpDraft(options: BuildIdentityRosterOpDraftOp
     createdAt,
     op: normalizeIdentityRosterOp(options.op),
   };
-  const draft = buildFactOpDraft(content.identity, rosterOpContentFacts(content), { prev: parents });
+  const draft = buildFactOpDraft(
+    content.identity,
+    [...rosterOpContentFacts(content), ...(options.extensionFacts ?? [])],
+    { prev: parents },
+  );
   return {
     kind: draft.kind,
     content: draft.content,
@@ -211,7 +216,7 @@ export function buildIdentityKeyAcceptanceDraft(
   const acceptedAt = options.acceptedAt ?? currentUnixSeconds();
   const clientNonce = options.clientNonce ?? randomIdentityNonce();
   const content: IdentityKeyAcceptanceContent = {
-    schema: NOSTR_IDENTITY_KEY_ACCEPTANCE_SCHEMA,
+    schema: IDENTITY_GRAPH_KEY_ACCEPTANCE_SCHEMA,
     identity: requireIdentityId(options.identity),
     keyPubkey,
     purposes: normalizeTokens(options.purposes, 'purpose'),
@@ -293,7 +298,7 @@ export function parseIdentityLinkRequestEvent(
   options: ParseIdentityLinkRequestEventOptions,
 ): SignedIdentityLinkRequest {
   const op = parseFactOpEvent({ ...event, content: '' });
-  requireType(op, NOSTR_IDENTITY_LINK_REQUEST_TYPE);
+  requireType(op, IDENTITY_GRAPH_LINK_REQUEST_TYPE);
   const expectedInvitePubkey = options.invitePubkey !== undefined
     ? requireHexPubkey(options.invitePubkey, 'identity link request invite')
     : getPublicKey(options.inviteSecretKey);
@@ -337,7 +342,7 @@ export function identityRosterParentIds(ops: SignedIdentityRosterOp[]): string[]
 }
 
 export function projectIdentityRoster(
-  identity: NostrIdentityId,
+  identity: IdentityGraphId,
   ops: SignedIdentityRosterOp[],
 ): IdentityRosterProjection {
   const normalizedIdentity = requireIdentityId(identity);
@@ -437,7 +442,7 @@ export function applyIdentityRosterOp(
 }
 
 export function projectIdentityKeyAcceptances(
-  identity: NostrIdentityId,
+  identity: IdentityGraphId,
   acceptances: SignedIdentityKeyAcceptance[],
 ): IdentityKeyAcceptanceProjection {
   const normalizedIdentity = requireIdentityId(identity);
@@ -479,7 +484,7 @@ export function identityKey(
   pubkey: string,
   options: {
     addedAt: number;
-    subject?: NostrIdentityId;
+    subject?: IdentityGraphId;
     purposes?: IdentityKeyPurpose[];
     capabilities?: IdentityKeyCapability[];
     label?: string;
@@ -510,7 +515,7 @@ export function normalizeHexPubkey(value: string): string | null {
   return /^[0-9a-f]{64}$/.test(lower) ? lower : null;
 }
 
-export function isNostrIdentityId(value: string): boolean {
+export function isIdentityGraphId(value: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(value.trim());
 }
 
@@ -533,7 +538,7 @@ export function currentUnixSeconds(): number {
 
 function rosterOpContentFacts(content: IdentityRosterOpContent): Fact[] {
   return [
-    fact('type', [NOSTR_IDENTITY_ROSTER_TYPE]),
+    fact('type', [IDENTITY_GRAPH_ROSTER_TYPE]),
     fact('schema', [String(content.schema)]),
     fact('actor_pubkey', [content.actorPubkey]),
     ...(content.actorSeq !== undefined ? [fact('actor_seq', [String(content.actorSeq)])] : []),
@@ -577,7 +582,7 @@ function rosterOpFacts(op: IdentityRosterOp): Fact[] {
 
 function keyAcceptanceContentFacts(content: IdentityKeyAcceptanceContent): Fact[] {
   return [
-    fact('type', [NOSTR_IDENTITY_KEY_ACCEPTANCE_TYPE]),
+    fact('type', [IDENTITY_GRAPH_KEY_ACCEPTANCE_TYPE]),
     fact('schema', [String(content.schema)]),
     fact('key_pubkey', [content.keyPubkey]),
     ...content.purposes.map((purpose) => fact('purpose', [purpose])),
@@ -588,9 +593,9 @@ function keyAcceptanceContentFacts(content: IdentityKeyAcceptanceContent): Fact[
 }
 
 function rosterOpContentFromFacts(op: FactOp): IdentityRosterOpContent {
-  requireType(op, NOSTR_IDENTITY_ROSTER_TYPE);
+  requireType(op, IDENTITY_GRAPH_ROSTER_TYPE);
   const schema = requiredInteger(op, 'schema');
-  if (schema !== NOSTR_IDENTITY_ROSTER_SCHEMA) {
+  if (schema !== IDENTITY_GRAPH_ROSTER_SCHEMA) {
     throw new Error(`unsupported Nostr identity roster schema ${schema}`);
   }
   const actorSeq = optionalInteger(op, 'actor_seq');
@@ -646,9 +651,9 @@ function rosterOpFromFacts(op: FactOp): IdentityRosterOp {
 }
 
 function keyAcceptanceContentFromFacts(op: FactOp): IdentityKeyAcceptanceContent {
-  requireType(op, NOSTR_IDENTITY_KEY_ACCEPTANCE_TYPE);
+  requireType(op, IDENTITY_GRAPH_KEY_ACCEPTANCE_TYPE);
   const schema = requiredInteger(op, 'schema');
-  if (schema !== NOSTR_IDENTITY_KEY_ACCEPTANCE_SCHEMA) {
+  if (schema !== IDENTITY_GRAPH_KEY_ACCEPTANCE_SCHEMA) {
     throw new Error(`unsupported Nostr identity key acceptance schema ${schema}`);
   }
   const content: IdentityKeyAcceptanceContent = {
@@ -706,7 +711,7 @@ type IdentityLinkRequestWireContent = {
 
 function linkRequestEventTags(content: IdentityLinkRequestContent): string[][] {
   const tags = buildFactOpTags(content.identity, [
-    fact('type', [NOSTR_IDENTITY_LINK_REQUEST_TYPE]),
+    fact('type', [IDENTITY_GRAPH_LINK_REQUEST_TYPE]),
   ]);
   tags.push(['p', content.invitePubkey]);
   return tags;
@@ -849,7 +854,7 @@ function requireInteger(value: string | number, label: string): number {
 
 function requireIdentityId(value: string): string {
   const trimmed = value.trim().toLowerCase();
-  if (!isNostrIdentityId(trimmed) || trimmed !== value.trim()) {
+  if (!isIdentityGraphId(trimmed) || trimmed !== value.trim()) {
     throw new Error(`Nostr identity id must be a canonical UUID: ${value}`);
   }
   return trimmed;

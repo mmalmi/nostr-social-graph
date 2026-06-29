@@ -4,8 +4,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 
 mod identity_graph;
+mod nostr_identity;
 
 pub use identity_graph::*;
+pub use nostr_identity::*;
 
 /// Regular, append-only fact op events.
 pub const FACT_OP_KIND: u16 = 7368;
@@ -141,7 +143,27 @@ pub fn build_fact_op_event_with_links_and_identifiers(
     external_identifiers: impl IntoIterator<Item = String>,
     created_at: u64,
 ) -> Result<Event> {
-    let facts = normalize_facts(facts)?;
+    build_fact_op_event_with_links_identifiers_and_extension_facts(
+        keys,
+        subject,
+        facts,
+        links,
+        external_identifiers,
+        [],
+        created_at,
+    )
+}
+
+pub fn build_fact_op_event_with_links_identifiers_and_extension_facts(
+    keys: &Keys,
+    subject: Uuid,
+    facts: impl IntoIterator<Item = Fact>,
+    links: FactOpLinks,
+    external_identifiers: impl IntoIterator<Item = String>,
+    extension_facts: impl IntoIterator<Item = Fact>,
+    created_at: u64,
+) -> Result<Event> {
+    let facts = normalize_facts(facts.into_iter().chain(extension_facts))?;
     let links = normalize_links(links)?;
     let external_identifiers = normalize_external_identifiers(external_identifiers)?;
     let tags = fact_op_tags(subject, &facts, &links, &external_identifiers)?;

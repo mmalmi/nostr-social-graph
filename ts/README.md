@@ -18,6 +18,8 @@ Notes:
 
 - `handleEvent` only uses kind `3` and `10000` events.
 - Fact-event helpers export tag-native UUID op/snapshot builders, parsers, and projection utilities.
+- `NostrIdentity*` exports are the app-facing identity roster protocol: AppKey facets, profile secret epochs, wrapped secrets, parent-id projection, and encrypted payload tag helpers such as `encrypted_device_labels`.
+- Lower-level `IdentityGraph*` exports are the neutral fact-roster primitives used by `NostrIdentity`.
 - Unknown authors are ignored by default. Pass `true` when ingesting from a cold start.
 - `await graph.setRoot(pubkey)` before reading follow distances for a new root.
 - If you connect a new root into preloaded graph data, run `recalculateFollowDistances()` before reading distances.
