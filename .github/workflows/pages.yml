@@ -48,6 +48,12 @@ jobs:
       - name: Install Dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Build linked hashtree core
+        run: |
+          cd "$GITHUB_WORKSPACE/hashtree/ts/packages/hashtree"
+          npm ci
+          npm run build
+
       - name: Build Examples
         run: pnpm examples
 
