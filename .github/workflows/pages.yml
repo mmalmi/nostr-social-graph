@@ -25,6 +25,15 @@ jobs:
       - name: Checkout Repo
         uses: actions/checkout@v4
 
+      - name: Checkout hashtree link dependencies
+        uses: actions/checkout@v4
+        with:
+          repository: mmalmi/hashtree
+          path: hashtree
+
+      - name: Link hashtree sibling
+        run: ln -sfn "$GITHUB_WORKSPACE/hashtree" "$GITHUB_WORKSPACE/../hashtree"
+
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
