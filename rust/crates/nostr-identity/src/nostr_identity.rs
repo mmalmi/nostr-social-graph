@@ -22,7 +22,9 @@ use crate::{
 };
 use nostr_sdk::ToBech32;
 use nostr_sdk::nips::nip44::{self, Version as Nip44Version};
-use nostr_sdk::{Alphabet, Event, EventId, JsonUtil, Keys, PublicKey, SingleLetterTag, TagKind};
+use nostr_sdk::{
+    Alphabet, Event, EventId, Filter, JsonUtil, Keys, PublicKey, SingleLetterTag, TagKind,
+};
 use nostr_sdk::{EventBuilder, Kind, Tag};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -40,6 +42,8 @@ pub const NOSTR_IDENTITY_DEVICE_APPROVAL_RECEIPT_TYPE: &str =
     "nostr_identity_device_approval_receipt";
 pub const NOSTR_IDENTITY_DEVICE_APPROVAL_RECEIPT_SCHEMA: u32 = 1;
 pub const NOSTR_IDENTITY_DEVICE_APPROVAL_REQUEST_PREFIX: &str = "nostr-identity://device-approval/";
+pub const NOSTR_IDENTITY_COMPACT_DEVICE_APPROVAL_REQUEST_PREFIX: &str =
+    "nostr-identity://device-approval";
 pub const NOSTR_IDENTITY_DEVICE_APPROVAL_REQUEST_VERSION: u32 = 1;
 pub const NOSTR_IDENTITY_DEVICE_APPROVAL_PROOF_TYPE: &str = "nostr_identity_device_approval_proof";
 pub const NOSTR_IDENTITY_DEVICE_APPROVAL_CLIENT_NONCE_PREFIX: &str =
@@ -518,6 +522,11 @@ pub struct NostrIdentityDeviceApprovalRequest {
     pub label: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NostrIdentityCompactDeviceApprovalRequest {
+    pub device_app_key_pubkey: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct NostrIdentityDeviceApprovalRequestedResource {
@@ -978,6 +987,57 @@ pub fn encode_nostr_identity_device_approval_request(
     ))
 }
 
+pub fn encode_compact_nostr_identity_device_approval_request(
+    device_app_key_pubkey: &str,
+    prefix: Option<&str>,
+) -> Result<String, NostrIdentityError> {
+    let device_app_key_pubkey = normalize_nostr_pubkey(device_app_key_pubkey, "device AppKey")?;
+    let prefix = prefix
+        .unwrap_or(NOSTR_IDENTITY_COMPACT_DEVICE_APPROVAL_REQUEST_PREFIX)
+        .trim()
+        .trim_end_matches('?');
+    if prefix.is_empty() {
+        return Err(NostrIdentityError::BadContent(
+            "compact device approval prefix is empty".to_string(),
+        ));
+    }
+    Ok(format!("{prefix}?app_key={device_app_key_pubkey}"))
+}
+
+pub fn parse_compact_nostr_identity_device_approval_request(
+    input: &str,
+    prefixes: &[&str],
+) -> Result<Option<NostrIdentityCompactDeviceApprovalRequest>, NostrIdentityError> {
+    let Some(query) = query_from_prefixed_url(
+        input,
+        prefixes,
+        NOSTR_IDENTITY_COMPACT_DEVICE_APPROVAL_REQUEST_PREFIX,
+    ) else {
+        return Ok(None);
+    };
+    let app_key = query_value(query, "app_key")
+        .or_else(|| query_value(query, "device"))
+        .ok_or_else(|| {
+            NostrIdentityError::BadContent("device request is missing app_key".to_string())
+        })?;
+    Ok(Some(NostrIdentityCompactDeviceApprovalRequest {
+        device_app_key_pubkey: normalize_nostr_pubkey(&app_key, "device AppKey")?,
+    }))
+}
+
+#[must_use]
+pub fn compact_nostr_identity_device_approval_request_has_prefix(
+    input: &str,
+    prefixes: &[&str],
+) -> bool {
+    query_from_prefixed_url(
+        input,
+        prefixes,
+        NOSTR_IDENTITY_COMPACT_DEVICE_APPROVAL_REQUEST_PREFIX,
+    )
+    .is_some()
+}
+
 pub fn parse_nostr_identity_device_approval_request(
     input: &str,
     prefixes: &[&str],
@@ -1306,6 +1366,113 @@ where
         }
     }
     Ok(profile_ids.into_iter().collect())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NostrIdentityAppKeyApprovalCandidate {
+    pub profile_id: NostrIdentityId,
+    pub app_key_pubkey: String,
+    pub admin_app_key_pubkey: String,
+    pub accepted_roster_op_count: usize,
+    pub active_app_key_count: usize,
+    pub latest_roster_op_created_at: Option<i64>,
+    pub profile_roster_ops: Vec<SignedNostrIdentityRosterOp>,
+}
+
+pub fn nostr_identity_app_key_approval_candidate_filters(
+    app_key_pubkey: &str,
+) -> Result<Vec<Filter>, NostrIdentityError> {
+    let app_key = PublicKey::parse(app_key_pubkey).map_err(|error| {
+        NostrIdentityError::BadContent(format!("invalid app key pubkey: {error}"))
+    })?;
+    Ok(vec![
+        Filter::new()
+            .kind(Kind::from(KIND_NOSTR_IDENTITY_ROSTER_OP))
+            .pubkey(app_key),
+    ])
+}
+
+pub fn nostr_identity_app_key_approval_candidates_from_events<'a, I>(
+    app_key_pubkey: &str,
+    events: I,
+) -> Result<Vec<NostrIdentityAppKeyApprovalCandidate>, NostrIdentityError>
+where
+    I: IntoIterator<Item = &'a Event>,
+{
+    let app_key_pubkey = normalize_nostr_pubkey(app_key_pubkey, "app key")?;
+    let events = events.into_iter().collect::<Vec<_>>();
+    let candidate_ids: BTreeSet<_> = nostr_identity_candidate_ids_for_pubkey_from_events(
+        &app_key_pubkey,
+        events.iter().copied(),
+    )?
+    .into_iter()
+    .collect();
+    let mut roster_ops_by_profile =
+        BTreeMap::<NostrIdentityId, BTreeMap<String, SignedNostrIdentityRosterOp>>::new();
+    for event in events {
+        let Ok(op) = parse_nostr_identity_roster_op_event(event) else {
+            continue;
+        };
+        if candidate_ids.contains(&op.content.profile_id) {
+            roster_ops_by_profile
+                .entry(op.content.profile_id)
+                .or_default()
+                .insert(op.op_id.clone(), op);
+        }
+    }
+
+    let mut candidates = Vec::new();
+    for profile_id in candidate_ids {
+        let profile_roster_ops = roster_ops_by_profile
+            .remove(&profile_id)
+            .unwrap_or_default()
+            .into_values()
+            .collect::<Vec<_>>();
+        let projection = project_nostr_identity_roster(profile_id, profile_roster_ops.clone());
+        let Some(joining_facet) = projection.active_facets.get(&app_key_pubkey) else {
+            continue;
+        };
+        if !joining_facet.is_app_key() || !joining_facet.capabilities.can_write_roots {
+            continue;
+        }
+        let Some(admin_app_key_pubkey) =
+            nostr_identity_projection_admin_app_key_pubkey(&projection)
+        else {
+            continue;
+        };
+        let accepted_op_ids = projection
+            .accepted_op_ids
+            .iter()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>();
+        let latest_roster_op_created_at = profile_roster_ops
+            .iter()
+            .filter(|op| accepted_op_ids.contains(op.op_id.as_str()))
+            .map(|op| op.content.created_at)
+            .max();
+        candidates.push(NostrIdentityAppKeyApprovalCandidate {
+            profile_id,
+            app_key_pubkey: app_key_pubkey.clone(),
+            admin_app_key_pubkey,
+            accepted_roster_op_count: projection.accepted_op_ids.len(),
+            active_app_key_count: projection.active_app_key_pubkeys().len(),
+            latest_roster_op_created_at,
+            profile_roster_ops,
+        });
+    }
+    candidates.sort_by(|left, right| {
+        right
+            .latest_roster_op_created_at
+            .cmp(&left.latest_roster_op_created_at)
+            .then_with(|| {
+                right
+                    .accepted_roster_op_count
+                    .cmp(&left.accepted_roster_op_count)
+            })
+            .then_with(|| right.active_app_key_count.cmp(&left.active_app_key_count))
+            .then_with(|| left.profile_id.cmp(&right.profile_id))
+    });
+    Ok(candidates)
 }
 
 fn nostr_identity_roster_op_to_identity(
@@ -2010,6 +2177,79 @@ fn payload_from_prefixed_url<'a>(
         .filter(|payload| !payload.is_empty())
 }
 
+fn query_from_prefixed_url<'a>(
+    input: &'a str,
+    prefixes: &[&str],
+    default_prefix: &str,
+) -> Option<&'a str> {
+    let value = strip_nostr_scheme(input.trim());
+    if value.is_empty() {
+        return None;
+    }
+    prefixes
+        .iter()
+        .copied()
+        .filter(|prefix| !prefix.trim().is_empty())
+        .chain(std::iter::once(default_prefix))
+        .find_map(|prefix| {
+            let prefix = prefix.trim();
+            if !starts_with_ignore_ascii_case(value, prefix) {
+                return None;
+            }
+            let rest = &value[prefix.len()..];
+            if prefix.ends_with('?') {
+                return Some(rest.split('#').next().unwrap_or("").trim());
+            }
+            rest.strip_prefix('?')
+                .map(|query| query.split('#').next().unwrap_or("").trim())
+        })
+        .filter(|query| !query.is_empty())
+}
+
+fn query_value(query: &str, name: &str) -> Option<String> {
+    query.split('&').find_map(|part| {
+        let (key, value) = part.split_once('=').unwrap_or((part, ""));
+        key.eq_ignore_ascii_case(name)
+            .then(|| percent_decode(value))
+    })
+}
+
+fn percent_decode(value: &str) -> String {
+    let mut out = Vec::with_capacity(value.len());
+    let mut bytes = value.as_bytes().iter().copied();
+    while let Some(byte) = bytes.next() {
+        if byte == b'%' {
+            let hi = bytes.next();
+            let lo = bytes.next();
+            if let (Some(hi), Some(lo)) = (hi, lo)
+                && let (Some(hi), Some(lo)) = (hex_digit(hi), hex_digit(lo))
+            {
+                out.push((hi << 4) | lo);
+                continue;
+            }
+            out.push(byte);
+            if let Some(hi) = hi {
+                out.push(hi);
+            }
+            if let Some(lo) = lo {
+                out.push(lo);
+            }
+        } else {
+            out.push(byte);
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn hex_digit(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
 fn strip_nostr_scheme(value: &str) -> &str {
     if starts_with_ignore_ascii_case(value, "nostr:") {
         &value["nostr:".len()..]
@@ -2291,6 +2531,16 @@ where
     projection
 }
 
+fn nostr_identity_projection_admin_app_key_pubkey(
+    projection: &NostrIdentityRosterProjection,
+) -> Option<String> {
+    projection
+        .active_facets
+        .values()
+        .find(|facet| facet.is_app_key() && facet.capabilities.can_admin_profile)
+        .map(|facet| facet.pubkey.clone())
+}
+
 fn validate_pubkey(pubkey: &str) -> Result<(), NostrIdentityError> {
     PublicKey::from_hex(pubkey).map_err(|e| NostrIdentityError::InvalidPubkey(e.to_string()))?;
     Ok(())
@@ -2386,6 +2636,7 @@ fn is_false(value: &bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nostr_sdk::filter::MatchEventOptions;
     use nostr_sdk::{EventBuilder, Kind, Tag};
 
     fn signed_op(
@@ -2688,6 +2939,115 @@ mod tests {
             }
             other => panic!("expected add facet, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn compact_device_approval_request_url_contains_only_joining_app_key() {
+        let profile_id = NostrIdentityId::new_v4();
+        let admin = Keys::generate();
+        let device = Keys::generate();
+        let prefix = "iris-drive://app-key-link";
+
+        let encoded = encode_compact_nostr_identity_device_approval_request(
+            &device.public_key().to_bech32().unwrap(),
+            Some(prefix),
+        )
+        .unwrap();
+        let parsed = parse_compact_nostr_identity_device_approval_request(&encoded, &[prefix])
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(parsed.device_app_key_pubkey, device.public_key().to_hex());
+        assert_eq!(
+            encoded,
+            format!("{prefix}?app_key={}", device.public_key().to_hex())
+        );
+        assert!(encoded.len() < 120, "compact URL was {}", encoded.len());
+        assert!(!encoded.contains(&profile_id.to_string()));
+        assert!(!encoded.contains(&admin.public_key().to_hex()));
+        assert!(compact_nostr_identity_device_approval_request_has_prefix(
+            &format!("nostr:{encoded}"),
+            &[prefix]
+        ));
+
+        let one_slash = format!(
+            "iris-drive:/app-key-link?device={}",
+            device.public_key().to_bech32().unwrap()
+        );
+        let parsed_one_slash = parse_compact_nostr_identity_device_approval_request(
+            &one_slash,
+            &[prefix, "iris-drive:/app-key-link?"],
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            parsed_one_slash.device_app_key_pubkey,
+            device.public_key().to_hex()
+        );
+        assert!(
+            parse_compact_nostr_identity_device_approval_request(
+                "iris-drive://app-key-link?app_key=not-a-key",
+                &[prefix],
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn app_key_approval_candidates_project_rosters_that_mention_joining_key() {
+        let profile_id = NostrIdentityId::new_v4();
+        let admin = Keys::generate();
+        let device = Keys::generate();
+        let mut ops = vec![bootstrap_op(&admin, profile_id, 40)];
+        let approval = signed_op_with_parents(
+            &admin,
+            profile_id,
+            nostr_identity_roster_parent_ids(&ops),
+            NostrIdentityRosterOp::AddFacet {
+                facet: NostrIdentityFacet::app_key(
+                    device.public_key().to_hex(),
+                    41,
+                    None,
+                    NostrIdentityCapabilities::app_writer(),
+                )
+                .with_profile_id(profile_id),
+            },
+            41,
+        );
+        let approval_event = Event::from_json(&approval.event_json).unwrap();
+        ops.push(approval);
+        let events = ops
+            .iter()
+            .map(|op| Event::from_json(&op.event_json).unwrap())
+            .collect::<Vec<_>>();
+
+        let filters = nostr_identity_app_key_approval_candidate_filters(
+            &device.public_key().to_bech32().unwrap(),
+        )
+        .unwrap();
+        assert!(
+            filters
+                .iter()
+                .any(|filter| filter.match_event(&approval_event, MatchEventOptions::default()))
+        );
+
+        let candidates = nostr_identity_app_key_approval_candidates_from_events(
+            &device.public_key().to_hex(),
+            &events,
+        )
+        .unwrap();
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].profile_id, profile_id);
+        assert_eq!(candidates[0].app_key_pubkey, device.public_key().to_hex());
+        assert_eq!(
+            candidates[0].admin_app_key_pubkey,
+            admin.public_key().to_hex()
+        );
+        assert_eq!(candidates[0].profile_roster_ops.len(), events.len());
+        assert_eq!(candidates[0].accepted_roster_op_count, 2);
+        assert_eq!(candidates[0].active_app_key_count, 2);
+        assert_eq!(candidates[0].latest_roster_op_created_at, Some(41));
     }
 
     #[test]

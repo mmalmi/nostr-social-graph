@@ -2,22 +2,28 @@ import { describe, expect, it } from 'vitest';
 import { generateSecretKey, getPublicKey } from 'nostr-tools';
 import {
   APP_KEY_ADMIN_CAPABILITIES,
+  KIND_NOSTR_IDENTITY_ROSTER_OP,
   KIND_NOSTR_IDENTITY_DEVICE_LINK_REQUEST,
   NOSTR_IDENTITY_ENCRYPTED_DEVICE_LABELS_FACT,
   appKeyFacet,
   buildNostrIdentityDeviceApprovalReceiptEvent,
   buildNostrIdentityRosterOpEvent,
   approveNostrIdentityDeviceApprovalRequest,
+  compactNostrIdentityDeviceApprovalRequestHasPrefix,
   createNostrIdentityDeviceApprovalRequest,
   createNostrIdentityDeviceLinkInvite,
   createNostrIdentityDeviceLinkRequest,
   createNostrIdentityManualDeviceAddRosterOp,
   encryptedDeviceLabelPayloadsFromNostrIdentityRosterOpEvent,
+  encodeCompactNostrIdentityDeviceApprovalRequest,
   encodeNostrIdentityDeviceApprovalRequest,
   encodeNostrIdentityDeviceLinkInvite,
   isCompleteNostrIdentityDeviceLinkInviteInput,
+  nostrIdentityAppKeyApprovalCandidateFilters,
+  nostrIdentityAppKeyApprovalCandidatesFromEvents,
   nostrIdentityDeviceApprovalClientNonce,
   nostrIdentityRosterOpMatchesDeviceApprovalReceipt,
+  parseCompactNostrIdentityDeviceApprovalRequest,
   parseNostrIdentityDeviceApprovalRequest,
   parseNostrIdentityDeviceApprovalReceiptEvent,
   parseNostrIdentityDeviceApprovalReceiptRosterOp,
@@ -284,5 +290,88 @@ describe('NostrIdentity', () => {
       clientNonce: 'manual-add',
     });
     expect(manualAdd.client_nonce).toBe('manual-add');
+  });
+
+  it('encodes compact roster-discovery approval links with only the joining app key', () => {
+    const adminPubkey = getPublicKey(generateSecretKey());
+    const devicePubkey = getPublicKey(generateSecretKey());
+    const prefix = 'iris-drive://app-key-link';
+
+    const encoded = encodeCompactNostrIdentityDeviceApprovalRequest(devicePubkey, { prefix });
+    expect(encoded).toBe(`${prefix}?app_key=${devicePubkey}`);
+    expect(encoded.length).toBeLessThan(120);
+    expect(encoded).not.toContain(profileId);
+    expect(encoded).not.toContain(adminPubkey);
+    expect(compactNostrIdentityDeviceApprovalRequestHasPrefix(`nostr:${encoded}`, {
+      prefixes: [prefix],
+    })).toBe(true);
+    expect(parseCompactNostrIdentityDeviceApprovalRequest(encoded, {
+      prefixes: [prefix],
+    })).toEqual({ deviceAppKeyPubkey: devicePubkey });
+
+    const oneSlash = `iris-drive:/app-key-link?device=${devicePubkey}`;
+    expect(parseCompactNostrIdentityDeviceApprovalRequest(oneSlash, {
+      prefixes: [prefix, 'iris-drive:/app-key-link?'],
+    })).toEqual({ deviceAppKeyPubkey: devicePubkey });
+    expect(() => parseCompactNostrIdentityDeviceApprovalRequest(
+      `${prefix}?app_key=not-a-key`,
+      { prefixes: [prefix] },
+    )).toThrow('pubkey');
+  });
+
+  it('projects app-key approval candidates from real roster events that tag the joining key', () => {
+    const adminSecret = generateSecretKey();
+    const adminPubkey = getPublicKey(adminSecret);
+    const devicePubkey = getPublicKey(generateSecretKey());
+    const bootstrap = parseNostrIdentityRosterOpEvent(buildNostrIdentityRosterOpEvent({
+      signerSecretKey: adminSecret,
+      profileId,
+      createdAt: 60,
+      clientNonce: 'bootstrap-approval-candidate',
+      op: {
+        op: 'add_facet',
+        facet: appKeyFacet(adminPubkey, {
+          addedAt: 60,
+          capabilities: APP_KEY_ADMIN_CAPABILITIES,
+        }),
+      },
+    }));
+    const approvalContent = createNostrIdentityManualDeviceAddRosterOp({
+      profileId,
+      rosterOps: [bootstrap],
+      approvedByPubkey: adminPubkey,
+      devicePubkey,
+      addedAt: 61,
+      clientNonce: 'manual-candidate',
+    });
+    const approvalEvent = buildNostrIdentityRosterOpEvent({
+      signerSecretKey: adminSecret,
+      profileId,
+      parents: [bootstrap.op_id],
+      createdAt: 61,
+      clientNonce: approvalContent.client_nonce,
+      op: approvalContent.op,
+    });
+
+    expect(nostrIdentityAppKeyApprovalCandidateFilters(devicePubkey)).toEqual([{
+      kinds: [KIND_NOSTR_IDENTITY_ROSTER_OP],
+      '#p': [devicePubkey],
+    }]);
+
+    const candidates = nostrIdentityAppKeyApprovalCandidatesFromEvents(
+      devicePubkey,
+      [JSON.parse(bootstrap.event_json), approvalEvent],
+    );
+
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]).toMatchObject({
+      profileId,
+      appKeyPubkey: devicePubkey,
+      adminAppKeyPubkey: adminPubkey,
+      acceptedRosterOpCount: 2,
+      activeAppKeyCount: 2,
+      latestRosterOpCreatedAt: 61,
+    });
+    expect(candidates[0]?.profileRosterOps).toHaveLength(2);
   });
 });

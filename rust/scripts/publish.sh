@@ -33,6 +33,7 @@ for arg in "$@"; do
 done
 
 CRATES=(
+    "nostr-identity"
     "nostr-social-graph"
     "nostr-social-graph-heed"
     "nostr-social-memory"

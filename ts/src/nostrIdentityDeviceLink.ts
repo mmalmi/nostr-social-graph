@@ -1,4 +1,4 @@
-import { finalizeEvent, generateSecretKey, getPublicKey, nip19, nip44, type Event } from 'nostr-tools';
+import { finalizeEvent, generateSecretKey, getPublicKey, nip19, nip44, type Event, type Filter } from 'nostr-tools';
 import { FACT_OP_KIND } from './factEvents';
 import {
   buildIdentityLinkRequestEvent,
@@ -9,16 +9,19 @@ import {
   APP_KEY_WRITER_CAPABILITIES,
   createAddAppKeyRosterOp,
   type NostrIdentityCapabilities,
+  type NostrIdentityFacet,
   type NostrIdentityId,
+  type NostrIdentityRosterProjection,
   type NostrIdentityRosterOpContent,
   type SignedNostrIdentityRosterOp,
 } from './nostrIdentity';
 import { parseNostrIdentityRosterOpEvent } from './nostrIdentityEvents';
 import { requireValidSignature } from './nostrIdentityJson';
-import { nostrIdentityRosterParentIds } from './nostrIdentityProjection';
+import { nostrIdentityRosterParentIds, projectNostrIdentityRoster } from './nostrIdentityProjection';
 
 export const NOSTR_IDENTITY_DEVICE_LINK_INVITE_PREFIX = 'nostr-identity://device-link/';
 export const NOSTR_IDENTITY_DEVICE_APPROVAL_REQUEST_PREFIX = 'nostr-identity://device-approval/';
+export const NOSTR_IDENTITY_COMPACT_DEVICE_APPROVAL_REQUEST_PREFIX = 'nostr-identity://device-approval';
 export const NOSTR_IDENTITY_DEVICE_LINK_INVITE_VERSION = 1;
 export const NOSTR_IDENTITY_DEVICE_APPROVAL_REQUEST_VERSION = 1;
 export const NOSTR_IDENTITY_DEVICE_APPROVAL_PROOF_TYPE = 'nostr_identity_device_approval_proof';
@@ -75,6 +78,10 @@ export interface NostrIdentityDeviceApprovalRequest {
   label?: string;
 }
 
+export interface NostrIdentityCompactDeviceApprovalRequest {
+  deviceAppKeyPubkey: string;
+}
+
 export interface NostrIdentityDeviceApprovalRequestedResource {
   type: string;
   id: string;
@@ -83,6 +90,16 @@ export interface NostrIdentityDeviceApprovalRequestedResource {
 
 export interface LocalNostrIdentityDeviceApprovalRequest extends NostrIdentityDeviceApprovalRequest {
   requestSecretKey: Uint8Array;
+}
+
+export interface NostrIdentityAppKeyApprovalCandidate {
+  profileId: NostrIdentityId;
+  appKeyPubkey: string;
+  adminAppKeyPubkey: string;
+  acceptedRosterOpCount: number;
+  activeAppKeyCount: number;
+  latestRosterOpCreatedAt?: number;
+  profileRosterOps: SignedNostrIdentityRosterOp[];
 }
 
 export interface NostrIdentityDeviceApprovalReceipt {
@@ -343,6 +360,39 @@ export function encodeNostrIdentityDeviceApprovalRequest(
   return `${options.prefix ?? NOSTR_IDENTITY_DEVICE_APPROVAL_REQUEST_PREFIX}${base64UrlEncode(JSON.stringify(payload))}`;
 }
 
+export function encodeCompactNostrIdentityDeviceApprovalRequest(
+  deviceAppKeyPubkey: string,
+  options: EncodeNostrIdentityDeviceLinkOptions = {},
+): string {
+  const prefix = (options.prefix ?? NOSTR_IDENTITY_COMPACT_DEVICE_APPROVAL_REQUEST_PREFIX).trim().replace(/\?+$/u, '');
+  if (!prefix) throw new Error('compact device approval prefix is empty');
+  return `${prefix}?app_key=${requirePubkey(deviceAppKeyPubkey, 'device AppKey')}`;
+}
+
+export function parseCompactNostrIdentityDeviceApprovalRequest(
+  input: string,
+  options: ParseNostrIdentityDeviceLinkOptions = {},
+): NostrIdentityCompactDeviceApprovalRequest | null {
+  const query = queryFromPrefixedUrl(input, [
+    ...(options.prefixes ?? []),
+    NOSTR_IDENTITY_COMPACT_DEVICE_APPROVAL_REQUEST_PREFIX,
+  ]);
+  if (query === null) return null;
+  const appKey = queryValue(query, 'app_key') ?? queryValue(query, 'device');
+  if (!appKey) throw new Error('device request is missing app_key');
+  return { deviceAppKeyPubkey: requirePubkey(appKey, 'device AppKey') };
+}
+
+export function compactNostrIdentityDeviceApprovalRequestHasPrefix(
+  input: string,
+  options: ParseNostrIdentityDeviceLinkOptions = {},
+): boolean {
+  return queryFromPrefixedUrl(input, [
+    ...(options.prefixes ?? []),
+    NOSTR_IDENTITY_COMPACT_DEVICE_APPROVAL_REQUEST_PREFIX,
+  ]) !== null;
+}
+
 export function parseNostrIdentityDeviceApprovalRequest(
   input: string,
   options: ParseNostrIdentityDeviceLinkOptions = {},
@@ -519,6 +569,67 @@ export function createNostrIdentityManualDeviceAddRosterOp(options: {
     parents: nostrIdentityRosterParentIds(options.rosterOps),
     capabilities: options.capabilities ?? APP_KEY_WRITER_CAPABILITIES,
   });
+}
+
+export function nostrIdentityAppKeyApprovalCandidateFilters(appKeyPubkey: string): Filter[] {
+  return [{
+    kinds: [FACT_OP_KIND],
+    '#p': [requirePubkey(appKeyPubkey, 'app key')],
+  }];
+}
+
+export function nostrIdentityAppKeyApprovalCandidatesFromEvents(
+  appKeyPubkey: string,
+  events: Event[],
+): NostrIdentityAppKeyApprovalCandidate[] {
+  const appKey = requirePubkey(appKeyPubkey, 'app key');
+  const candidateIds = new Set<NostrIdentityId>();
+  const parsedOps: SignedNostrIdentityRosterOp[] = [];
+  for (const event of events) {
+    try {
+      const op = parseNostrIdentityRosterOpEvent(event);
+      parsedOps.push(op);
+      if (op.signer_pubkey === appKey || rosterOpMentionedPubkeys(op).has(appKey)) {
+        candidateIds.add(op.content.profile_id);
+      }
+    } catch {
+      // Non-roster events are normal when projecting relay result batches.
+    }
+  }
+
+  const candidates: NostrIdentityAppKeyApprovalCandidate[] = [];
+  for (const profileId of candidateIds) {
+    const profileRosterOps = parsedOps.filter((op) => op.content.profile_id === profileId);
+    const projection = projectNostrIdentityRoster(profileId, profileRosterOps);
+    const joiningFacet = projection.active_facets[appKey];
+    if (!joiningFacet || !facetIsAppKey(joiningFacet) || !joiningFacet.capabilities?.can_write_roots) {
+      continue;
+    }
+    const adminAppKeyPubkey = projectionAdminAppKeyPubkey(projection);
+    if (!adminAppKeyPubkey) continue;
+    const accepted = new Set(projection.accepted_op_ids);
+    const latestRosterOpCreatedAt = profileRosterOps
+      .filter((op) => accepted.has(op.op_id))
+      .reduce<number | undefined>(
+        (latest, op) => latest === undefined ? op.content.created_at : Math.max(latest, op.content.created_at),
+        undefined,
+      );
+    candidates.push({
+      profileId,
+      appKeyPubkey: appKey,
+      adminAppKeyPubkey,
+      acceptedRosterOpCount: projection.accepted_op_ids.length,
+      activeAppKeyCount: Object.values(projection.active_facets).filter(facetIsAppKey).length,
+      ...(latestRosterOpCreatedAt !== undefined ? { latestRosterOpCreatedAt } : {}),
+      profileRosterOps,
+    });
+  }
+  return candidates.sort((left, right) => (
+    (right.latestRosterOpCreatedAt ?? -1) - (left.latestRosterOpCreatedAt ?? -1)
+      || right.acceptedRosterOpCount - left.acceptedRosterOpCount
+      || right.activeAppKeyCount - left.activeAppKeyCount
+      || left.profileId.localeCompare(right.profileId)
+  ));
 }
 
 export function nostrIdentityDeviceApprovalClientNonce(randomValue: string = randomDeviceApprovalSecret()): string {
@@ -772,6 +883,60 @@ function payloadFromPrefixedUrl(input: string, prefixes: string[]): string | nul
   if (!prefix) return null;
   const payload = value.slice(prefix.length).split(/[?#]/, 1)[0].trim();
   return payload || null;
+}
+
+function queryFromPrefixedUrl(input: string, prefixes: string[]): string | null {
+  const value = input.trim().replace(/^nostr:/i, '');
+  if (!value) return null;
+  const lower = value.toLowerCase();
+  for (const rawPrefix of prefixes) {
+    const prefix = rawPrefix.trim();
+    if (!prefix || !lower.startsWith(prefix.toLowerCase())) continue;
+    const rest = value.slice(prefix.length);
+    const query = prefix.endsWith('?') ? rest : rest.startsWith('?') ? rest.slice(1) : null;
+    const normalized = query?.split('#', 1)[0].trim() ?? '';
+    if (normalized) return normalized;
+  }
+  return null;
+}
+
+function queryValue(query: string, name: string): string | null {
+  for (const part of query.split('&')) {
+    const [key, value = ''] = part.split('=', 2);
+    if (key.toLowerCase() === name.toLowerCase()) return percentDecode(value);
+  }
+  return null;
+}
+
+function percentDecode(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+function rosterOpMentionedPubkeys(op: SignedNostrIdentityRosterOp): Set<string> {
+  switch (op.content.op.op) {
+    case 'add_facet':
+      return new Set([op.content.op.facet.pubkey]);
+    case 'tombstone_facet':
+    case 'set_capabilities':
+      return new Set([op.content.op.pubkey]);
+    case 'rotate_secret_epoch':
+    case 'repair_secret_wraps':
+      return new Set(Object.keys(op.content.op.wrapped_secrets ?? {}));
+  }
+}
+
+function projectionAdminAppKeyPubkey(projection: NostrIdentityRosterProjection): string | undefined {
+  return Object.values(projection.active_facets)
+    .find((facet) => facetIsAppKey(facet) && Boolean(facet.capabilities?.can_admin_profile))
+    ?.pubkey;
+}
+
+function facetIsAppKey(facet: NostrIdentityFacet): boolean {
+  return (facet.purposes ?? []).includes('app_key');
 }
 
 function randomDeviceApprovalSecret(): string {

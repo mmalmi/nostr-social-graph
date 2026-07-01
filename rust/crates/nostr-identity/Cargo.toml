@@ -1,6 +1,6 @@
 [package]
 name = "nostr-identity"
-version = "0.1.2"
+version = "0.1.3"
 description = "Tag-native UUID fact, roster, and snapshot events for Nostr"
 edition.workspace = true
 license.workspace = true
