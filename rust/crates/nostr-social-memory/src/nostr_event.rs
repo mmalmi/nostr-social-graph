@@ -159,8 +159,8 @@ pub fn rating_to_event(rating: &Rating, keys: &Keys) -> Result<Event> {
     facts.push(Fact::new("rating", [rating.rating.to_string()]));
     facts.push(Fact::new("min_rating", [rating.min_rating.to_string()]));
     facts.push(Fact::new("max_rating", [rating.max_rating.to_string()]));
-    if let Some(context) = &rating.context {
-        facts.push(Fact::new("context", [context.clone()]));
+    if let Some(scope) = &rating.scope {
+        facts.push(Fact::new("scope", [scope.clone()]));
     }
     if let Some(sample_count) = rating.sample_count {
         facts.push(Fact::new("sample_count", [sample_count.to_string()]));
@@ -197,7 +197,7 @@ pub fn rating_to_event(rating: &Rating, keys: &Keys) -> Result<Event> {
         safe_identifiers(
             [&rating.rater, &rating.subject]
                 .into_iter()
-                .chain(rating.context.iter())
+                .chain(rating.scope.iter())
                 .chain(rating.evidence.iter())
                 .chain(rating.tags.iter())
                 .map(String::as_str),
@@ -208,11 +208,12 @@ pub fn rating_to_event(rating: &Rating, keys: &Keys) -> Result<Event> {
 /// Parse a rating from a fact event.
 pub fn rating_from_event(event: &Event) -> Result<Rating> {
     let op = parse_social_memory_fact(event, TYPE_RATING)?;
+    let scope = optional_scalar(&op, "scope")?.or(optional_scalar(&op, "context")?);
     let rating = Rating {
         id: op.subject.to_string(),
         rater: required_scalar(&op, "rater")?,
         subject: required_scalar(&op, "subject")?,
-        context: optional_scalar(&op, "context")?,
+        scope,
         rating: required_i64(&op, "rating")?,
         min_rating: required_i64(&op, "min_rating")?,
         max_rating: required_i64(&op, "max_rating")?,
@@ -461,7 +462,7 @@ mod tests {
             0,
             100,
         );
-        r.context = Some("helpful dev".into());
+        r.scope = Some("helpful dev".into());
         r.sample_count = Some(7);
         r.window_start = Some(1_000);
         r.window_end = Some(2_000);
@@ -482,7 +483,7 @@ mod tests {
         assert_eq!(parsed.rating, 80);
         assert_eq!(parsed.min_rating, 0);
         assert_eq!(parsed.max_rating, 100);
-        assert_eq!(parsed.context, Some("helpful dev".into()));
+        assert_eq!(parsed.scope, Some("helpful dev".into()));
         assert_eq!(parsed.sample_count, Some(7));
         assert_eq!(parsed.window_start, Some(1_000));
         assert_eq!(parsed.window_end, Some(2_000));
@@ -539,7 +540,7 @@ mod tests {
 
         let event = r.to_event(&keys).unwrap();
         let parsed = rating_from_event(&event).unwrap();
-        assert!(parsed.context.is_none());
+        assert!(parsed.scope.is_none());
         assert!(parsed.sample_count.is_none());
         assert!(parsed.window_start.is_none());
         assert!(parsed.window_end.is_none());

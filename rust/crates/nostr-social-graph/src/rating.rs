@@ -10,8 +10,8 @@ pub struct Rating {
     pub id: String,
     pub rater: String,
     pub subject: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub context: Option<String>,
+    #[serde(default, alias = "context", skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
     pub rating: i64,
     pub min_rating: i64,
     pub max_rating: i64,
@@ -42,7 +42,7 @@ impl Rating {
             id: uuid::Uuid::new_v4().to_string(),
             rater: rater.into(),
             subject: subject.into(),
-            context: None,
+            scope: None,
             rating,
             min_rating,
             max_rating,
@@ -102,7 +102,7 @@ impl Rating {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RatingGraphConfig {
-    pub contexts: IndexSet<String>,
+    pub scopes: IndexSet<String>,
     pub max_rater_distance: u32,
     pub min_positive_score: i64,
     pub max_negative_score: i64,
@@ -110,19 +110,23 @@ pub struct RatingGraphConfig {
 }
 
 impl RatingGraphConfig {
-    pub fn for_contexts(contexts: impl IntoIterator<Item = impl Into<String>>) -> Self {
+    pub fn for_scopes(scopes: impl IntoIterator<Item = impl Into<String>>) -> Self {
         Self {
-            contexts: contexts.into_iter().map(Into::into).collect(),
+            scopes: scopes.into_iter().map(Into::into).collect(),
             ..Self::default()
         }
     }
 
+    pub fn for_contexts(contexts: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        Self::for_scopes(contexts)
+    }
+
     fn accepts_rating(&self, rating: &Rating) -> bool {
-        if !self.contexts.is_empty()
+        if !self.scopes.is_empty()
             && !rating
-                .context
+                .scope
                 .as_ref()
-                .is_some_and(|context| self.contexts.contains(context))
+                .is_some_and(|scope| self.scopes.contains(scope))
         {
             return false;
         }
@@ -138,7 +142,7 @@ impl RatingGraphConfig {
 impl Default for RatingGraphConfig {
     fn default() -> Self {
         Self {
-            contexts: IndexSet::new(),
+            scopes: IndexSet::new(),
             max_rater_distance: 3,
             min_positive_score: 1,
             max_negative_score: -1,
@@ -238,9 +242,9 @@ fn now_unix() -> u64 {
 mod tests {
     use super::*;
 
-    fn rating(rater: &str, subject: &str, context: &str, value: i64) -> Rating {
+    fn rating(rater: &str, subject: &str, scope: &str, value: i64) -> Rating {
         let mut rating = Rating::new(rater, subject, value, 0, 100);
-        rating.context = Some(context.to_owned());
+        rating.scope = Some(scope.to_owned());
         rating.created_at = 1_000;
         rating
     }
@@ -294,6 +298,28 @@ mod tests {
     }
 
     #[test]
+    fn scope_serializes_canonically_and_reads_context_alias() {
+        let rating: Rating = serde_json::from_str(
+            r#"{
+                "id": "rating-1",
+                "rater": "alice",
+                "subject": "bob",
+                "context": "peer",
+                "rating": 80,
+                "min_rating": 0,
+                "max_rating": 100,
+                "created_at": 1000
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(rating.scope.as_deref(), Some("peer"));
+        let serialized = serde_json::to_string(&rating).unwrap();
+        assert!(serialized.contains("\"scope\":\"peer\""));
+        assert!(!serialized.contains("\"context\""));
+    }
+
+    #[test]
     fn positive_ratings_expand_graph_iteratively() {
         let mut graph = SocialGraph::new("local:root");
         let ratings = vec![
@@ -302,7 +328,7 @@ mod tests {
         ];
 
         let projection = graph
-            .apply_ratings(&ratings, &RatingGraphConfig::for_contexts(["peer"]))
+            .apply_ratings(&ratings, &RatingGraphConfig::for_scopes(["peer"]))
             .unwrap();
 
         assert_eq!(projection.accepted_ratings, 2);
@@ -320,7 +346,7 @@ mod tests {
         ];
 
         let projection = graph
-            .apply_ratings(&ratings, &RatingGraphConfig::for_contexts(["peer"]))
+            .apply_ratings(&ratings, &RatingGraphConfig::for_scopes(["peer"]))
             .unwrap();
 
         assert_eq!(projection.accepted_ratings, 1);
@@ -342,7 +368,7 @@ mod tests {
         ];
 
         let projection = graph
-            .apply_ratings(&ratings, &RatingGraphConfig::for_contexts(["peer"]))
+            .apply_ratings(&ratings, &RatingGraphConfig::for_scopes(["peer"]))
             .unwrap();
 
         assert_eq!(projection.accepted_ratings, 2);
@@ -359,7 +385,7 @@ mod tests {
     }
 
     #[test]
-    fn context_filter_keeps_app_policy_outside_the_format() {
+    fn scope_filter_keeps_app_policy_outside_the_format() {
         let mut graph = SocialGraph::new("local:root");
         let ratings = vec![
             rating("local:root", "peer:a", "peer", 80),
@@ -367,7 +393,7 @@ mod tests {
         ];
 
         let projection = graph
-            .apply_ratings(&ratings, &RatingGraphConfig::for_contexts(["peer"]))
+            .apply_ratings(&ratings, &RatingGraphConfig::for_scopes(["peer"]))
             .unwrap();
 
         assert_eq!(projection.accepted_ratings, 1);
@@ -382,7 +408,7 @@ mod tests {
         weak.sample_count = Some(1);
         let mut strong = rating("local:root", "peer:strong", "peer", 80);
         strong.sample_count = Some(3);
-        let mut config = RatingGraphConfig::for_contexts(["peer"]);
+        let mut config = RatingGraphConfig::for_scopes(["peer"]);
         config.min_sample_count = Some(2);
 
         let projection = graph.apply_ratings(&[weak, strong], &config).unwrap();

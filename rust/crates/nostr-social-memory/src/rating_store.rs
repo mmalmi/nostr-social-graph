@@ -140,7 +140,7 @@ mod tests {
 
     fn make_negative(rater: &str) -> Rating {
         let mut r = Rating::new(rater, "npub1target", 0, 0, 100);
-        r.context = Some("spam".into());
+        r.scope = Some("spam".into());
         r.reason = Some("spam".into());
         r
     }
@@ -307,7 +307,7 @@ mod tests {
         store.create(&alice).unwrap();
 
         let mut r = Rating::new("npub1bob", "npub1alice", 80, 0, 100);
-        r.context = Some("great relay op".into());
+        r.scope = Some("great relay op".into());
         r.evidence = vec!["https://example.test/review/1".into()];
         r.reason = Some("fast and responsive".into());
         r.tags = vec!["relay-op".into(), "infra".into()];
@@ -323,7 +323,7 @@ mod tests {
         assert_eq!(loaded.tags, vec!["relay-op", "infra"]);
         assert_eq!(loaded.evidence, vec!["https://example.test/review/1"]);
         assert_eq!(loaded.reason, Some("fast and responsive".into()));
-        assert_eq!(loaded.context, Some("great relay op".into()));
+        assert_eq!(loaded.scope, Some("great relay op".into()));
     }
 
     #[test]
