@@ -182,8 +182,9 @@ prefer recent operations, or show disputed facts with warnings.
 ## Profiles
 
 The base format intentionally reserves few predicates. A profile can define
-domain vocabulary, required `type` facts, validation rules, and mappings to app
-data. Consumers SHOULD ignore predicates and profiles they do not understand.
+application vocabulary, required `type` facts, validation rules, and mappings to
+app data. Consumers SHOULD ignore predicates and profiles they do not
+understand.
 
 ### UUID Entity
 

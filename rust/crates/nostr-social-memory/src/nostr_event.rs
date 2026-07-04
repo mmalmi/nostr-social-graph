@@ -513,7 +513,7 @@ mod tests {
             Fact::new("rating", [r.rating.to_string()]),
             Fact::new("min_rating", [r.min_rating.to_string()]),
             Fact::new("max_rating", [r.max_rating.to_string()]),
-            Fact::new("context", ["helpful dev".to_string()]),
+            Fact::new("note", ["helpful dev".to_string()]),
         ];
         let event =
             build_fact_record_event(&keys, &r.id, facts, FactOpLinks::default(), Vec::new())
