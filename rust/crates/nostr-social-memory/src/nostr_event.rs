@@ -208,7 +208,7 @@ pub fn rating_to_event(rating: &Rating, keys: &Keys) -> Result<Event> {
 /// Parse a rating from a fact event.
 pub fn rating_from_event(event: &Event) -> Result<Rating> {
     let op = parse_social_memory_fact(event, TYPE_RATING)?;
-    let scope = optional_scalar(&op, "scope")?.or(optional_scalar(&op, "context")?);
+    let scope = optional_scalar(&op, "scope")?;
     let rating = Rating {
         id: op.subject.to_string(),
         rater: required_scalar(&op, "rater")?,
@@ -491,6 +491,36 @@ mod tests {
         assert_eq!(parsed.reason, Some("consistently useful".into()));
         assert_eq!(parsed.tags, sorted(r.tags.clone()));
         assert_eq!(parsed.created_at, 3_000);
+    }
+
+    #[test]
+    fn rating_context_fact_is_not_scope() {
+        let keys = Keys::generate();
+        let subject_keys = Keys::generate();
+        let r = Rating::new(
+            keys.public_key().to_hex(),
+            subject_keys.public_key().to_hex(),
+            80,
+            0,
+            100,
+        );
+        let facts = vec![
+            Fact::new("type", [TYPE_RATING.to_owned()]),
+            Fact::new("schema", [SCHEMA_VERSION.to_owned()]),
+            Fact::new("created_at", [3_000_u64.to_string()]),
+            Fact::new("rater", [r.rater.clone()]),
+            Fact::new("subject", [r.subject.clone()]),
+            Fact::new("rating", [r.rating.to_string()]),
+            Fact::new("min_rating", [r.min_rating.to_string()]),
+            Fact::new("max_rating", [r.max_rating.to_string()]),
+            Fact::new("context", ["helpful dev".to_string()]),
+        ];
+        let event =
+            build_fact_record_event(&keys, &r.id, facts, FactOpLinks::default(), Vec::new())
+                .unwrap();
+
+        let parsed = rating_from_event(&event).unwrap();
+        assert_eq!(parsed.scope, None);
     }
 
     #[test]

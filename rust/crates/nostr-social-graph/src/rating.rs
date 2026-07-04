@@ -10,7 +10,7 @@ pub struct Rating {
     pub id: String,
     pub rater: String,
     pub subject: String,
-    #[serde(default, alias = "context", skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scope: Option<String>,
     pub rating: i64,
     pub min_rating: i64,
@@ -115,10 +115,6 @@ impl RatingGraphConfig {
             scopes: scopes.into_iter().map(Into::into).collect(),
             ..Self::default()
         }
-    }
-
-    pub fn for_contexts(contexts: impl IntoIterator<Item = impl Into<String>>) -> Self {
-        Self::for_scopes(contexts)
     }
 
     fn accepts_rating(&self, rating: &Rating) -> bool {
@@ -298,7 +294,29 @@ mod tests {
     }
 
     #[test]
-    fn scope_serializes_canonically_and_reads_context_alias() {
+    fn scope_serializes_canonically() {
+        let rating: Rating = serde_json::from_str(
+            r#"{
+                "id": "rating-1",
+                "rater": "alice",
+                "subject": "bob",
+                "scope": "peer",
+                "rating": 80,
+                "min_rating": 0,
+                "max_rating": 100,
+                "created_at": 1000
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(rating.scope.as_deref(), Some("peer"));
+        let serialized = serde_json::to_string(&rating).unwrap();
+        assert!(serialized.contains("\"scope\":\"peer\""));
+        assert!(!serialized.contains("\"context\""));
+    }
+
+    #[test]
+    fn context_is_not_a_rating_scope_alias() {
         let rating: Rating = serde_json::from_str(
             r#"{
                 "id": "rating-1",
@@ -313,9 +331,9 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(rating.scope.as_deref(), Some("peer"));
+        assert_eq!(rating.scope, None);
         let serialized = serde_json::to_string(&rating).unwrap();
-        assert!(serialized.contains("\"scope\":\"peer\""));
+        assert!(!serialized.contains("\"scope\""));
         assert!(!serialized.contains("\"context\""));
     }
 
