@@ -1,12 +1,18 @@
 use std::collections::VecDeque;
+use std::str;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use indexmap::{IndexMap, IndexSet};
+use uuid::Uuid;
 
-const BINARY_FORMAT_VERSION: u64 = 2;
+const BINARY_FORMAT_VERSION: u64 = 3;
+const BINARY_FORMAT_VERSION_V2: u64 = 2;
 const BINARY_CHUNK_SIZE: usize = 16 * 1024;
 const MAX_FUTURE_EVENT_SECONDS: u64 = 10 * 60;
 const UNKNOWN_FOLLOW_DISTANCE: u32 = 1000;
+const BINARY_NODE_ID_PUBKEY: u64 = 0;
+const BINARY_NODE_ID_UUID: u64 = 1;
+const BINARY_NODE_ID_STRING: u64 = 2;
 
 #[derive(Debug, thiserror::Error)]
 pub enum SocialGraphError {
@@ -18,8 +24,12 @@ pub enum SocialGraphError {
     InvalidVersion(u64),
     #[error("unexpected end of binary data")]
     UnexpectedEof,
-    #[error("invalid hex string for id {0}: {1}")]
-    InvalidHex(u32, String),
+    #[error("invalid binary node id type {0}")]
+    InvalidBinaryNodeIdType(u64),
+    #[error("invalid UTF-8 binary node id")]
+    InvalidBinaryNodeIdUtf8,
+    #[error("invalid UUID binary node id")]
+    InvalidBinaryNodeIdUuid,
 }
 
 pub type Result<T> = std::result::Result<T, SocialGraphError>;
@@ -656,10 +666,8 @@ impl SocialGraph {
         write_varint(&mut out, BINARY_FORMAT_VERSION);
         write_varint(&mut out, used_ids.len() as u64);
         for id in used_ids.iter().copied() {
-            let key = self.ids.str(id)?;
-            let bytes = decode_hex_32(key, id)?;
-            out.extend_from_slice(&bytes);
             write_varint(&mut out, id as u64);
+            write_binary_node_id(&mut out, self.ids.str(id)?);
         }
 
         write_varint(&mut out, follow_owners.len() as u64);
@@ -842,16 +850,18 @@ impl SocialGraph {
     pub fn from_binary(root: &str, data: &[u8]) -> Result<Self> {
         let mut offset = 0usize;
         let version = read_varint(data, &mut offset)?;
-        if version != BINARY_FORMAT_VERSION {
+        if !matches!(version, BINARY_FORMAT_VERSION | BINARY_FORMAT_VERSION_V2) {
             return Err(SocialGraphError::InvalidVersion(version));
         }
 
         let ids_count = read_varint(data, &mut offset)? as usize;
         let mut unique_ids = Vec::with_capacity(ids_count);
         for _ in 0..ids_count {
-            let hex_bytes = read_bytes(data, &mut offset, 32)?;
-            let id = read_varint(data, &mut offset)? as u32;
-            unique_ids.push((hex::encode(hex_bytes), id));
+            let (value, id) = read_binary_node_id(version, data, &mut offset)?;
+            if value.trim().is_empty() {
+                return Err(SocialGraphError::EmptyString);
+            }
+            unique_ids.push((value, id));
         }
 
         let follow_lists_count = read_varint(data, &mut offset)? as usize;
@@ -1210,15 +1220,60 @@ fn is_valid_pubkey(key: &str) -> bool {
     key.len() == 64 && key.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
-fn decode_hex_32(hex_value: &str, id: u32) -> Result<[u8; 32]> {
-    if hex_value.len() != 64 || !hex_value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err(SocialGraphError::InvalidHex(id, hex_value.to_owned()));
+fn is_canonical_uuid(value: &str) -> Option<Uuid> {
+    let uuid = Uuid::parse_str(value).ok()?;
+    (uuid.to_string() == value).then_some(uuid)
+}
+
+fn write_binary_node_id(out: &mut Vec<u8>, value: &str) {
+    if is_valid_pubkey(value) {
+        write_varint(out, BINARY_NODE_ID_PUBKEY);
+        let bytes = hex::decode(value).expect("validated pubkey hex should decode");
+        out.extend_from_slice(&bytes);
+        return;
     }
-    let bytes = hex::decode(hex_value)
-        .map_err(|_| SocialGraphError::InvalidHex(id, hex_value.to_owned()))?;
-    let mut output = [0u8; 32];
-    output.copy_from_slice(&bytes);
-    Ok(output)
+
+    if let Some(uuid) = is_canonical_uuid(value) {
+        write_varint(out, BINARY_NODE_ID_UUID);
+        out.extend_from_slice(uuid.as_bytes());
+        return;
+    }
+
+    write_varint(out, BINARY_NODE_ID_STRING);
+    write_varint(out, value.len() as u64);
+    out.extend_from_slice(value.as_bytes());
+}
+
+fn read_binary_node_id(version: u64, data: &[u8], offset: &mut usize) -> Result<(String, u32)> {
+    if version == BINARY_FORMAT_VERSION_V2 {
+        let hex_bytes = read_bytes(data, offset, 32)?;
+        let id = read_varint(data, offset)? as u32;
+        return Ok((hex::encode(hex_bytes), id));
+    }
+
+    let id = read_varint(data, offset)? as u32;
+    let node_id_type = read_varint(data, offset)?;
+    let value = match node_id_type {
+        BINARY_NODE_ID_PUBKEY => {
+            let bytes = read_bytes(data, offset, 32)?;
+            hex::encode(bytes)
+        }
+        BINARY_NODE_ID_UUID => {
+            let bytes = read_bytes(data, offset, 16)?;
+            Uuid::from_slice(bytes)
+                .map_err(|_| SocialGraphError::InvalidBinaryNodeIdUuid)?
+                .to_string()
+        }
+        BINARY_NODE_ID_STRING => {
+            let len = read_varint(data, offset)? as usize;
+            let bytes = read_bytes(data, offset, len)?;
+            str::from_utf8(bytes)
+                .map_err(|_| SocialGraphError::InvalidBinaryNodeIdUtf8)?
+                .to_owned()
+        }
+        other => return Err(SocialGraphError::InvalidBinaryNodeIdType(other)),
+    };
+    Ok((value, id))
 }
 
 fn write_varint(out: &mut Vec<u8>, mut value: u64) {
@@ -1335,7 +1390,28 @@ mod tests {
     }
 
     #[test]
-    fn to_binary_rejects_non_hex_pubkeys_when_they_are_serialized() {
+    fn from_binary_reads_v2_pubkey_tables() {
+        let mut binary = Vec::new();
+        write_varint(&mut binary, BINARY_FORMAT_VERSION_V2);
+        write_varint(&mut binary, 2);
+        binary.extend_from_slice(&hex::decode(ADAM).unwrap());
+        write_varint(&mut binary, 0);
+        binary.extend_from_slice(&hex::decode(FIATJAF).unwrap());
+        write_varint(&mut binary, 1);
+        write_varint(&mut binary, 1);
+        write_varint(&mut binary, 0);
+        write_varint(&mut binary, 1_000);
+        write_varint(&mut binary, 1);
+        write_varint(&mut binary, 1);
+        write_varint(&mut binary, 0);
+
+        let restored = SocialGraph::from_binary(ADAM, &binary).unwrap();
+        assert!(restored.is_following(ADAM, FIATJAF));
+        assert_eq!(restored.get_follow_distance(FIATJAF), 1);
+    }
+
+    #[test]
+    fn binary_v3_round_trips_non_hex_authors() {
         let mut graph = SocialGraph::new(ADAM);
         graph.handle_event(
             &event("not-a-hex-pubkey", 3, 1_000, vec![FIATJAF]),
@@ -1343,10 +1419,39 @@ mod tests {
             1.0,
         );
 
-        let error = graph.to_binary().unwrap_err();
-        assert!(matches!(
-            error,
-            SocialGraphError::InvalidHex(1, ref value) if value == "not-a-hex-pubkey"
-        ));
+        let binary = graph.to_binary().unwrap();
+        assert_eq!(binary[0], BINARY_FORMAT_VERSION as u8);
+
+        let restored = SocialGraph::from_binary(ADAM, &binary).unwrap();
+        assert!(restored.is_following("not-a-hex-pubkey", FIATJAF));
+        assert_eq!(
+            restored.get_follow_distance(FIATJAF),
+            UNKNOWN_FOLLOW_DISTANCE
+        );
+
+        let restored_from_author = SocialGraph::from_binary("not-a-hex-pubkey", &binary).unwrap();
+        assert_eq!(restored_from_author.get_follow_distance(FIATJAF), 1);
+    }
+
+    #[test]
+    fn binary_v3_round_trips_uuid_and_string_nodes() {
+        let uuid = "6b7f5df4-1d2d-43a7-9b87-873e41a2d99a";
+        let external = "external:nvpn-peer:exit-a";
+
+        let mut graph = SocialGraph::new(ADAM);
+        let root = graph.ids.existing_id(ADAM).unwrap();
+        let uuid_id = graph.ids.id(uuid).unwrap();
+        let external_id = graph.ids.id(external).unwrap();
+        graph.private_add_follower(uuid_id, root);
+        graph.private_add_follower(external_id, uuid_id);
+
+        let binary = graph.to_binary().unwrap();
+        assert_eq!(binary[0], BINARY_FORMAT_VERSION as u8);
+
+        let restored = SocialGraph::from_binary(ADAM, &binary).unwrap();
+        assert!(restored.is_following(ADAM, uuid));
+        assert!(restored.is_following(uuid, external));
+        assert_eq!(restored.get_follow_distance(uuid), 1);
+        assert_eq!(restored.get_follow_distance(external), 2);
     }
 }

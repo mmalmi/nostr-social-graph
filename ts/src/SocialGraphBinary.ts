@@ -1,6 +1,15 @@
 import { SocialGraph } from './SocialGraph';
 
-export const BINARY_FORMAT_VERSION = 2;
+export const BINARY_FORMAT_VERSION = 3;
+const BINARY_FORMAT_VERSION_V2 = 2;
+const BINARY_NODE_ID_PUBKEY = 0;
+const BINARY_NODE_ID_UUID = 1;
+const BINARY_NODE_ID_STRING = 2;
+
+const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const pubkeyPattern = /^[0-9a-fA-F]{64}$/;
+const textEncoder = new TextEncoder();
+const textDecoder = new TextDecoder('utf-8', { fatal: true });
 
 function planBudget(
   graph: SocialGraph,
@@ -130,6 +139,48 @@ function bytesToHex(bytes: Uint8Array): string {
     return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
+function isCanonicalUuid(value: string): boolean {
+    return uuidPattern.test(value);
+}
+
+function uuidToBytes(uuid: string): Uint8Array {
+    return hexToBytes(uuid.replace(/-/g, ''));
+}
+
+function bytesToUuid(bytes: Uint8Array): string {
+    const hex = bytesToHex(bytes);
+    return [
+        hex.slice(0, 8),
+        hex.slice(8, 12),
+        hex.slice(12, 16),
+        hex.slice(16, 20),
+        hex.slice(20),
+    ].join('-');
+}
+
+function writeBinaryNodeId(
+    value: string,
+    writeVar: (value: number) => void,
+    writeBytes: (bytes: Uint8Array) => void,
+) {
+    if (pubkeyPattern.test(value)) {
+        writeVar(BINARY_NODE_ID_PUBKEY);
+        writeBytes(hexToBytes(value));
+        return;
+    }
+
+    if (isCanonicalUuid(value)) {
+        writeVar(BINARY_NODE_ID_UUID);
+        writeBytes(uuidToBytes(value));
+        return;
+    }
+
+    const bytes = textEncoder.encode(value);
+    writeVar(BINARY_NODE_ID_STRING);
+    writeVar(bytes.length);
+    writeBytes(bytes);
+}
+
 // Variable-length integer decoding
 function decodeVarint(bytes: Uint8Array, offset: number): { value: number; bytesRead: number } {
     let value = 0;
@@ -245,8 +296,8 @@ export async function* toBinaryChunks(graph: SocialGraph, maxNodes?: number, max
     // --- uniqueIds block ---
     writeVar(usedIds.size);
     for (const id of usedIds) {
-        writeBytes(hexToBytes(data.ids.str(id)));
         writeVar(id);
+        writeBinaryNodeId(data.ids.str(id), writeVar, writeBytes);
     }
 
     // --- follow lists ---
@@ -318,6 +369,19 @@ export async function fromBinary(root: string, data: Uint8Array): Promise<Social
     const version = decodeVarint(data, offset);
     offset += version.bytesRead;
     
+    if (version.value !== BINARY_FORMAT_VERSION && version.value !== BINARY_FORMAT_VERSION_V2) {
+        throw new Error(`Invalid binary version: ${version.value}`);
+    }
+
+    const readBytes = (len: number): Uint8Array => {
+        if (offset + len > data.length) {
+            throw new Error('Unexpected end of binary data');
+        }
+        const bytes = data.slice(offset, offset + len);
+        offset += len;
+        return bytes;
+    };
+
     // Read unique IDs
     const idsCount = decodeVarint(data, offset);
     offset += idsCount.bytesRead;
@@ -325,16 +389,38 @@ export async function fromBinary(root: string, data: Uint8Array): Promise<Social
     const uniqueIds: [string, number][] = [];
     
     for (let i = 0; i < idsCount.value; i++) {
-        // Read hex bytes (32 bytes for public key)
-        const hexBytes = data.slice(offset, offset + 32);
-        offset += 32;
-        
-        const hexStr = bytesToHex(hexBytes);
-        
+        if (version.value === BINARY_FORMAT_VERSION_V2) {
+            const hexBytes = readBytes(32);
+            const hexStr = bytesToHex(hexBytes);
+            const id = decodeVarint(data, offset);
+            offset += id.bytesRead;
+            uniqueIds.push([hexStr, id.value]);
+            continue;
+        }
+
         const id = decodeVarint(data, offset);
         offset += id.bytesRead;
-        
-        uniqueIds.push([hexStr, id.value]);
+
+        const nodeIdType = decodeVarint(data, offset);
+        offset += nodeIdType.bytesRead;
+
+        let value: string;
+        if (nodeIdType.value === BINARY_NODE_ID_PUBKEY) {
+            value = bytesToHex(readBytes(32));
+        } else if (nodeIdType.value === BINARY_NODE_ID_UUID) {
+            value = bytesToUuid(readBytes(16));
+        } else if (nodeIdType.value === BINARY_NODE_ID_STRING) {
+            const len = decodeVarint(data, offset);
+            offset += len.bytesRead;
+            value = textDecoder.decode(readBytes(len.value));
+        } else {
+            throw new Error(`Invalid binary node id type: ${nodeIdType.value}`);
+        }
+
+        if (!value || value.trim() === '') {
+            throw new Error('Cannot store empty or whitespace-only strings');
+        }
+        uniqueIds.push([value, id.value]);
     }
     
     // Read follow lists
@@ -401,9 +487,9 @@ export async function fromBinary(root: string, data: Uint8Array): Promise<Social
     graphAny.ids.currentUniqueId = 0;
     
     // Populate the UniqueIds mapping
-    for (const [hexStr, id] of uniqueIds) {
-        graphAny.ids.uniqueIdToStr.set(id, hexStr);
-        graphAny.ids.strToUniqueId.set(hexStr, id);
+    for (const [value, id] of uniqueIds) {
+        graphAny.ids.uniqueIdToStr.set(id, value);
+        graphAny.ids.strToUniqueId.set(value, id);
         graphAny.ids.currentUniqueId = Math.max(graphAny.ids.currentUniqueId, id + 1);
     }
     

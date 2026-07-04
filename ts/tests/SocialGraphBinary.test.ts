@@ -23,6 +23,21 @@ function decodeVarint(bytes: Uint8Array, offset: number): { value: number; bytes
     return { value, bytesRead };
 }
 
+function writeVarint(out: number[], value: number) {
+    let n = value >>> 0;
+    while (n >= 0x80) {
+        out.push((n & 0x7f) | 0x80);
+        n >>>= 7;
+    }
+    out.push(n & 0x7f);
+}
+
+function appendHex(out: number[], hex: string) {
+    for (let i = 0; i < hex.length; i += 2) {
+        out.push(Number.parseInt(hex.slice(i, i + 2), 16));
+    }
+}
+
 const pubKeys = {
     adam: "020f2d21ae09bf35fcdfb65decf1478b846f5f728ab30c5eaabcd6d081a81c3e",
     fiatjaf: "3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d",
@@ -313,6 +328,46 @@ describe('SocialGraph Binary Serialization', () => {
     expect(reconstructed.getMutedByUser(pubKeys.adam)).toContain(pubKeys.bob);
   });
 
+  it('should serialize and deserialize UUID and arbitrary string ids', async () => {
+    const root = 'local:root';
+    const identity = '6b7f5df4-1d2d-43a7-9b87-873e41a2d99a';
+    const external = 'external:nvpn-peer:exit-a';
+    const graph = new SocialGraph(root);
+
+    graph.addFollower(root, identity);
+    graph.addFollower(identity, external);
+
+    const binary = await graph.toBinary();
+    const version = decodeVarint(binary, 0);
+    expect(version.value).toBe(Binary.BINARY_FORMAT_VERSION);
+
+    const reconstructed = await SocialGraph.fromBinary(root, binary);
+    expect(reconstructed.isFollowing(root, identity)).toBe(true);
+    expect(reconstructed.isFollowing(identity, external)).toBe(true);
+    expect(reconstructed.getFollowDistance(identity)).toBe(1);
+    expect(reconstructed.getFollowDistance(external)).toBe(2);
+  });
+
+  it('should deserialize v2 pubkey id tables', async () => {
+    const binary: number[] = [];
+    writeVarint(binary, 2);
+    writeVarint(binary, 2);
+    appendHex(binary, pubKeys.adam);
+    writeVarint(binary, 0);
+    appendHex(binary, pubKeys.fiatjaf);
+    writeVarint(binary, 1);
+    writeVarint(binary, 1);
+    writeVarint(binary, 0);
+    writeVarint(binary, 1000);
+    writeVarint(binary, 1);
+    writeVarint(binary, 1);
+    writeVarint(binary, 0);
+
+    const reconstructed = await SocialGraph.fromBinary(pubKeys.adam, new Uint8Array(binary));
+    expect(reconstructed.isFollowing(pubKeys.adam, pubKeys.fiatjaf)).toBe(true);
+    expect(reconstructed.getFollowDistance(pubKeys.fiatjaf)).toBe(1);
+  });
+
   it('should include version number in binary format', async () => {
     const graph = new SocialGraph(pubKeys.adam);
     const event: NostrEvent = {
@@ -338,4 +393,4 @@ describe('SocialGraph Binary Serialization', () => {
   });
 
 
-}); 
+});

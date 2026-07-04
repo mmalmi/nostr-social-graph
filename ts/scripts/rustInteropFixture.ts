@@ -12,6 +12,12 @@ const pubKeys = {
   charlie: 'abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890',
 } as const;
 
+const arbitraryIds = {
+  root: 'local:root',
+  identity: '6b7f5df4-1d2d-43a7-9b87-873e41a2d99a',
+  external: 'external:nvpn-peer:exit-a',
+} as const;
+
 type GraphSummary = {
   root: string;
   binary_hex?: string;
@@ -67,6 +73,13 @@ function defaultGraph() {
   return graph;
 }
 
+function arbitraryIdsGraph() {
+  const graph = new SocialGraph(arbitraryIds.root);
+  graph.addFollower(arbitraryIds.root, arbitraryIds.identity);
+  graph.addFollower(arbitraryIds.identity, arbitraryIds.external);
+  return graph;
+}
+
 function summary(graph: SocialGraph, binaryHex?: string): GraphSummary {
   return {
     root: graph.getRoot(),
@@ -96,6 +109,13 @@ async function emitScenario(name: string) {
     return;
   }
 
+  if (name === 'arbitrary-ids') {
+    const graph = arbitraryIdsGraph();
+    const binary = await graph.toBinary();
+    process.stdout.write(JSON.stringify(summary(graph, Buffer.from(binary).toString('hex'))));
+    return;
+  }
+
   throw new Error(`unknown scenario ${name}`);
 }
 
@@ -111,6 +131,8 @@ async function emitBudgetedScenario(
     graph = new SocialGraph(pubKeys.adam);
   } else if (name === 'default') {
     graph = defaultGraph();
+  } else if (name === 'arbitrary-ids') {
+    graph = arbitraryIdsGraph();
   } else {
     throw new Error(`unknown scenario ${name}`);
   }

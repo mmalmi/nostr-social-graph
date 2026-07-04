@@ -59,6 +59,24 @@ fn complex_graph_round_trips_with_typescript() {
 }
 
 #[test]
+fn typed_id_binary_matches_typescript_for_uuid_and_string_nodes() {
+    const ROOT: &str = "local:root";
+    const IDENTITY: &str = "6b7f5df4-1d2d-43a7-9b87-873e41a2d99a";
+    const EXTERNAL: &str = "external:nvpn-peer:exit-a";
+
+    let ts_fixture = ts_fixture_emit("arbitrary-ids");
+    let binary = hex::decode(ts_fixture.binary_hex.clone().unwrap()).unwrap();
+    let graph = SocialGraph::from_binary(ROOT, &binary).expect("rust load ts typed-id binary");
+
+    assert_eq!(graph.get_root(), ROOT);
+    assert!(graph.is_following(ROOT, IDENTITY));
+    assert!(graph.is_following(IDENTITY, EXTERNAL));
+    assert_eq!(graph.get_follow_distance(IDENTITY), 1);
+    assert_eq!(graph.get_follow_distance(EXTERNAL), 2);
+    assert_eq!(hex::encode(graph.to_binary().unwrap()), hex::encode(binary));
+}
+
+#[test]
 fn budgeted_binary_matches_typescript_for_multiple_limits() {
     let budgets = [
         BinaryBudget {
