@@ -42,8 +42,8 @@ impl Attestation {
                 .cloned()
                 .map(|attribute| Fact::new("attribute", [attribute])),
         );
-        if let Some(context) = &self.context {
-            facts.push(Fact::new("context", [context.clone()]));
+        if let Some(scope) = &self.scope {
+            facts.push(Fact::new("scope", [scope.clone()]));
         }
         if let Some(ended_at) = &self.ended_at {
             facts.push(Fact::new("ended_at", [ended_at.to_rfc3339()]));
@@ -70,7 +70,7 @@ impl Attestation {
             id: op.subject.to_string(),
             attester: required_scalar(&op, "attester")?,
             attributes: scalar_values(&op, "attribute")?,
-            context: optional_scalar(&op, "context")?,
+            scope: optional_scalar(&op, "scope")?,
             created_at: required_datetime(&op, "created_at")?,
             ended_at: optional_datetime(&op, "ended_at")?,
         })
@@ -94,8 +94,8 @@ impl CounterAttestation {
         if let Some(disputed_event_id) = &self.disputed_event_id {
             facts.push(Fact::new("disputed_event_id", [disputed_event_id.clone()]));
         }
-        if let Some(context) = &self.context {
-            facts.push(Fact::new("context", [context.clone()]));
+        if let Some(scope) = &self.scope {
+            facts.push(Fact::new("scope", [scope.clone()]));
         }
 
         let links = FactOpLinks {
@@ -131,7 +131,7 @@ impl CounterAttestation {
             attester: required_scalar(&op, "attester")?,
             attributes: scalar_values(&op, "attribute")?,
             disputed_event_id,
-            context: optional_scalar(&op, "context")?,
+            scope: optional_scalar(&op, "scope")?,
             created_at: required_datetime(&op, "created_at")?,
         })
     }
@@ -397,7 +397,7 @@ mod tests {
         assert_eq!(parsed.id, a.id);
         assert_eq!(parsed.attester, keys.public_key().to_hex());
         assert_eq!(parsed.attributes, sorted(a.attributes.clone()));
-        assert!(parsed.context.is_none());
+        assert!(parsed.scope.is_none());
         assert!(parsed.ended_at.is_none());
         assert_eq!(parsed.created_at.timestamp(), a.created_at.timestamp());
     }
@@ -409,14 +409,14 @@ mod tests {
             keys.public_key().to_hex(),
             vec!["npub1x".into(), "entity-uuid".into(), "npub1y".into()],
         );
-        a.context = Some("verified at conference".into());
+        a.scope = Some("verified at conference".into());
         a.ended_at = Some(Utc::now());
 
         let event = a.to_event(&keys).unwrap();
         let parsed = Attestation::from_event(&event).unwrap();
 
         assert_eq!(parsed.attributes, sorted(a.attributes.clone()));
-        assert_eq!(parsed.context, a.context);
+        assert_eq!(parsed.scope, a.scope);
         assert!(parsed.ended_at.is_some());
         assert_eq!(
             parsed.ended_at.unwrap().timestamp(),
@@ -614,7 +614,7 @@ mod tests {
         assert_eq!(parsed.id, ca.id);
         assert_eq!(parsed.attester, keys.public_key().to_hex());
         assert_eq!(parsed.attributes, sorted(ca.attributes.clone()));
-        assert!(parsed.context.is_none());
+        assert!(parsed.scope.is_none());
         assert!(parsed.disputed_event_id.is_none());
         assert_eq!(parsed.created_at.timestamp(), ca.created_at.timestamp());
     }
@@ -635,13 +635,13 @@ mod tests {
             vec!["npub1a".into(), "npub1b".into()],
         );
         ca.disputed_event_id = Some(att_event_id.clone());
-        ca.context = Some("these are different people".into());
+        ca.scope = Some("these are different people".into());
 
         let event = ca.to_event(&keys).unwrap();
         let parsed = CounterAttestation::from_event(&event).unwrap();
 
         assert_eq!(parsed.disputed_event_id, Some(att_event_id));
-        assert_eq!(parsed.context, Some("these are different people".into()));
+        assert_eq!(parsed.scope, Some("these are different people".into()));
         assert_eq!(parsed.attributes, sorted(ca.attributes.clone()));
     }
 
@@ -684,7 +684,7 @@ mod tests {
             keys.public_key().to_hex(),
             vec!["npub1x".into(), "entity-uuid".into(), "npub1y".into()],
         );
-        ca.context = Some("impersonation attempt".into());
+        ca.scope = Some("impersonation attempt".into());
         ca.disputed_event_id = Some(dummy_event.id.to_hex());
 
         let event = ca.to_event(&keys).unwrap();
@@ -693,7 +693,7 @@ mod tests {
         assert_eq!(parsed.id, ca.id);
         assert_eq!(parsed.attester, keys.public_key().to_hex());
         assert_eq!(parsed.attributes, sorted(ca.attributes.clone()));
-        assert_eq!(parsed.context, ca.context);
+        assert_eq!(parsed.scope, ca.scope);
         assert_eq!(parsed.disputed_event_id, ca.disputed_event_id);
         assert_eq!(parsed.created_at.timestamp(), ca.created_at.timestamp());
     }

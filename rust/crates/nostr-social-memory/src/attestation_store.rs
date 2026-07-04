@@ -309,7 +309,7 @@ mod tests {
         store.create(&alice).unwrap();
 
         let mut a = Attestation::new("npub1bob", vec!["npub1x".into(), "npub1y".into()]);
-        a.context = Some("confirmed at meetup".into());
+        a.scope = Some("confirmed at meetup".into());
         let aid = a.id.clone();
         store.add_attestation(&alice.id, &a).unwrap();
 
@@ -319,7 +319,7 @@ mod tests {
         assert_eq!(loaded.id, aid);
         assert_eq!(loaded.attester, "npub1bob");
         assert_eq!(loaded.attributes, vec!["npub1x", "npub1y"]);
-        assert_eq!(loaded.context, Some("confirmed at meetup".into()));
+        assert_eq!(loaded.scope, Some("confirmed at meetup".into()));
         assert!(loaded.is_active());
     }
 }

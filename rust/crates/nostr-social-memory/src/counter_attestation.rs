@@ -17,7 +17,7 @@ pub struct CounterAttestation {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disputed_event_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub context: Option<String>,
+    pub scope: Option<String>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -28,7 +28,7 @@ impl CounterAttestation {
             attester: attester.into(),
             attributes,
             disputed_event_id: None,
-            context: None,
+            scope: None,
             created_at: Utc::now(),
         }
     }
@@ -45,15 +45,15 @@ mod tests {
         assert_eq!(ca.attester, "npub1attester");
         assert_eq!(ca.attributes, vec!["npub1a", "npub1b"]);
         assert!(ca.disputed_event_id.is_none());
-        assert!(ca.context.is_none());
+        assert!(ca.scope.is_none());
     }
 
     #[test]
-    fn with_context_and_disputed() {
+    fn with_scope_and_disputed() {
         let mut ca = CounterAttestation::new("attester", vec!["npub1a".into()]);
-        ca.context = Some("these are different people".into());
+        ca.scope = Some("these are different people".into());
         ca.disputed_event_id = Some("abc123eventid".into());
-        assert_eq!(ca.context.as_deref(), Some("these are different people"));
+        assert_eq!(ca.scope.as_deref(), Some("these are different people"));
         assert_eq!(ca.disputed_event_id.as_deref(), Some("abc123eventid"));
     }
 
@@ -63,7 +63,7 @@ mod tests {
             "npub1attester",
             vec!["npub1a".into(), "npub1b".into(), "entity-uuid-123".into()],
         );
-        ca.context = Some("mistaken identity".into());
+        ca.scope = Some("mistaken identity".into());
         ca.disputed_event_id = Some("event123".into());
 
         let serialized = toml::to_string_pretty(&ca).unwrap();
@@ -72,7 +72,7 @@ mod tests {
         assert_eq!(deserialized.id, ca.id);
         assert_eq!(deserialized.attester, ca.attester);
         assert_eq!(deserialized.attributes, ca.attributes);
-        assert_eq!(deserialized.context, ca.context);
+        assert_eq!(deserialized.scope, ca.scope);
         assert_eq!(deserialized.disputed_event_id, ca.disputed_event_id);
     }
 
@@ -80,7 +80,7 @@ mod tests {
     fn toml_omits_none_fields() {
         let ca = CounterAttestation::new("attester", vec!["npub1a".into()]);
         let serialized = toml::to_string_pretty(&ca).unwrap();
-        assert!(!serialized.contains("context"));
+        assert!(!serialized.contains("scope"));
         assert!(!serialized.contains("disputed_event_id"));
     }
 

@@ -13,7 +13,7 @@ pub struct Attestation {
     /// Identifiers claimed to belong together.
     pub attributes: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub context: Option<String>,
+    pub scope: Option<String>,
     pub created_at: DateTime<Utc>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ended_at: Option<DateTime<Utc>>,
@@ -25,7 +25,7 @@ impl Attestation {
             id: uuid::Uuid::new_v4().to_string(),
             attester: attester.into(),
             attributes,
-            context: None,
+            scope: None,
             created_at: Utc::now(),
             ended_at: None,
         }
@@ -47,19 +47,16 @@ mod tests {
         assert!(!a.id.is_empty());
         assert_eq!(a.attester, "npub1attester");
         assert_eq!(a.attributes, vec!["npub1a", "npub1b"]);
-        assert!(a.context.is_none());
+        assert!(a.scope.is_none());
         assert!(a.ended_at.is_none());
         assert!(a.is_active());
     }
 
     #[test]
-    fn with_context() {
+    fn with_scope() {
         let mut a = Attestation::new("attester", vec!["npub1a".into()]);
-        a.context = Some("same person, confirmed at meetup".into());
-        assert_eq!(
-            a.context.as_deref(),
-            Some("same person, confirmed at meetup")
-        );
+        a.scope = Some("same person, confirmed at meetup".into());
+        assert_eq!(a.scope.as_deref(), Some("same person, confirmed at meetup"));
     }
 
     #[test]
@@ -75,7 +72,7 @@ mod tests {
             "npub1attester",
             vec!["npub1a".into(), "npub1b".into(), "entity-uuid-123".into()],
         );
-        a.context = Some("verified at conference".into());
+        a.scope = Some("verified at conference".into());
 
         let serialized = toml::to_string_pretty(&a).unwrap();
         let deserialized: Attestation = toml::from_str(&serialized).unwrap();
@@ -83,14 +80,14 @@ mod tests {
         assert_eq!(deserialized.id, a.id);
         assert_eq!(deserialized.attester, a.attester);
         assert_eq!(deserialized.attributes, a.attributes);
-        assert_eq!(deserialized.context, a.context);
+        assert_eq!(deserialized.scope, a.scope);
         assert!(deserialized.is_active());
     }
 
     #[test]
     fn toml_roundtrip_with_end_date() {
         let mut a = Attestation::new("attester", vec!["npub1old".into()]);
-        a.context = Some("key compromised".into());
+        a.scope = Some("key compromised".into());
         a.ended_at = Some(Utc::now());
 
         let serialized = toml::to_string_pretty(&a).unwrap();
@@ -104,7 +101,7 @@ mod tests {
     fn toml_omits_none_fields() {
         let a = Attestation::new("attester", vec!["npub1a".into()]);
         let serialized = toml::to_string_pretty(&a).unwrap();
-        assert!(!serialized.contains("context"));
+        assert!(!serialized.contains("scope"));
         assert!(!serialized.contains("ended_at"));
     }
 
