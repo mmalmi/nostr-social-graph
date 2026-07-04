@@ -119,7 +119,6 @@ fn read_rating_files(dir: &std::path::Path) -> Result<Vec<Rating>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rating::*;
     use crate::types::Entity;
     use tempfile::TempDir;
 
@@ -136,13 +135,13 @@ mod tests {
     }
 
     fn make_positive(rater: &str) -> Rating {
-        Rating::new(rater, "npub1target", Sentiment::Positive)
+        Rating::new(rater, "npub1target", 80, 0, 100)
     }
 
     fn make_negative(rater: &str) -> Rating {
-        let mut r = Rating::new(rater, "npub1target", Sentiment::Negative);
+        let mut r = Rating::new(rater, "npub1target", 0, 0, 100);
         r.context = Some("spam".into());
-        r.report_type = Some(ReportType::Spam);
+        r.reason = Some("spam".into());
         r
     }
 
@@ -302,13 +301,15 @@ mod tests {
     }
 
     #[test]
-    fn persists_with_tags_and_report_type() {
+    fn persists_with_tags_and_evidence() {
         let (_tmp, store) = setup();
         let alice = make_entity("alice", "npub1alice");
         store.create(&alice).unwrap();
 
-        let mut r = Rating::new("npub1bob", "npub1alice", Sentiment::Positive);
+        let mut r = Rating::new("npub1bob", "npub1alice", 80, 0, 100);
         r.context = Some("great relay op".into());
+        r.evidence = vec!["https://example.test/review/1".into()];
+        r.reason = Some("fast and responsive".into());
         r.tags = vec!["relay-op".into(), "infra".into()];
         let rid = r.id.clone();
         store.add_rating(&alice.id, &r).unwrap();
@@ -320,6 +321,8 @@ mod tests {
         assert_eq!(loaded.rater, "npub1bob");
         assert!(loaded.is_positive());
         assert_eq!(loaded.tags, vec!["relay-op", "infra"]);
+        assert_eq!(loaded.evidence, vec!["https://example.test/review/1"]);
+        assert_eq!(loaded.reason, Some("fast and responsive".into()));
         assert_eq!(loaded.context, Some("great relay op".into()));
     }
 
@@ -329,7 +332,7 @@ mod tests {
         let alice = make_entity("alice", "npub1alice");
         store.create(&alice).unwrap();
 
-        let r = Rating::new("npub1bob", "npub1alice", Sentiment::Neutral);
+        let r = Rating::new("npub1bob", "npub1alice", 50, 0, 100);
         store.add_rating(&alice.id, &r).unwrap();
 
         let list = store.list_ratings(&alice.id).unwrap();

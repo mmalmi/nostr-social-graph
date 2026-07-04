@@ -91,11 +91,16 @@ pub fn compute_reputation(
         // Weight decays exponentially with rater distance
         let weight = config.attester_decay.powi(distance as i32);
 
-        if r.is_positive() {
-            positive_signal += weight * config.positive_weight;
+        let Ok(rating_score) = r.normalized_score() else {
+            continue;
+        };
+        let rating_weight = (rating_score.unsigned_abs() as f64) / 100.0;
+
+        if rating_score > 0 {
+            positive_signal += weight * config.positive_weight * rating_weight;
             rating_count += 1;
-        } else if r.is_negative() {
-            negative_signal += weight * config.negative_weight;
+        } else if rating_score < 0 {
+            negative_signal += weight * config.negative_weight * rating_weight;
             rating_count += 1;
         }
         // Neutral ratings don't affect score
@@ -117,7 +122,6 @@ pub fn compute_reputation(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rating::*;
     use std::collections::HashMap;
 
     struct MockGraph {
@@ -144,15 +148,15 @@ mod tests {
     }
 
     fn make_positive(rater: &str) -> Rating {
-        Rating::new(rater, "target", Sentiment::Positive)
+        Rating::new(rater, "target", 100, 0, 100)
     }
 
     fn make_negative(rater: &str) -> Rating {
-        Rating::new(rater, "target", Sentiment::Negative)
+        Rating::new(rater, "target", 0, 0, 100)
     }
 
     fn make_neutral(rater: &str) -> Rating {
-        Rating::new(rater, "target", Sentiment::Neutral)
+        Rating::new(rater, "target", 50, 0, 100)
     }
 
     #[test]
@@ -446,5 +450,20 @@ mod tests {
 
         let score = compute_reputation(&[pos], &["npub1target"], &graph, &config);
         assert_eq!(score.positive_signal, config.positive_weight);
+    }
+
+    #[test]
+    fn rating_magnitude_affects_signal() {
+        let mut graph = MockGraph::new();
+        graph.set("npub1target", 1);
+        graph.set("npub1rater", 0);
+
+        let weak = Rating::new("npub1rater", "target", 60, 0, 100);
+        let strong = Rating::new("npub1rater", "target", 100, 0, 100);
+        let config = TrustConfig::default();
+
+        let weak_score = compute_reputation(&[weak], &["npub1target"], &graph, &config);
+        let strong_score = compute_reputation(&[strong], &["npub1target"], &graph, &config);
+        assert!(strong_score.positive_signal > weak_score.positive_signal);
     }
 }

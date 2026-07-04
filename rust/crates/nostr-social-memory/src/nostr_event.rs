@@ -1,15 +1,15 @@
-use anyhow::{anyhow, bail, Result};
+use anyhow::{Result, anyhow, bail};
 use chrono::{DateTime, TimeZone, Utc};
 use nostr_identity::{
-    build_fact_op_event_with_links_and_identifiers, parse_fact_op_event, Fact, FactOp, FactOpLinks,
-    FACT_OP_KIND,
+    FACT_OP_KIND, Fact, FactOp, FactOpLinks, build_fact_op_event_with_links_and_identifiers,
+    parse_fact_op_event,
 };
 use nostr_sdk::prelude::{Event, Keys};
 use uuid::Uuid;
 
 use crate::attestation::Attestation;
 use crate::counter_attestation::CounterAttestation;
-use crate::rating::{Rating, ReportType, Sentiment};
+use crate::rating::Rating;
 
 /// Social-memory records are encoded as shared fact operation events.
 pub const ATTESTATION_KIND: u16 = FACT_OP_KIND;
@@ -18,7 +18,7 @@ pub const COUNTER_ATTESTATION_KIND: u16 = FACT_OP_KIND;
 
 const SCHEMA_VERSION: &str = "1";
 const TYPE_ATTESTATION: &str = "social_memory_attestation";
-const TYPE_RATING: &str = "social_memory_rating";
+const TYPE_RATING: &str = "rating";
 const TYPE_COUNTER_ATTESTATION: &str = "social_memory_counter_attestation";
 
 /// Verify a nostr event's id and signature.
@@ -137,62 +137,107 @@ impl CounterAttestation {
     }
 }
 
-impl Rating {
+pub trait RatingEventExt {
+    fn to_event(&self, keys: &Keys) -> Result<Event>;
+}
+
+impl RatingEventExt for Rating {
     /// Sign this rating as a fact event.
     ///
     /// The event signer is the publisher/crawler. The rating author is the
     /// `rater` fact, so crawled reviews can preserve their external author.
-    pub fn to_event(&self, keys: &Keys) -> Result<Event> {
-        let mut facts = base_facts(TYPE_RATING, self.created_at)?;
-        facts.push(Fact::new("rater", [self.rater.clone()]));
-        facts.push(Fact::new("rating_subject", [self.subject.clone()]));
-        facts.push(Fact::new("sentiment", [sentiment_str(&self.sentiment)]));
-        if let Some(context) = &self.context {
-            facts.push(Fact::new("context", [context.clone()]));
-        }
-        facts.extend(self.tags.iter().cloned().map(|tag| Fact::new("tag", [tag])));
-        if let Some(report_type) = &self.report_type {
-            facts.push(Fact::new("report_type", [report_type_str(report_type)]));
-        }
-
-        build_fact_record_event(
-            keys,
-            &self.id,
-            facts,
-            FactOpLinks::default(),
-            safe_identifiers(
-                [&self.rater, &self.subject]
-                    .into_iter()
-                    .chain(self.tags.iter())
-                    .map(String::as_str),
-            ),
-        )
-    }
-
-    /// Parse a rating from a fact event.
-    pub fn from_event(event: &Event) -> Result<Rating> {
-        let op = parse_social_memory_fact(event, TYPE_RATING)?;
-        Ok(Rating {
-            id: op.subject.to_string(),
-            rater: required_scalar(&op, "rater")?,
-            subject: required_scalar(&op, "rating_subject")?,
-            sentiment: parse_sentiment(&required_scalar(&op, "sentiment")?)?,
-            context: optional_scalar(&op, "context")?,
-            tags: scalar_values(&op, "tag")?,
-            report_type: optional_scalar(&op, "report_type")?
-                .map(|value| parse_report_type(&value))
-                .transpose()?,
-            created_at: required_datetime(&op, "created_at")?,
-        })
+    fn to_event(&self, keys: &Keys) -> Result<Event> {
+        rating_to_event(self, keys)
     }
 }
 
+pub fn rating_to_event(rating: &Rating, keys: &Keys) -> Result<Event> {
+    rating.validate()?;
+    let mut facts = base_facts_unix(TYPE_RATING, rating.created_at);
+    facts.push(Fact::new("rater", [rating.rater.clone()]));
+    facts.push(Fact::new("subject", [rating.subject.clone()]));
+    facts.push(Fact::new("rating", [rating.rating.to_string()]));
+    facts.push(Fact::new("min_rating", [rating.min_rating.to_string()]));
+    facts.push(Fact::new("max_rating", [rating.max_rating.to_string()]));
+    if let Some(context) = &rating.context {
+        facts.push(Fact::new("context", [context.clone()]));
+    }
+    if let Some(sample_count) = rating.sample_count {
+        facts.push(Fact::new("sample_count", [sample_count.to_string()]));
+    }
+    if let Some(window_start) = rating.window_start {
+        facts.push(Fact::new("window_start", [window_start.to_string()]));
+    }
+    if let Some(window_end) = rating.window_end {
+        facts.push(Fact::new("window_end", [window_end.to_string()]));
+    }
+    facts.extend(
+        rating
+            .evidence
+            .iter()
+            .cloned()
+            .map(|evidence| Fact::new("evidence", [evidence])),
+    );
+    if let Some(reason) = &rating.reason {
+        facts.push(Fact::new("reason", [reason.clone()]));
+    }
+    facts.extend(
+        rating
+            .tags
+            .iter()
+            .cloned()
+            .map(|tag| Fact::new("tag", [tag])),
+    );
+
+    build_fact_record_event(
+        keys,
+        &rating.id,
+        facts,
+        FactOpLinks::default(),
+        safe_identifiers(
+            [&rating.rater, &rating.subject]
+                .into_iter()
+                .chain(rating.context.iter())
+                .chain(rating.evidence.iter())
+                .chain(rating.tags.iter())
+                .map(String::as_str),
+        ),
+    )
+}
+
+/// Parse a rating from a fact event.
+pub fn rating_from_event(event: &Event) -> Result<Rating> {
+    let op = parse_social_memory_fact(event, TYPE_RATING)?;
+    let rating = Rating {
+        id: op.subject.to_string(),
+        rater: required_scalar(&op, "rater")?,
+        subject: required_scalar(&op, "subject")?,
+        context: optional_scalar(&op, "context")?,
+        rating: required_i64(&op, "rating")?,
+        min_rating: required_i64(&op, "min_rating")?,
+        max_rating: required_i64(&op, "max_rating")?,
+        sample_count: optional_u64(&op, "sample_count")?,
+        window_start: optional_u64(&op, "window_start")?,
+        window_end: optional_u64(&op, "window_end")?,
+        evidence: scalar_values(&op, "evidence")?,
+        reason: optional_scalar(&op, "reason")?,
+        tags: scalar_values(&op, "tag")?,
+        created_at: required_u64(&op, "created_at")?,
+    };
+    rating.validate()?;
+    Ok(rating)
+}
+
 fn base_facts(record_type: &'static str, created_at: DateTime<Utc>) -> Result<Vec<Fact>> {
-    Ok(vec![
+    Ok(base_facts_unix(record_type, datetime_unix(created_at)?))
+}
+
+fn base_facts_unix(record_type: &'static str, created_at: u64) -> Vec<Fact> {
+    vec![
         Fact::new("type", [record_type.to_owned()]),
         Fact::new("schema", [SCHEMA_VERSION.to_owned()]),
-        Fact::new("created_at", [datetime_unix(created_at)?.to_string()]),
-    ])
+        Fact::new("created_at", [created_at.to_string()]),
+    ]
 }
 
 fn build_fact_record_event(
@@ -293,6 +338,28 @@ fn scalar_values(op: &FactOp, predicate: &str) -> Result<Vec<String>> {
         .collect()
 }
 
+fn required_i64(op: &FactOp, predicate: &str) -> Result<i64> {
+    required_scalar(op, predicate)?
+        .parse()
+        .map_err(|error| anyhow!("invalid i64 social-memory fact {predicate}: {error}"))
+}
+
+fn required_u64(op: &FactOp, predicate: &str) -> Result<u64> {
+    required_scalar(op, predicate)?
+        .parse()
+        .map_err(|error| anyhow!("invalid u64 social-memory fact {predicate}: {error}"))
+}
+
+fn optional_u64(op: &FactOp, predicate: &str) -> Result<Option<u64>> {
+    optional_scalar(op, predicate)?
+        .map(|value| {
+            value
+                .parse()
+                .map_err(|error| anyhow!("invalid u64 social-memory fact {predicate}: {error}"))
+        })
+        .transpose()
+}
+
 fn safe_identifiers<'a>(values: impl IntoIterator<Item = &'a str>) -> Vec<String> {
     values
         .into_iter()
@@ -300,48 +367,6 @@ fn safe_identifiers<'a>(values: impl IntoIterator<Item = &'a str>) -> Vec<String
         .filter(|value| !value.is_empty() && !value.chars().any(char::is_whitespace))
         .map(str::to_owned)
         .collect()
-}
-
-fn sentiment_str(sentiment: &Sentiment) -> String {
-    match sentiment {
-        Sentiment::Positive => "positive",
-        Sentiment::Negative => "negative",
-        Sentiment::Neutral => "neutral",
-    }
-    .to_owned()
-}
-
-fn parse_sentiment(value: &str) -> Result<Sentiment> {
-    match value {
-        "positive" => Ok(Sentiment::Positive),
-        "negative" => Ok(Sentiment::Negative),
-        "neutral" => Ok(Sentiment::Neutral),
-        other => bail!("unknown sentiment: {other}"),
-    }
-}
-
-fn report_type_str(report_type: &ReportType) -> String {
-    match report_type {
-        ReportType::Nudity => "nudity",
-        ReportType::Malware => "malware",
-        ReportType::Profanity => "profanity",
-        ReportType::Illegal => "illegal",
-        ReportType::Spam => "spam",
-        ReportType::Impersonation => "impersonation",
-    }
-    .to_owned()
-}
-
-fn parse_report_type(value: &str) -> Result<ReportType> {
-    match value {
-        "nudity" => Ok(ReportType::Nudity),
-        "malware" => Ok(ReportType::Malware),
-        "profanity" => Ok(ReportType::Profanity),
-        "illegal" => Ok(ReportType::Illegal),
-        "spam" => Ok(ReportType::Spam),
-        "impersonation" => Ok(ReportType::Impersonation),
-        other => bail!("unknown report type: {other}"),
-    }
 }
 
 #[cfg(test)]
@@ -426,31 +451,45 @@ mod tests {
     }
 
     #[test]
-    fn rating_roundtrip_positive() {
+    fn rating_roundtrip_with_integer_range() {
         let keys = Keys::generate();
         let subject_keys = Keys::generate();
         let mut r = Rating::new(
             keys.public_key().to_hex(),
             subject_keys.public_key().to_hex(),
-            Sentiment::Positive,
+            80,
+            0,
+            100,
         );
         r.context = Some("helpful dev".into());
+        r.sample_count = Some(7);
+        r.window_start = Some(1_000);
+        r.window_end = Some(2_000);
+        r.evidence = vec!["https://example.test/review/1".into()];
+        r.reason = Some("consistently useful".into());
         r.tags = vec!["rust".into(), "nostr".into()];
+        r.created_at = 3_000;
 
         let event = r.to_event(&keys).unwrap();
         assert_eq!(event.kind, Kind::from(RATING_KIND));
         assert_eq!(event.content, "");
         verify_event(&event).unwrap();
 
-        let parsed = Rating::from_event(&event).unwrap();
+        let parsed = rating_from_event(&event).unwrap();
         assert_eq!(parsed.id, r.id);
         assert_eq!(parsed.rater, keys.public_key().to_hex());
         assert_eq!(parsed.subject, subject_keys.public_key().to_hex());
-        assert_eq!(parsed.sentiment, Sentiment::Positive);
+        assert_eq!(parsed.rating, 80);
+        assert_eq!(parsed.min_rating, 0);
+        assert_eq!(parsed.max_rating, 100);
         assert_eq!(parsed.context, Some("helpful dev".into()));
+        assert_eq!(parsed.sample_count, Some(7));
+        assert_eq!(parsed.window_start, Some(1_000));
+        assert_eq!(parsed.window_end, Some(2_000));
+        assert_eq!(parsed.evidence, vec!["https://example.test/review/1"]);
+        assert_eq!(parsed.reason, Some("consistently useful".into()));
         assert_eq!(parsed.tags, sorted(r.tags.clone()));
-        assert!(parsed.report_type.is_none());
-        assert_eq!(parsed.created_at.timestamp(), r.created_at.timestamp());
+        assert_eq!(parsed.created_at, 3_000);
     }
 
     #[test]
@@ -461,50 +500,18 @@ mod tests {
         let r = Rating::new(
             rater_keys.public_key().to_hex(),
             subject_keys.public_key().to_hex(),
-            Sentiment::Positive,
+            4,
+            1,
+            5,
         );
 
         let event = r.to_event(&crawler_keys).unwrap();
         assert_eq!(event.pubkey.to_hex(), crawler_keys.public_key().to_hex());
 
-        let parsed = Rating::from_event(&event).unwrap();
+        let parsed = rating_from_event(&event).unwrap();
         assert_eq!(parsed.rater, rater_keys.public_key().to_hex());
         assert_eq!(parsed.subject, subject_keys.public_key().to_hex());
-    }
-
-    #[test]
-    fn rating_roundtrip_negative_with_report() {
-        let keys = Keys::generate();
-        let subject_keys = Keys::generate();
-        let mut r = Rating::new(
-            keys.public_key().to_hex(),
-            subject_keys.public_key().to_hex(),
-            Sentiment::Negative,
-        );
-        r.report_type = Some(ReportType::Spam);
-        r.context = Some("unsolicited DMs".into());
-
-        let event = r.to_event(&keys).unwrap();
-        let parsed = Rating::from_event(&event).unwrap();
-
-        assert_eq!(parsed.sentiment, Sentiment::Negative);
-        assert_eq!(parsed.report_type, Some(ReportType::Spam));
-        assert_eq!(parsed.context, Some("unsolicited DMs".into()));
-    }
-
-    #[test]
-    fn rating_roundtrip_neutral() {
-        let keys = Keys::generate();
-        let subject_keys = Keys::generate();
-        let r = Rating::new(
-            keys.public_key().to_hex(),
-            subject_keys.public_key().to_hex(),
-            Sentiment::Neutral,
-        );
-
-        let event = r.to_event(&keys).unwrap();
-        let parsed = Rating::from_event(&event).unwrap();
-        assert_eq!(parsed.sentiment, Sentiment::Neutral);
+        assert_eq!(parsed.normalized_score().unwrap(), 50);
     }
 
     #[test]
@@ -514,34 +521,31 @@ mod tests {
             .sign_with_keys(&keys)
             .unwrap();
 
-        let err = Rating::from_event(&event).unwrap_err();
+        let err = rating_from_event(&event).unwrap_err();
         assert!(err.to_string().contains("wrong fact op kind"));
     }
 
     #[test]
-    fn all_report_types_roundtrip_via_event() {
+    fn rating_no_optional_fields() {
         let keys = Keys::generate();
         let subject_keys = Keys::generate();
-        let types = vec![
-            ReportType::Nudity,
-            ReportType::Malware,
-            ReportType::Profanity,
-            ReportType::Illegal,
-            ReportType::Spam,
-            ReportType::Impersonation,
-        ];
-        for rt in types {
-            let mut r = Rating::new(
-                keys.public_key().to_hex(),
-                subject_keys.public_key().to_hex(),
-                Sentiment::Negative,
-            );
-            r.report_type = Some(rt.clone());
+        let r = Rating::new(
+            keys.public_key().to_hex(),
+            subject_keys.public_key().to_hex(),
+            1,
+            -1,
+            1,
+        );
 
-            let event = r.to_event(&keys).unwrap();
-            let parsed = Rating::from_event(&event).unwrap();
-            assert_eq!(parsed.report_type, Some(rt));
-        }
+        let event = r.to_event(&keys).unwrap();
+        let parsed = rating_from_event(&event).unwrap();
+        assert!(parsed.context.is_none());
+        assert!(parsed.sample_count.is_none());
+        assert!(parsed.window_start.is_none());
+        assert!(parsed.window_end.is_none());
+        assert!(parsed.evidence.is_empty());
+        assert!(parsed.reason.is_none());
+        assert!(parsed.tags.is_empty());
     }
 
     #[test]
@@ -560,23 +564,6 @@ mod tests {
         let event = a.to_event(&keys).unwrap();
         let parsed = Attestation::from_event(&event).unwrap();
         assert!(parsed.attributes.is_empty());
-    }
-
-    #[test]
-    fn rating_no_optional_fields() {
-        let keys = Keys::generate();
-        let subject_keys = Keys::generate();
-        let r = Rating::new(
-            keys.public_key().to_hex(),
-            subject_keys.public_key().to_hex(),
-            Sentiment::Positive,
-        );
-
-        let event = r.to_event(&keys).unwrap();
-        let parsed = Rating::from_event(&event).unwrap();
-        assert!(parsed.context.is_none());
-        assert!(parsed.tags.is_empty());
-        assert!(parsed.report_type.is_none());
     }
 
     #[test]

@@ -5,6 +5,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use indexmap::{IndexMap, IndexSet};
 use uuid::Uuid;
 
+mod rating;
+pub use rating::*;
+
 const BINARY_FORMAT_VERSION: u64 = 3;
 const BINARY_FORMAT_VERSION_V2: u64 = 2;
 const BINARY_CHUNK_SIZE: usize = 16 * 1024;
@@ -30,6 +33,16 @@ pub enum SocialGraphError {
     InvalidBinaryNodeIdUtf8,
     #[error("invalid UUID binary node id")]
     InvalidBinaryNodeIdUuid,
+    #[error("rating range must have min_rating < max_rating (got {min_rating}..{max_rating})")]
+    InvalidRatingRange { min_rating: i64, max_rating: i64 },
+    #[error("rating {rating} is outside range {min_rating}..{max_rating}")]
+    RatingOutOfRange {
+        rating: i64,
+        min_rating: i64,
+        max_rating: i64,
+    },
+    #[error("rating window_start {window_start} is after window_end {window_end}")]
+    InvalidRatingWindow { window_start: u64, window_end: u64 },
 }
 
 pub type Result<T> = std::result::Result<T, SocialGraphError>;
@@ -297,6 +310,57 @@ impl SocialGraph {
             10_000 => self.handle_mute_list(author, event.created_at, &event.tags),
             _ => {}
         }
+    }
+
+    pub fn add_positive_relation(
+        &mut self,
+        rater: &str,
+        target: &str,
+        created_at: u64,
+    ) -> Result<bool> {
+        let rater_id = self.ids.id(rater)?;
+        let target_id = self.ids.id(target)?;
+        if rater_id == target_id {
+            return Ok(false);
+        }
+
+        let already_present = self
+            .followed_by_user
+            .get(&rater_id)
+            .is_some_and(|targets| targets.contains(&target_id));
+        self.private_add_follower(target_id, rater_id);
+        self.follow_list_created_at
+            .entry(rater_id)
+            .and_modify(|existing| *existing = (*existing).max(created_at))
+            .or_insert(created_at);
+        Ok(!already_present)
+    }
+
+    pub fn add_negative_relation(
+        &mut self,
+        rater: &str,
+        target: &str,
+        created_at: u64,
+    ) -> Result<bool> {
+        let rater_id = self.ids.id(rater)?;
+        let target_id = self.ids.id(target)?;
+        if rater_id == target_id {
+            return Ok(false);
+        }
+
+        let entry = self.muted_by_user.entry(rater_id).or_default();
+        let changed = entry.insert(target_id);
+        if changed {
+            self.user_muted_by
+                .entry(target_id)
+                .or_default()
+                .insert(rater_id);
+        }
+        self.mute_list_created_at
+            .entry(rater_id)
+            .and_modify(|existing| *existing = (*existing).max(created_at))
+            .or_insert(created_at);
+        Ok(changed)
     }
 
     pub fn recalculate_follow_distances(&mut self) {
