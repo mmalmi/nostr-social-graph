@@ -13,8 +13,8 @@ axum.workspace = true
 indexmap.workspace = true
 nostr-lmdb = "0.44"
 nostr-sdk.workspace = true
-nostr-social-graph = { version = "0.1.1", path = "../nostr-social-graph" }
-nostr-social-graph-heed = { version = "0.1.1", path = "../nostr-social-graph-heed" }
+nostr-social-graph = { version = "0.1.2", path = "../nostr-social-graph" }
+nostr-social-graph-heed = { version = "0.1.2", path = "../nostr-social-graph-heed" }
 nostr-social-graph-hashtree = { version = "0.1.0", path = "../nostr-social-graph-hashtree" }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 serde.workspace = true

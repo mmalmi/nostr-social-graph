@@ -8,7 +8,7 @@ repository.workspace = true
 [dependencies]
 async-trait.workspace = true
 nostr-pubsub.workspace = true
-nostr-social-graph = { version = "0.1.1", path = "../nostr-social-graph" }
+nostr-social-graph = { version = "0.1.2", path = "../nostr-social-graph" }
 thiserror.workspace = true
 
 [dev-dependencies]

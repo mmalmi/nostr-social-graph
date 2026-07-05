@@ -1,6 +1,6 @@
 [package]
 name = "nostr-social-memory"
-version = "0.1.0"
+version = "0.1.1"
 description = "Entity memory, attestations, and trust scoring for Nostr identities"
 edition.workspace = true
 license.workspace = true
@@ -12,7 +12,7 @@ readme = "../../README.md"
 anyhow.workspace = true
 chrono.workspace = true
 nostr-identity = { path = "../nostr-identity", version = "0.1.3" }
-nostr-social-graph = { path = "../nostr-social-graph", version = "0.1.1" }
+nostr-social-graph = { path = "../nostr-social-graph", version = "0.1.2" }
 nostr-sdk.workspace = true
 serde.workspace = true
 serde_json.workspace = true

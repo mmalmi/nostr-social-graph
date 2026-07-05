@@ -9,7 +9,7 @@ repository.workspace = true
 futures = "0.3"
 hashtree-core.workspace = true
 hashtree-fs.workspace = true
-nostr-social-graph = { version = "0.1.0", path = "../nostr-social-graph" }
+nostr-social-graph = { version = "0.1.2", path = "../nostr-social-graph" }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
