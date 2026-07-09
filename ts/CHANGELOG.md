@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.39
+
+- Require strict secret-bound NostrIdentity device approval requests and receipts.
+- Verify receipt signatures and bind approvals to both the ephemeral request key and device AppKey.
+- Reject duplicate, unknown, malformed, or tampered approval fields consistently in Rust and TypeScript.
+
 ## 1.0.36
 
 - Fix `SocialGraphBinary.fromBinary` to recalculate follow distances
