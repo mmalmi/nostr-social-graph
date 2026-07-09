@@ -1,6 +1,6 @@
 [package]
 name = "nostr-social-graph-heed"
-version = "0.1.2"
+version = "0.1.3"
 description = "LMDB-backed Nostr social graph backend implementing the shared runtime trait"
 edition.workspace = true
 license.workspace = true

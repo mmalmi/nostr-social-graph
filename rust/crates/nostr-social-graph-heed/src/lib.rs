@@ -11,7 +11,10 @@ use nostr_social_graph::{
     GraphStats, NostrEvent, SocialGraph, SocialGraphBackend, SocialGraphError, SocialGraphState,
 };
 
+#[cfg(target_pointer_width = "64")]
 const DEFAULT_MAP_SIZE: usize = 4 * 1024 * 1024 * 1024;
+#[cfg(target_pointer_width = "32")]
+const DEFAULT_MAP_SIZE: usize = 1024 * 1024 * 1024;
 const MAX_DBS: u32 = 16;
 const MAX_FUTURE_EVENT_SECONDS: u64 = 10 * 60;
 const UNKNOWN_FOLLOW_DISTANCE: u32 = 1000;
