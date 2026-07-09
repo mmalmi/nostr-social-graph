@@ -46,8 +46,21 @@ pub const NOSTR_IDENTITY_COMPACT_DEVICE_APPROVAL_REQUEST_PREFIX: &str =
     "nostr-identity://device-approval";
 pub const NOSTR_IDENTITY_DEVICE_APPROVAL_REQUEST_VERSION: u32 = 1;
 pub const NOSTR_IDENTITY_DEVICE_APPROVAL_PROOF_TYPE: &str = "nostr_identity_device_approval_proof";
+pub const NOSTR_IDENTITY_DEVICE_APPROVAL_REQUEST_SECRET_MIN_LENGTH: usize = 32;
 pub const NOSTR_IDENTITY_DEVICE_APPROVAL_CLIENT_NONCE_PREFIX: &str =
     "nostr_identity_device_approval:";
+
+const NOSTR_IDENTITY_DEVICE_APPROVAL_PROOF_TAGS: [&str; 9] = [
+    "type",
+    "request_pubkey",
+    "requested_at",
+    "request_type",
+    "requested_resources",
+    "expires_at",
+    "profile_id",
+    "admin_pubkey",
+    "label",
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -1186,27 +1199,27 @@ pub fn parse_nostr_identity_device_approval_receipt_event(
     event: &Event,
     request_keys: &Keys,
 ) -> Result<NostrIdentityDeviceApprovalReceipt, NostrIdentityError> {
+    event
+        .verify()
+        .map_err(|error| NostrIdentityError::SignatureFailed(error.to_string()))?;
     if event.kind.as_u16() != FACT_OP_KIND {
         return Err(NostrIdentityError::WrongKind {
             expected: FACT_OP_KIND,
             got: event.kind.as_u16(),
         });
     }
-    if !fact_event_has_type(event, NOSTR_IDENTITY_DEVICE_APPROVAL_RECEIPT_TYPE) {
-        return Err(NostrIdentityError::BadContent(
-            "device approval receipt type tag missing".to_string(),
-        ));
-    }
+    validate_device_approval_receipt_tags(event)?;
+    require_exact_event_tag(
+        event,
+        &["type", NOSTR_IDENTITY_DEVICE_APPROVAL_RECEIPT_TYPE],
+        "device approval receipt",
+    )?;
     let request_pubkey = request_keys.public_key().to_hex();
-    if !event.tags.iter().any(|tag| {
-        let parts = tag.as_slice();
-        parts.first().is_some_and(|name| name == "p")
-            && parts.get(1).is_some_and(|value| value == &request_pubkey)
-    }) {
-        return Err(NostrIdentityError::BadContent(
-            "device approval receipt request pubkey mismatch".to_string(),
-        ));
-    }
+    require_exact_event_tag(
+        event,
+        &["p", request_pubkey.as_str()],
+        "device approval receipt",
+    )?;
     let plaintext = nip44::decrypt(request_keys.secret_key(), &event.pubkey, &event.content)
         .map_err(|error| NostrIdentityError::BadContent(error.to_string()))?;
     let receipt: NostrIdentityDeviceApprovalReceipt = serde_json::from_str(&plaintext)
@@ -1222,6 +1235,12 @@ pub fn parse_nostr_identity_device_approval_receipt_event(
             "device approval receipt signer mismatch".to_string(),
         ));
     }
+    let profile_id = receipt.profile_id.to_string();
+    require_exact_event_tag(
+        event,
+        &["i", profile_id.as_str(), "subject"],
+        "device approval receipt",
+    )?;
     let event_created_at = i64::try_from(event.created_at.as_secs()).map_err(|_| {
         NostrIdentityError::BadContent(
             "device approval receipt timestamp overflows i64".to_string(),
@@ -1238,6 +1257,46 @@ pub fn parse_nostr_identity_device_approval_receipt_event(
             .map_err(|error| NostrIdentityError::BadContent(error.to_string()))?;
         let signed = parse_nostr_identity_roster_op_event(&roster_event)?;
         validate_device_approval_receipt_roster_op(&receipt, &signed)?;
+    }
+    Ok(receipt)
+}
+
+pub fn parse_nostr_identity_device_approval_receipt_event_for_request(
+    event: &Event,
+    request_keys: &Keys,
+    request: &NostrIdentityDeviceApprovalRequest,
+) -> Result<NostrIdentityDeviceApprovalReceipt, NostrIdentityError> {
+    let request = normalize_device_approval_request(request.clone())?;
+    let request_pubkey = request_keys.public_key().to_hex();
+    if request.request_pubkey != request_pubkey {
+        return Err(NostrIdentityError::BadContent(
+            "device approval receipt request mismatch".to_string(),
+        ));
+    }
+    let receipt = parse_nostr_identity_device_approval_receipt_event(event, request_keys)?;
+    if receipt.request_secret != request.request_secret {
+        return Err(NostrIdentityError::BadContent(
+            "device approval receipt secret mismatch".to_string(),
+        ));
+    }
+    if receipt.device_app_key_pubkey != request.device_app_key_pubkey {
+        return Err(NostrIdentityError::BadContent(
+            "device approval receipt device mismatch".to_string(),
+        ));
+    }
+    if let Some(profile_id) = request.profile_id
+        && receipt.profile_id != profile_id
+    {
+        return Err(NostrIdentityError::BadContent(
+            "device approval receipt profile mismatch".to_string(),
+        ));
+    }
+    if let Some(admin_app_key_pubkey) = request.admin_app_key_pubkey
+        && receipt.approved_by_pubkey != admin_app_key_pubkey
+    {
+        return Err(NostrIdentityError::BadContent(
+            "device approval receipt signer mismatch".to_string(),
+        ));
     }
     Ok(receipt)
 }
@@ -1961,6 +2020,7 @@ fn require_valid_device_approval_proof(
             "device approval proof content must be empty".to_string(),
         ));
     }
+    validate_device_approval_proof_tags(&event)?;
     let signer = event.pubkey.to_hex();
     if signer != request.device_app_key_pubkey {
         return Err(NostrIdentityError::BadContent(
@@ -2073,7 +2133,7 @@ fn normalize_optional_label(value: Option<String>) -> Option<String> {
 
 fn require_request_secret(value: String) -> Result<String, NostrIdentityError> {
     let value = value.trim().to_string();
-    if value.len() < 32
+    if value.len() < NOSTR_IDENTITY_DEVICE_APPROVAL_REQUEST_SECRET_MIN_LENGTH
         || !value
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
@@ -2123,6 +2183,30 @@ fn require_proof_tag(event: &Event, name: &str, expected: &str) -> Result<(), No
     )))
 }
 
+fn validate_device_approval_proof_tags(event: &Event) -> Result<(), NostrIdentityError> {
+    let mut seen = BTreeSet::new();
+    for tag in event.tags.iter() {
+        let parts = tag.as_slice();
+        if parts.len() != 2 {
+            return Err(NostrIdentityError::BadContent(
+                "device approval proof tag is malformed".to_string(),
+            ));
+        }
+        let name = parts[0].as_str();
+        if !NOSTR_IDENTITY_DEVICE_APPROVAL_PROOF_TAGS.contains(&name) {
+            return Err(NostrIdentityError::BadContent(format!(
+                "device approval proof has unknown tag {name}"
+            )));
+        }
+        if !seen.insert(name) {
+            return Err(NostrIdentityError::BadContent(format!(
+                "device approval proof has duplicate tag {name}"
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn require_optional_proof_tag(
     event: &Event,
     name: &str,
@@ -2148,6 +2232,64 @@ fn proof_tag_value<'a>(event: &'a Event, name: &str) -> Option<&'a str> {
             .then(|| parts.get(1).map(String::as_str))
             .flatten()
     })
+}
+
+fn validate_device_approval_receipt_tags(event: &Event) -> Result<(), NostrIdentityError> {
+    let mut seen = BTreeSet::new();
+    for tag in event.tags.iter() {
+        let parts = tag.as_slice();
+        let Some(name) = parts.first().map(String::as_str) else {
+            return Err(NostrIdentityError::BadContent(
+                "device approval receipt tag is malformed".to_string(),
+            ));
+        };
+        let expected_len = match name {
+            "type" | "p" => 2,
+            "i" => 3,
+            _ => {
+                return Err(NostrIdentityError::BadContent(format!(
+                    "device approval receipt has unknown tag {name}"
+                )));
+            }
+        };
+        if parts.len() != expected_len {
+            return Err(NostrIdentityError::BadContent(format!(
+                "device approval receipt {name} tag is malformed"
+            )));
+        }
+        if !seen.insert(name) {
+            return Err(NostrIdentityError::BadContent(format!(
+                "device approval receipt has duplicate tag {name}"
+            )));
+        }
+    }
+    if seen.len() != 3 {
+        return Err(NostrIdentityError::BadContent(
+            "device approval receipt is missing required tags".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn require_exact_event_tag(
+    event: &Event,
+    expected: &[&str],
+    label: &str,
+) -> Result<(), NostrIdentityError> {
+    if event.tags.iter().any(|tag| {
+        let parts = tag.as_slice();
+        parts.len() == expected.len()
+            && parts
+                .iter()
+                .map(String::as_str)
+                .eq(expected.iter().copied())
+    }) {
+        return Ok(());
+    }
+    Err(NostrIdentityError::BadContent(format!(
+        "{label} {} mismatch",
+        expected.first().copied().unwrap_or("tag")
+    )))
 }
 
 fn payload_from_prefixed_url<'a>(
@@ -2561,7 +2703,7 @@ fn validate_device_approval_receipt(
     if let Some(roster_op_id) = &receipt.roster_op_id {
         event_id_from_hex(roster_op_id)?;
     }
-    require_non_empty(receipt.request_secret.clone(), "request_secret")?;
+    require_request_secret(receipt.request_secret.clone())?;
     non_negative_u64(receipt.approved_at, "approved_at")?;
     Ok(())
 }
@@ -2637,7 +2779,7 @@ fn is_false(value: &bool) -> bool {
 mod tests {
     use super::*;
     use nostr_sdk::filter::MatchEventOptions;
-    use nostr_sdk::{EventBuilder, Kind, Tag};
+    use nostr_sdk::{EventBuilder, Kind, SecretKey, Tag};
 
     fn signed_op(
         signer: &Keys,
@@ -2767,6 +2909,13 @@ mod tests {
             signed_roster_event: Some(approval_event.as_json()),
         };
 
+        let mut short_secret_receipt = receipt.clone();
+        short_secret_receipt.request_secret = "a".repeat(31);
+        assert!(
+            build_nostr_identity_device_approval_receipt_event(&admin, short_secret_receipt)
+                .is_err()
+        );
+
         let receipt_event =
             build_nostr_identity_device_approval_receipt_event(&admin, receipt).unwrap();
         assert!(fact_event_has_type(
@@ -2786,6 +2935,15 @@ mod tests {
             parse_nostr_identity_device_approval_receipt_event(&receipt_event, &request).unwrap();
         assert_eq!(parsed.request_secret, request_secret);
         assert_eq!(parsed.subject_pubkey, Some(admin.public_key().to_hex()));
+
+        let mut tampered_event: serde_json::Value =
+            serde_json::from_str(&receipt_event.as_json()).unwrap();
+        tampered_event["id"] = "0".repeat(64).into();
+        let tampered_event = Event::from_json(tampered_event.to_string()).unwrap();
+        assert!(
+            parse_nostr_identity_device_approval_receipt_event(&tampered_event, &request).is_err()
+        );
+
         let receipt_roster_op =
             parse_nostr_identity_device_approval_receipt_roster_op(&parsed).unwrap();
         assert_eq!(receipt_roster_op.op_id, approval.op_id);
@@ -2898,6 +3056,21 @@ mod tests {
             tag.as_slice() == ["request_pubkey".to_string(), request.request_pubkey.clone()]
         }));
 
+        let mut duplicate_tags = proof_event.tags.iter().cloned().collect::<Vec<_>>();
+        duplicate_tags
+            .push(Tag::parse(["request_pubkey", request.request_pubkey.as_str()]).unwrap());
+        let duplicate_proof = EventBuilder::new(Kind::from(FACT_OP_KIND), "")
+            .tags(duplicate_tags)
+            .custom_created_at(proof_event.created_at)
+            .sign_with_keys(&device)
+            .unwrap();
+        let mut duplicate_proof_request = request.clone();
+        duplicate_proof_request.device_app_key_proof = duplicate_proof.as_json();
+        assert!(
+            encode_nostr_identity_device_approval_request(&duplicate_proof_request, Some(prefix))
+                .is_err()
+        );
+
         let payload = encoded.trim_start_matches(prefix);
         let mut tampered_payload: serde_json::Value =
             serde_json::from_str(&base64_url_decode_utf8(payload).unwrap()).unwrap();
@@ -2938,6 +3111,171 @@ mod tests {
                 assert_eq!(facet.capabilities, NostrIdentityCapabilities::app_writer());
             }
             other => panic!("expected add facet, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn shared_ts_rust_device_approval_vectors_reject_tampering() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../testdata/nostr-identity-device-approval-v1.json"
+        ))
+        .unwrap();
+        let request = parse_nostr_identity_device_approval_request(
+            fixture["fullRequest"].as_str().unwrap(),
+            &[],
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(request.request_pubkey, fixture["keys"]["requestPubkey"]);
+        assert_eq!(
+            request.device_app_key_pubkey,
+            fixture["keys"]["deviceAppKeyPubkey"]
+        );
+        assert_eq!(request.request_secret, fixture["requestSecret"]);
+        assert_eq!(
+            request.profile_id.unwrap().to_string(),
+            fixture["profileId"]
+        );
+
+        let proof = Event::from_json(&request.device_app_key_proof).unwrap();
+        assert_eq!(proof.id.to_hex(), fixture["proofEvent"]["id"]);
+        assert!(proof.content.is_empty());
+
+        let request_keys = Keys::new(
+            SecretKey::from_hex(fixture["keys"]["requestSecretKey"].as_str().unwrap()).unwrap(),
+        );
+        let receipt_event = Event::from_json(fixture["receiptEvent"].to_string()).unwrap();
+        let receipt = parse_nostr_identity_device_approval_receipt_event_for_request(
+            &receipt_event,
+            &request_keys,
+            &request,
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(receipt).unwrap(),
+            fixture["expectedReceipt"]
+        );
+
+        let prefix = fixture["prefix"].as_str().unwrap();
+        let payload = fixture["fullRequest"]
+            .as_str()
+            .unwrap()
+            .strip_prefix(prefix)
+            .unwrap();
+        let payload: serde_json::Value =
+            serde_json::from_str(&base64_url_decode_utf8(payload).unwrap()).unwrap();
+        for tamper in fixture["tamperCases"]["request"].as_array().unwrap() {
+            let mut tampered = payload.clone();
+            if let Some(field) = tamper["resourceField"].as_str() {
+                tampered["resources"][0]
+                    .as_object_mut()
+                    .unwrap()
+                    .insert(field.to_string(), tamper["value"].clone());
+            } else {
+                let field = tamper["field"].as_str().unwrap();
+                tampered
+                    .as_object_mut()
+                    .unwrap()
+                    .insert(field.to_string(), tamper["value"].clone());
+            }
+            let encoded = format!(
+                "{prefix}{}",
+                base64_url_encode(tampered.to_string().as_bytes())
+            );
+            assert!(
+                parse_nostr_identity_device_approval_request(&encoded, &[]).is_err(),
+                "accepted request tamper {}",
+                tamper["name"]
+            );
+        }
+
+        let device_keys = Keys::new(
+            SecretKey::from_hex(fixture["keys"]["deviceAppKeySecretKey"].as_str().unwrap())
+                .unwrap(),
+        );
+        let proof_fixture = Event::from_json(fixture["proofEvent"].to_string()).unwrap();
+        for tamper in fixture["tamperCases"]["proof"].as_array().unwrap() {
+            let mut tags = proof_fixture.tags.iter().cloned().collect::<Vec<_>>();
+            if let Some(tag) = tamper["tag"].as_array() {
+                tags.push(
+                    Tag::parse([tag[0].as_str().unwrap(), tag[1].as_str().unwrap()]).unwrap(),
+                );
+            }
+            let proof = EventBuilder::new(
+                Kind::from(FACT_OP_KIND),
+                tamper["content"].as_str().unwrap_or(""),
+            )
+            .tags(tags)
+            .custom_created_at(proof_fixture.created_at)
+            .sign_with_keys(&device_keys)
+            .unwrap();
+            let mut tampered = payload.clone();
+            tampered["deviceAppKeyProof"] = proof.as_json().into();
+            let encoded = format!(
+                "{prefix}{}",
+                base64_url_encode(tampered.to_string().as_bytes())
+            );
+            assert!(
+                parse_nostr_identity_device_approval_request(&encoded, &[]).is_err(),
+                "accepted proof tamper {}",
+                tamper["name"]
+            );
+        }
+
+        let admin_keys = Keys::new(
+            SecretKey::from_hex(fixture["keys"]["adminSecretKey"].as_str().unwrap()).unwrap(),
+        );
+        for tamper in fixture["tamperCases"]["receipt"].as_array().unwrap() {
+            let event = if let Some(field) = tamper["eventField"].as_str() {
+                let mut event = fixture["receiptEvent"].clone();
+                event
+                    .as_object_mut()
+                    .unwrap()
+                    .insert(field.to_string(), tamper["value"].clone());
+                Event::from_json(event.to_string()).unwrap()
+            } else if let Some(tag) = tamper["tag"].as_array() {
+                let mut tags = receipt_event.tags.iter().cloned().collect::<Vec<_>>();
+                tags.push(
+                    Tag::parse([tag[0].as_str().unwrap(), tag[1].as_str().unwrap()]).unwrap(),
+                );
+                EventBuilder::new(Kind::from(FACT_OP_KIND), receipt_event.content.clone())
+                    .tags(tags)
+                    .custom_created_at(receipt_event.created_at)
+                    .sign_with_keys(&admin_keys)
+                    .unwrap()
+            } else {
+                let field = tamper["field"].as_str().unwrap();
+                let mut receipt = fixture["expectedReceipt"].clone();
+                receipt
+                    .as_object_mut()
+                    .unwrap()
+                    .insert(field.to_string(), tamper["value"].clone());
+                let encrypted = nip44::encrypt(
+                    admin_keys.secret_key(),
+                    &request_keys.public_key(),
+                    receipt.to_string(),
+                    Nip44Version::V2,
+                )
+                .unwrap();
+                let profile_id = fixture["profileId"].as_str().unwrap();
+                EventBuilder::new(Kind::from(FACT_OP_KIND), encrypted)
+                    .tag(Tag::parse(["type", NOSTR_IDENTITY_DEVICE_APPROVAL_RECEIPT_TYPE]).unwrap())
+                    .tag(Tag::parse(["p", request.request_pubkey.as_str()]).unwrap())
+                    .tag(Tag::parse(["i", profile_id, "subject"]).unwrap())
+                    .custom_created_at(receipt_event.created_at)
+                    .sign_with_keys(&admin_keys)
+                    .unwrap()
+            };
+            assert!(
+                parse_nostr_identity_device_approval_receipt_event_for_request(
+                    &event,
+                    &request_keys,
+                    &request,
+                )
+                .is_err(),
+                "accepted receipt tamper {}",
+                tamper["name"]
+            );
         }
     }
 

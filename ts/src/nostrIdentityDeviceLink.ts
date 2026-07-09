@@ -27,6 +27,7 @@ export const NOSTR_IDENTITY_DEVICE_APPROVAL_REQUEST_VERSION = 1;
 export const NOSTR_IDENTITY_DEVICE_APPROVAL_PROOF_TYPE = 'nostr_identity_device_approval_proof';
 export const NOSTR_IDENTITY_DEVICE_APPROVAL_RECEIPT_TYPE = 'nostr_identity_device_approval_receipt';
 export const NOSTR_IDENTITY_DEVICE_APPROVAL_RECEIPT_SCHEMA = 1;
+export const NOSTR_IDENTITY_DEVICE_APPROVAL_REQUEST_SECRET_MIN_LENGTH = 32;
 export const NOSTR_IDENTITY_DEVICE_APPROVAL_CLIENT_NONCE_PREFIX = 'nostr_identity_device_approval:';
 export const NOSTR_IDENTITY_MANUAL_DEVICE_ADD_CLIENT_NONCE_PREFIX = 'nostr_identity_manual_device_add:';
 export const KIND_NOSTR_IDENTITY_DEVICE_LINK_REQUEST = FACT_OP_KIND;
@@ -137,6 +138,51 @@ interface NostrIdentityDeviceApprovalRequestPayload {
   label?: string;
 }
 
+const DEVICE_LINK_INVITE_PAYLOAD_FIELDS = new Set([
+  'v',
+  'profileId',
+  'adminAppKeyNpub',
+  'inviteNpub',
+]);
+const DEVICE_APPROVAL_REQUEST_PAYLOAD_FIELDS = new Set([
+  'v',
+  'requestNpub',
+  'deviceAppKeyNpub',
+  'requestSecret',
+  'deviceAppKeyProof',
+  'requestedAt',
+  'requestType',
+  'resources',
+  'expiresAt',
+  'profileId',
+  'adminAppKeyNpub',
+  'label',
+]);
+const DEVICE_APPROVAL_RESOURCE_FIELDS = new Set(['type', 'id', 'scopes']);
+const DEVICE_APPROVAL_RECEIPT_FIELDS = new Set([
+  'schema',
+  'profileId',
+  'requestPubkey',
+  'deviceAppKeyPubkey',
+  'approvedByPubkey',
+  'approvedAt',
+  'requestSecret',
+  'subjectPubkey',
+  'rosterOpId',
+  'signedRosterEvent',
+]);
+const DEVICE_APPROVAL_PROOF_TAGS = new Set([
+  'type',
+  'request_pubkey',
+  'requested_at',
+  'request_type',
+  'requested_resources',
+  'expires_at',
+  'profile_id',
+  'admin_pubkey',
+  'label',
+]);
+
 export interface EncodeNostrIdentityDeviceLinkOptions {
   prefix?: string;
 }
@@ -182,7 +228,7 @@ export function parseNostrIdentityDeviceLinkInvite(
   ]);
   if (payload === null) return null;
   try {
-    return normalizeDeviceLinkInvitePayload(JSON.parse(base64UrlDecode(payload)) as NostrIdentityDeviceLinkInvitePayload);
+    return normalizeDeviceLinkInvitePayload(JSON.parse(base64UrlDecode(payload)) as unknown);
   } catch {
     return null;
   }
@@ -404,7 +450,7 @@ export function parseNostrIdentityDeviceApprovalRequest(
   if (payload === null) return null;
   try {
     return normalizeDeviceApprovalRequestPayload(
-      JSON.parse(base64UrlDecode(payload)) as NostrIdentityDeviceApprovalRequestPayload,
+      JSON.parse(base64UrlDecode(payload)) as unknown,
     );
   } catch {
     return null;
@@ -452,6 +498,16 @@ export function buildNostrIdentityDeviceApprovalReceiptEvent(options: {
 }): Event {
   requireValidDeviceApprovalProof(options.request);
   const approvedByPubkey = getPublicKey(options.signerSecretKey);
+  const profileId = requireProfileId(options.profileId);
+  if (options.request.profileId !== undefined && requireProfileId(options.request.profileId) !== profileId) {
+    throw new Error('device approval request profile mismatch');
+  }
+  if (
+    options.request.adminAppKeyPubkey !== undefined
+    && requirePubkey(options.request.adminAppKeyPubkey, 'request admin AppKey') !== approvedByPubkey
+  ) {
+    throw new Error('device approval request admin mismatch');
+  }
   const signedRosterEvent = options.rosterOpEvent !== undefined
     ? signedRosterOpEventJson(options.rosterOpEvent)
     : undefined;
@@ -462,7 +518,7 @@ export function buildNostrIdentityDeviceApprovalReceiptEvent(options: {
   );
   const receipt: NostrIdentityDeviceApprovalReceipt = {
     schema: NOSTR_IDENTITY_DEVICE_APPROVAL_RECEIPT_SCHEMA,
-    profileId: requireProfileId(options.profileId),
+    profileId,
     requestPubkey: requirePubkey(options.request.requestPubkey, 'request'),
     deviceAppKeyPubkey: requirePubkey(options.request.deviceAppKeyPubkey, 'device AppKey'),
     approvedByPubkey,
@@ -503,11 +559,12 @@ export function parseNostrIdentityDeviceApprovalReceiptEvent(
     approvedByPubkey?: string;
   },
 ): NostrIdentityDeviceApprovalReceipt {
-  requireValidSignature(event);
+  requireFreshValidSignature(event);
   if (event.kind !== FACT_OP_KIND) throw new Error('device approval receipt has invalid kind');
-  requireProofTag(event, 'type', NOSTR_IDENTITY_DEVICE_APPROVAL_RECEIPT_TYPE);
+  requireExactReceiptTags(event);
+  requireExactEventTag(event, ['type', NOSTR_IDENTITY_DEVICE_APPROVAL_RECEIPT_TYPE], 'device approval receipt');
   const requestPubkey = getPublicKey(options.requestSecretKey);
-  requireProofTag(event, 'p', requestPubkey);
+  requireExactEventTag(event, ['p', requestPubkey], 'device approval receipt');
   const conversationKey = nip44.v2.utils.getConversationKey(
     options.requestSecretKey,
     requirePubkey(event.pubkey, 'approval receipt signer'),
@@ -520,12 +577,29 @@ export function parseNostrIdentityDeviceApprovalReceiptEvent(
   if (receipt.approvedByPubkey !== requirePubkey(event.pubkey, 'approval receipt signer')) {
     throw new Error('device approval receipt signer mismatch');
   }
+  requireExactEventTag(event, ['i', receipt.profileId, 'subject'], 'device approval receipt');
   if (options.request !== undefined) {
+    requireValidDeviceApprovalProof(options.request);
+    if (requirePubkey(options.request.requestPubkey, 'request') !== requestPubkey) {
+      throw new Error('device approval receipt request mismatch');
+    }
     if (receipt.requestSecret !== requireRequestSecret(options.request.requestSecret)) {
       throw new Error('device approval receipt secret mismatch');
     }
     if (receipt.deviceAppKeyPubkey !== requirePubkey(options.request.deviceAppKeyPubkey, 'device AppKey')) {
       throw new Error('device approval receipt device mismatch');
+    }
+    if (
+      options.request.profileId !== undefined
+      && receipt.profileId !== requireProfileId(options.request.profileId)
+    ) {
+      throw new Error('device approval receipt profile mismatch');
+    }
+    if (
+      options.request.adminAppKeyPubkey !== undefined
+      && receipt.approvedByPubkey !== requirePubkey(options.request.adminAppKeyPubkey, 'request admin AppKey')
+    ) {
+      throw new Error('device approval receipt signer mismatch');
     }
   }
   if (options.profileId !== undefined && receipt.profileId !== requireProfileId(options.profileId)) {
@@ -659,69 +733,85 @@ export function npubToPubkey(value: string): string | null {
 }
 
 function normalizeDeviceLinkInvitePayload(
-  payload: NostrIdentityDeviceLinkInvitePayload,
+  value: unknown,
 ): NostrIdentityDeviceLinkInvite | null {
+  const payload = requireExactObject(value, DEVICE_LINK_INVITE_PAYLOAD_FIELDS, 'device link invite');
   if (payload.v !== NOSTR_IDENTITY_DEVICE_LINK_INVITE_VERSION) return null;
-  const adminAppKeyPubkey = npubToPubkey(String(payload.adminAppKeyNpub ?? ''));
-  const invitePubkey = npubToPubkey(String(payload.inviteNpub ?? ''));
+  const adminAppKeyPubkey = npubToPubkey(requireString(payload.adminAppKeyNpub, 'adminAppKeyNpub'));
+  const invitePubkey = npubToPubkey(requireString(payload.inviteNpub, 'inviteNpub'));
   if (!adminAppKeyPubkey || !invitePubkey) return null;
   return {
-    profileId: requireProfileId(String(payload.profileId ?? '')),
+    profileId: requireProfileId(requireString(payload.profileId, 'profileId')),
     adminAppKeyPubkey,
     invitePubkey,
   };
 }
 
 function normalizeDeviceApprovalRequestPayload(
-  payload: NostrIdentityDeviceApprovalRequestPayload,
+  value: unknown,
 ): NostrIdentityDeviceApprovalRequest | null {
+  const payload = requireExactObject(value, DEVICE_APPROVAL_REQUEST_PAYLOAD_FIELDS, 'device approval request');
   if (payload.v !== NOSTR_IDENTITY_DEVICE_APPROVAL_REQUEST_VERSION) return null;
-  const requestPubkey = npubToPubkey(String(payload.requestNpub ?? ''));
-  const deviceAppKeyPubkey = npubToPubkey(String(payload.deviceAppKeyNpub ?? ''));
+  const requestPubkey = npubToPubkey(requireString(payload.requestNpub, 'requestNpub'));
+  const deviceAppKeyPubkey = npubToPubkey(requireString(payload.deviceAppKeyNpub, 'deviceAppKeyNpub'));
   if (!requestPubkey || !deviceAppKeyPubkey) return null;
   let adminAppKeyPubkey: string | undefined;
-  if (payload.adminAppKeyNpub !== undefined) {
-    const parsedAdmin = npubToPubkey(String(payload.adminAppKeyNpub));
+  if (payload.adminAppKeyNpub != null) {
+    const parsedAdmin = npubToPubkey(requireString(payload.adminAppKeyNpub, 'adminAppKeyNpub'));
     if (!parsedAdmin) return null;
     adminAppKeyPubkey = parsedAdmin;
   }
+  const label = normalizeOptionalDeviceApprovalLabel(payload.label);
   const request = {
     requestPubkey,
     deviceAppKeyPubkey,
-    requestSecret: requireRequestSecret(String(payload.requestSecret ?? '')),
-    deviceAppKeyProof: String(payload.deviceAppKeyProof ?? ''),
+    requestSecret: requireRequestSecret(requireString(payload.requestSecret, 'requestSecret')),
+    deviceAppKeyProof: requireString(payload.deviceAppKeyProof, 'deviceAppKeyProof'),
     requestedAt: requireInteger(payload.requestedAt, 'requestedAt'),
-    ...(payload.requestType !== undefined
+    ...(payload.requestType != null
       ? { requestType: normalizeOptionalDeviceApprovalString(payload.requestType, 'requestType') }
       : {}),
     ...(payload.resources !== undefined ? { resources: normalizeDeviceApprovalResources(payload.resources) } : {}),
-    ...(payload.expiresAt !== undefined ? { expiresAt: requireInteger(payload.expiresAt, 'expiresAt') } : {}),
-    ...(payload.profileId !== undefined ? { profileId: requireProfileId(String(payload.profileId)) } : {}),
+    ...(payload.expiresAt != null ? { expiresAt: requireInteger(payload.expiresAt, 'expiresAt') } : {}),
+    ...(payload.profileId != null
+      ? { profileId: requireProfileId(requireString(payload.profileId, 'profileId')) }
+      : {}),
     ...(adminAppKeyPubkey !== undefined ? { adminAppKeyPubkey } : {}),
-    ...(typeof payload.label === 'string' && payload.label.trim() ? { label: payload.label.trim() } : {}),
+    ...(label !== undefined ? { label } : {}),
   };
   requireValidDeviceApprovalProof(request);
   return request;
 }
 
 function normalizeDeviceApprovalReceipt(
-  receipt: NostrIdentityDeviceApprovalReceipt,
+  value: unknown,
 ): NostrIdentityDeviceApprovalReceipt {
+  const receipt = requireExactObject(value, DEVICE_APPROVAL_RECEIPT_FIELDS, 'device approval receipt');
   if (receipt.schema !== NOSTR_IDENTITY_DEVICE_APPROVAL_RECEIPT_SCHEMA) {
     throw new Error(`unsupported device approval receipt schema ${receipt.schema}`);
   }
   return {
     schema: NOSTR_IDENTITY_DEVICE_APPROVAL_RECEIPT_SCHEMA,
-    profileId: requireProfileId(String(receipt.profileId ?? '')),
-    requestPubkey: requirePubkey(String(receipt.requestPubkey ?? ''), 'request'),
-    deviceAppKeyPubkey: requirePubkey(String(receipt.deviceAppKeyPubkey ?? ''), 'device AppKey'),
-    approvedByPubkey: requirePubkey(String(receipt.approvedByPubkey ?? ''), 'approving AppKey'),
+    profileId: requireProfileId(requireString(receipt.profileId, 'profileId')),
+    requestPubkey: requirePubkey(requireString(receipt.requestPubkey, 'requestPubkey'), 'request'),
+    deviceAppKeyPubkey: requirePubkey(
+      requireString(receipt.deviceAppKeyPubkey, 'deviceAppKeyPubkey'),
+      'device AppKey',
+    ),
+    approvedByPubkey: requirePubkey(
+      requireString(receipt.approvedByPubkey, 'approvedByPubkey'),
+      'approving AppKey',
+    ),
     approvedAt: requireInteger(receipt.approvedAt, 'approvedAt'),
-    requestSecret: requireRequestSecret(String(receipt.requestSecret ?? '')),
-    ...(receipt.subjectPubkey !== undefined ? { subjectPubkey: requirePubkey(String(receipt.subjectPubkey), 'subject') } : {}),
-    ...(receipt.rosterOpId !== undefined ? { rosterOpId: requireEventId(String(receipt.rosterOpId)) } : {}),
-    ...(typeof receipt.signedRosterEvent === 'string' && receipt.signedRosterEvent.trim()
-      ? { signedRosterEvent: receipt.signedRosterEvent.trim() }
+    requestSecret: requireRequestSecret(requireString(receipt.requestSecret, 'requestSecret')),
+    ...(receipt.subjectPubkey != null
+      ? { subjectPubkey: requirePubkey(requireString(receipt.subjectPubkey, 'subjectPubkey'), 'subject') }
+      : {}),
+    ...(receipt.rosterOpId != null
+      ? { rosterOpId: requireEventId(requireString(receipt.rosterOpId, 'rosterOpId')) }
+      : {}),
+    ...(receipt.signedRosterEvent != null
+      ? { signedRosterEvent: requireNonEmpty(receipt.signedRosterEvent, 'signedRosterEvent') }
       : {}),
   };
 }
@@ -790,6 +880,8 @@ function requireValidDeviceApprovalProof(request: NostrIdentityDeviceApprovalReq
   const event = JSON.parse(raw) as Event;
   requireValidSignature(event);
   if (event.kind !== FACT_OP_KIND) throw new Error('device approval proof has invalid kind');
+  if (event.content !== '') throw new Error('device approval proof content must be empty');
+  requireExactProofTags(event);
   if (event.pubkey !== requirePubkey(request.deviceAppKeyPubkey, 'device AppKey')) {
     throw new Error('device approval proof signer mismatch');
   }
@@ -814,10 +906,16 @@ function requireValidDeviceApprovalProof(request: NostrIdentityDeviceApprovalReq
 
 function normalizeOptionalDeviceApprovalString(value: unknown, label: string): string | undefined {
   if (value === undefined) return undefined;
-  const normalized = String(value).trim();
+  const normalized = requireString(value, label).trim();
   if (!normalized) return undefined;
   if (normalized.length > 128) throw new Error(`${label} is too long`);
   return normalized;
+}
+
+function normalizeOptionalDeviceApprovalLabel(value: unknown): string | undefined {
+  if (value == null) return undefined;
+  const normalized = requireString(value, 'label').trim();
+  return normalized || undefined;
 }
 
 function normalizeDeviceApprovalResources(
@@ -829,7 +927,11 @@ function normalizeDeviceApprovalResources(
     if (resource === null || typeof resource !== 'object' || Array.isArray(resource)) {
       throw new Error(`resources[${index}] must be an object`);
     }
-    const record = resource as Record<string, unknown>;
+    const record = requireExactObject(
+      resource,
+      DEVICE_APPROVAL_RESOURCE_FIELDS,
+      `resources[${index}]`,
+    );
     const type = normalizeRequiredDeviceApprovalString(record.type, `resources[${index}].type`);
     const id = normalizeRequiredDeviceApprovalString(record.id, `resources[${index}].id`);
     const scopes = normalizeDeviceApprovalScopes(record.scopes, `resources[${index}].scopes`);
@@ -843,7 +945,7 @@ function normalizeDeviceApprovalResources(
 }
 
 function normalizeRequiredDeviceApprovalString(value: unknown, label: string): string {
-  const normalized = String(value ?? '').trim();
+  const normalized = requireString(value, label).trim();
   if (!normalized) throw new Error(`${label} is required`);
   if (normalized.length > 256) throw new Error(`${label} is too long`);
   return normalized;
@@ -859,18 +961,88 @@ function normalizeDeviceApprovalScopes(value: unknown, label: string): string[] 
 }
 
 function requireProofTag(event: Event, name: string, expected: string): void {
-  if (event.tags.find((tag) => tag[0] === name)?.[1] !== expected) {
+  if (eventTagValue(event, name) !== expected) {
     throw new Error(`device approval proof ${name} mismatch`);
   }
 }
 
 function requireOptionalProofTag(event: Event, name: string, expected: string | undefined): void {
-  const actual = event.tags.find((tag) => tag[0] === name)?.[1];
+  const actual = eventTagValue(event, name);
   if (expected === undefined) {
     if (actual !== undefined) throw new Error(`device approval proof unexpected ${name}`);
     return;
   }
   if (actual !== expected) throw new Error(`device approval proof ${name} mismatch`);
+}
+
+function requireExactProofTags(event: Event): void {
+  const seen = new Set<string>();
+  for (const tag of event.tags) {
+    if (tag.length !== 2 || typeof tag[0] !== 'string' || typeof tag[1] !== 'string') {
+      throw new Error('device approval proof tag is malformed');
+    }
+    const name = tag[0];
+    if (!DEVICE_APPROVAL_PROOF_TAGS.has(name)) {
+      throw new Error(`device approval proof has unknown tag ${name}`);
+    }
+    if (seen.has(name)) throw new Error(`device approval proof has duplicate tag ${name}`);
+    seen.add(name);
+  }
+}
+
+function requireFreshValidSignature(event: Event): void {
+  requireValidSignature({
+    id: event.id,
+    pubkey: event.pubkey,
+    created_at: event.created_at,
+    kind: event.kind,
+    tags: event.tags.map((tag) => [...tag]),
+    content: event.content,
+    sig: event.sig,
+  });
+}
+
+function requireExactReceiptTags(event: Event): void {
+  const expected = new Set(['type', 'p', 'i']);
+  const seen = new Set<string>();
+  for (const tag of event.tags) {
+    const name = tag[0];
+    if (!name || !expected.has(name)) {
+      throw new Error(`device approval receipt has unknown tag ${name ?? ''}`);
+    }
+    if (seen.has(name)) throw new Error(`device approval receipt has duplicate tag ${name}`);
+    seen.add(name);
+  }
+  if (seen.size !== expected.size) throw new Error('device approval receipt is missing required tags');
+}
+
+function requireExactEventTag(event: Event, expected: string[], label: string): void {
+  if (!event.tags.some((tag) => tag.length === expected.length && tag.every((value, index) => value === expected[index]))) {
+    throw new Error(`${label} ${expected[0]} mismatch`);
+  }
+}
+
+function eventTagValue(event: Event, name: string): string | undefined {
+  return event.tags.find((tag) => tag[0] === name)?.[1];
+}
+
+function requireExactObject(
+  value: unknown,
+  allowedFields: ReadonlySet<string>,
+  label: string,
+): Record<string, unknown> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`${label} must be an object`);
+  }
+  const record = value as Record<string, unknown>;
+  const unknownField = Object.keys(record).find((field) => !allowedFields.has(field));
+  if (unknownField !== undefined) throw new Error(`${label} has unknown field ${unknownField}`);
+  return record;
+}
+
+function requireString(value: unknown, label: string): string {
+  if (typeof value !== 'string') throw new Error(`${label} must be a string`);
+  return value;
 }
 
 function payloadFromPrefixedUrl(input: string, prefixes: string[]): string | null {
@@ -957,15 +1129,26 @@ function base64UrlEncodeBytes(bytes: Uint8Array): string {
 }
 
 function base64UrlDecode(value: string): string {
-  if (looksLikePlaceholder(value)) throw new Error('device link payload is a placeholder');
-  if (typeof Buffer !== 'undefined') {
-    return Buffer.from(value, 'base64url').toString('utf8');
+  const normalized = value.trim();
+  if (looksLikePlaceholder(normalized)) throw new Error('device link payload is a placeholder');
+  if (normalized.length % 4 === 1 || !/^[A-Za-z0-9_-]+$/u.test(normalized)) {
+    throw new Error('device link payload is not base64url');
   }
-  let base64 = value.replace(/-/g, '+').replace(/_/g, '/');
+  if (typeof Buffer !== 'undefined') {
+    const bytes = Buffer.from(normalized, 'base64url');
+    if (bytes.toString('base64url') !== normalized) {
+      throw new Error('device link payload has invalid base64url padding bits');
+    }
+    return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  }
+  let base64 = normalized.replace(/-/g, '+').replace(/_/g, '/');
   base64 += '='.repeat((4 - (base64.length % 4)) % 4);
   const binary = atob(base64);
   const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
-  return new TextDecoder().decode(bytes);
+  if (base64UrlEncodeBytes(bytes) !== normalized) {
+    throw new Error('device link payload has invalid base64url padding bits');
+  }
+  return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
 }
 
 function requireProfileId(profileId: NostrIdentityId): NostrIdentityId {
@@ -996,9 +1179,12 @@ function decodeNpubToPubkey(value: string): string | null {
   }
 }
 
-function requireRequestSecret(value: string): string {
-  const trimmed = value.trim();
-  if (!/^[A-Za-z0-9_-]{32,}$/u.test(trimmed)) {
+function requireRequestSecret(value: unknown): string {
+  const trimmed = requireString(value, 'requestSecret').trim();
+  if (
+    trimmed.length < NOSTR_IDENTITY_DEVICE_APPROVAL_REQUEST_SECRET_MIN_LENGTH
+    || !/^[A-Za-z0-9_-]+$/u.test(trimmed)
+  ) {
     throw new Error('device approval request secret must be at least 32 base64url characters');
   }
   return trimmed;
@@ -1010,13 +1196,15 @@ function requireEventId(value: string): string {
   return trimmed.toLowerCase();
 }
 
-function requireInteger(value: number, label: string): number {
-  if (!Number.isSafeInteger(value)) throw new Error(`${label} must be an integer`);
+function requireInteger(value: unknown, label: string): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value)) {
+    throw new Error(`${label} must be an integer`);
+  }
   return value;
 }
 
-function requireNonEmpty(value: string, label: string): string {
-  const trimmed = value.trim();
+function requireNonEmpty(value: unknown, label: string): string {
+  const trimmed = requireString(value, label).trim();
   if (!trimmed) throw new Error(`${label} is required`);
   return trimmed;
 }

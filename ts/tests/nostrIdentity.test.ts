@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { generateSecretKey, getPublicKey } from 'nostr-tools';
+import { finalizeEvent, generateSecretKey, getPublicKey, type Event } from 'nostr-tools';
 import {
   APP_KEY_ADMIN_CAPABILITIES,
   KIND_NOSTR_IDENTITY_ROSTER_OP,
@@ -234,6 +234,43 @@ describe('NostrIdentity', () => {
     );
     expect(tampered).toBeNull();
 
+    const requestPayload = JSON.parse(
+      Buffer.from(encoded.slice(approvalPrefix.length), 'base64url').toString('utf8'),
+    );
+    expect(parseNostrIdentityDeviceApprovalRequest(
+      `${approvalPrefix}${Buffer.from(JSON.stringify({ ...requestPayload, unexpected: true }), 'utf8').toString('base64url')}`,
+      { prefixes: [approvalPrefix] },
+    )).toBeNull();
+
+    const proofEvent = JSON.parse(request.deviceAppKeyProof) as Event;
+    const nonEmptyProof = finalizeEvent({
+      kind: proofEvent.kind,
+      created_at: proofEvent.created_at,
+      tags: proofEvent.tags,
+      content: 'unexpected',
+    }, deviceSecret);
+    expect(parseNostrIdentityDeviceApprovalRequest(
+      `${approvalPrefix}${Buffer.from(JSON.stringify({
+        ...requestPayload,
+        deviceAppKeyProof: JSON.stringify(nonEmptyProof),
+      }), 'utf8').toString('base64url')}`,
+      { prefixes: [approvalPrefix] },
+    )).toBeNull();
+
+    const duplicateRequestPubkeyProof = finalizeEvent({
+      kind: proofEvent.kind,
+      created_at: proofEvent.created_at,
+      tags: [...proofEvent.tags, ['request_pubkey', getPublicKey(generateSecretKey())]],
+      content: '',
+    }, deviceSecret);
+    expect(parseNostrIdentityDeviceApprovalRequest(
+      `${approvalPrefix}${Buffer.from(JSON.stringify({
+        ...requestPayload,
+        deviceAppKeyProof: JSON.stringify(duplicateRequestPubkeyProof),
+      }), 'utf8').toString('base64url')}`,
+      { prefixes: [approvalPrefix] },
+    )).toBeNull();
+
     expect(request.deviceAppKeyProof).not.toContain(request.requestSecret);
 
     const approvalContent = approveNostrIdentityDeviceApprovalRequest({
@@ -280,6 +317,10 @@ describe('NostrIdentity', () => {
     const receiptRosterOp = parseNostrIdentityDeviceApprovalReceiptRosterOp(receipt);
     expect(receiptRosterOp.op_id).toBe(signedApproval.op_id);
     expect(nostrIdentityRosterOpMatchesDeviceApprovalReceipt(receiptRosterOp, receipt)).toBe(true);
+    expect(() => parseNostrIdentityDeviceApprovalReceiptEvent(receiptEvent, {
+      requestSecretKey,
+      request: { ...request, requestPubkey: getPublicKey(generateSecretKey()) },
+    })).toThrow('request');
 
     const manualAdd = createNostrIdentityManualDeviceAddRosterOp({
       profileId,

@@ -1,0 +1,96 @@
+{
+  "schema": 1,
+  "profileId": "6b7f5df4-1d2d-43a7-9b87-873e41a2d99a",
+  "prefix": "nostr-identity://device-approval/",
+  "keys": {
+    "adminSecretKey": "0000000000000000000000000000000000000000000000000000000000000001",
+    "adminPubkey": "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+    "deviceAppKeySecretKey": "0000000000000000000000000000000000000000000000000000000000000002",
+    "deviceAppKeyPubkey": "c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5",
+    "requestSecretKey": "0000000000000000000000000000000000000000000000000000000000000003",
+    "requestPubkey": "f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9",
+    "otherSecretKey": "0000000000000000000000000000000000000000000000000000000000000004",
+    "otherPubkey": "e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd13",
+    "otherNpub": "npub1ujfahuwppkq0xkq7fyzfxzc5qnxxcyuspms8tpr5l222h6xye5fsccv64k"
+  },
+  "requestSecret": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+  "requestedAt": 1720000021,
+  "approvedAt": 1720000022,
+  "expiresAt": 1720000321,
+  "requestType": "device_link",
+  "resources": [
+    {
+      "type": "collection",
+      "id": "fixture-resource",
+      "scopes": [
+        "read",
+        "write"
+      ]
+    }
+  ],
+  "label": "Fixture device",
+  "fullRequest": "nostr-identity://device-approval/eyJ2IjoxLCJyZXF1ZXN0TnB1YiI6Im5wdWIxbHljZzVxdmp0cnAzcWpmNWY3emwzODJqOXg2bnJqejlzZGhlbnZ5eHE4YzM4MDhxeG11czZncTI2NiIsImRldmljZUFwcEtleU5wdWIiOiJucHViMWNjejhsOXpwYTQ3azZ2ejlncGhmdHNydW1wdzgwcmp0M25obmVmYXQ0c3ltamhyc25tanMzOG1ueWQiLCJyZXF1ZXN0U2VjcmV0IjoiQUFFQ0F3UUZCZ2NJQ1FvTERBME9EeEFSRWhNVUZSWVhHQmthR3h3ZEhoOCIsImRldmljZUFwcEtleVByb29mIjoie1wia2luZFwiOjczNjgsXCJjb250ZW50XCI6XCJcIixcImNyZWF0ZWRfYXRcIjoxNzIwMDAwMDIxLFwidGFnc1wiOltbXCJ0eXBlXCIsXCJub3N0cl9pZGVudGl0eV9kZXZpY2VfYXBwcm92YWxfcHJvb2ZcIl0sW1wicmVxdWVzdF9wdWJrZXlcIixcImY5MzA4YTAxOTI1OGMzMTA0OTM0NGY4NWY4OWQ1MjI5YjUzMWM4NDU4MzZmOTliMDg2MDFmMTEzYmNlMDM2ZjlcIl0sW1wicmVxdWVzdGVkX2F0XCIsXCIxNzIwMDAwMDIxXCJdLFtcInJlcXVlc3RfdHlwZVwiLFwiZGV2aWNlX2xpbmtcIl0sW1wicmVxdWVzdGVkX3Jlc291cmNlc1wiLFwiW3tcXFwidHlwZVxcXCI6XFxcImNvbGxlY3Rpb25cXFwiLFxcXCJpZFxcXCI6XFxcImZpeHR1cmUtcmVzb3VyY2VcXFwiLFxcXCJzY29wZXNcXFwiOltcXFwicmVhZFxcXCIsXFxcIndyaXRlXFxcIl19XVwiXSxbXCJleHBpcmVzX2F0XCIsXCIxNzIwMDAwMzIxXCJdLFtcInByb2ZpbGVfaWRcIixcIjZiN2Y1ZGY0LTFkMmQtNDNhNy05Yjg3LTg3M2U0MWEyZDk5YVwiXSxbXCJhZG1pbl9wdWJrZXlcIixcIjc5YmU2NjdlZjlkY2JiYWM1NWEwNjI5NWNlODcwYjA3MDI5YmZjZGIyZGNlMjhkOTU5ZjI4MTViMTZmODE3OThcIl0sW1wibGFiZWxcIixcIkZpeHR1cmUgZGV2aWNlXCJdXSxcInB1YmtleVwiOlwiYzYwNDdmOTQ0MWVkN2Q2ZDMwNDU0MDZlOTVjMDdjZDg1Yzc3OGU0YjhjZWYzY2E3YWJhYzA5Yjk1YzcwOWVlNVwiLFwiaWRcIjpcImQwMTJkMTM3MzlhNDhhMjNlNmQ1ZDhmZTQwZDc2MGRlY2IzZDEwMDNmNTliZTA2NjI3N2IyM2RjNDA4YWE3MzVcIixcInNpZ1wiOlwiMzdlYTU2ZDA4MWIzZWFjMmYzZDhkMjFlNmU2ODM5YTNkYTY0ZWYyY2RmNmJiZmM2NmI4YWYxMDZhYzczZDQ3YzE5Y2NmYTk2Yjc4YjFlMmJjNzIzZTM5YjdmZDEzZTdlZjg0NTc2YjU1OTg1MTQwOTM0YWQ1Zjg4Yzg2ZjM2OWNcIn0iLCJyZXF1ZXN0ZWRBdCI6MTcyMDAwMDAyMSwicmVxdWVzdFR5cGUiOiJkZXZpY2VfbGluayIsInJlc291cmNlcyI6W3sidHlwZSI6ImNvbGxlY3Rpb24iLCJpZCI6ImZpeHR1cmUtcmVzb3VyY2UiLCJzY29wZXMiOlsicmVhZCIsIndyaXRlIl19XSwiZXhwaXJlc0F0IjoxNzIwMDAwMzIxLCJwcm9maWxlSWQiOiI2YjdmNWRmNC0xZDJkLTQzYTctOWI4Ny04NzNlNDFhMmQ5OWEiLCJhZG1pbkFwcEtleU5wdWIiOiJucHViMTB4bHh2bGhlbWphNmM0ZHF2MjJ1YXBjdHF1cGZobHhtOWg4ejNrMmU3MnE0azloY3o3dnFwa2dlNmQiLCJsYWJlbCI6IkZpeHR1cmUgZGV2aWNlIn0",
+  "proofEvent": {
+    "kind": 7368,
+    "content": "",
+    "created_at": 1720000021,
+    "tags": [
+      ["type", "nostr_identity_device_approval_proof"],
+      ["request_pubkey", "f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9"],
+      ["requested_at", "1720000021"],
+      ["request_type", "device_link"],
+      ["requested_resources", "[{\"type\":\"collection\",\"id\":\"fixture-resource\",\"scopes\":[\"read\",\"write\"]}]"],
+      ["expires_at", "1720000321"],
+      ["profile_id", "6b7f5df4-1d2d-43a7-9b87-873e41a2d99a"],
+      ["admin_pubkey", "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"],
+      ["label", "Fixture device"]
+    ],
+    "pubkey": "c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5",
+    "id": "d012d13739a48a23e6d5d8fe40d760decb3d1003f59be066277b23dc408aa735",
+    "sig": "37ea56d081b3eac2f3d8d21e6e6839a3da64ef2cdf6bbfc66b8af106ac73d47c19ccfa96b78b1e2bc723e39b7fd13e7ef84576b55985140934ad5f88c86f369c"
+  },
+  "receiptEvent": {
+    "kind": 7368,
+    "content": "AjWlgU+HX38JdMiGEaAgMME6GhhVxq889aUP4viesnBqDX2X/Sxbz/5A8d85m1FfOn50wUNYFDPFLJVzZsvYMD5d5LSvq88fIwVKsIVLkrJu/e40Ubp8JjHlNqvM+P99SsXGpCxzRl1TZjGb13fYWgXehvbR6iq4WkoiUK+h05kWWvwxjYWzBCCtc2jHYRpWYTDcvAk+oI9d64EJCsyhqocrHFktDgzqjeU1xIgdoooFGX4cRFZhYRWIZ2qqym/GLIaFGtrHDn9EuwUnMENmUvVvrzA1RZ+LpQrcYk0/hZjmG07E1VJrYPssp0wQMp0LNo+yt4vljHjH5dy6g6GW1tXR5NExv+b5YUBKNDm7QTZ+yWwZFCKUBvAS7CJqgfTbxXlVK8TIfZxDkAp585nLvHRvZh5UwgrNstq54clgy72WNslfvXqr2Ig7qTrBZxWPif1wk+WHtZmd+JJwAEmx3f//xeWpkmByTJnFfNPL9va46DkfR6nOc+sTHPTMy8VOyB/ILdzHzCnWpYdQ54ma2fsrbEC25DwK6zUeuzqf9dwU5bx43hH67cMcXTKRRHRb54c/FUnSJmJjDSwkKCTwL+NqoxZxlWhyFjvWsWviyQSw3xynQuRxwQWhOncmxbHYD6llc/wRcipGPRGRLbGBIHboxL6a6Yy4yeOH2ia7CtQA0SHYsXFpw/4ajRRsbSSScM+U9BL1JkzApPrxx4ODXnSSPleA815DPrb4mFtPIxPj1NGHNA3qh/F67CWTrPKnePrB",
+    "created_at": 1720000022,
+    "tags": [
+      ["type", "nostr_identity_device_approval_receipt"],
+      ["p", "f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9"],
+      ["i", "6b7f5df4-1d2d-43a7-9b87-873e41a2d99a", "subject"]
+    ],
+    "pubkey": "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+    "id": "d0e44fe4a7c8d2c5a77b362d786e2ba0f3ff286c9a5f32c80b3ecf1abd806dcd",
+    "sig": "088422de74d12bde282560d1329fb5a41129bee6db71ec6ec3ada7cbe990ff3c4ba0ba060ce59c705d03b81e624c58efef4922781c15bbb2ebc3050d530e58d1"
+  },
+  "expectedReceipt": {
+    "schema": 1,
+    "profileId": "6b7f5df4-1d2d-43a7-9b87-873e41a2d99a",
+    "requestPubkey": "f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9",
+    "deviceAppKeyPubkey": "c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5",
+    "approvedByPubkey": "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+    "approvedAt": 1720000022,
+    "requestSecret": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+    "subjectPubkey": "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+  },
+  "tamperCases": {
+    "request": [
+      { "name": "unknown_field", "field": "unexpected", "value": true },
+      { "name": "resource_unknown_field", "resourceField": "unexpected", "value": true },
+      { "name": "request_pubkey_mismatch", "field": "requestNpub", "value": "npub1ujfahuwppkq0xkq7fyzfxzc5qnxxcyuspms8tpr5l222h6xye5fsccv64k" },
+      { "name": "device_app_key_mismatch", "field": "deviceAppKeyNpub", "value": "npub1ujfahuwppkq0xkq7fyzfxzc5qnxxcyuspms8tpr5l222h6xye5fsccv64k" },
+      { "name": "short_request_secret", "field": "requestSecret", "value": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" }
+    ],
+    "proof": [
+      { "name": "non_empty_content", "content": "unexpected" },
+      { "name": "unknown_tag", "tag": ["unexpected", "value"] },
+      { "name": "duplicate_request_pubkey", "tag": ["request_pubkey", "e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd13"] }
+    ],
+    "receipt": [
+      { "name": "invalid_outer_signature", "eventField": "id", "value": "0000000000000000000000000000000000000000000000000000000000000000" },
+      { "name": "unknown_tag", "tag": ["unexpected", "value"] },
+      { "name": "unknown_field", "field": "unexpected", "value": true },
+      { "name": "short_request_secret", "field": "requestSecret", "value": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" },
+      { "name": "device_app_key_mismatch", "field": "deviceAppKeyPubkey", "value": "e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd13" }
+    ]
+  }
+}
