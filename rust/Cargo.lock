@@ -1272,12 +1272,13 @@ dependencies = [
 
 [[package]]
 name = "nostr-identity"
-version = "0.1.5"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "nostr-sdk",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 2.0.18",
  "uuid",
 ]

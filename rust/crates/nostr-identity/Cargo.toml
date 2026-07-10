@@ -1,6 +1,6 @@
 [package]
 name = "nostr-identity"
-version = "0.1.5"
+version = "0.2.0"
 description = "Tag-native UUID fact, roster, and snapshot events for Nostr"
 edition.workspace = true
 license.workspace = true
@@ -13,5 +13,6 @@ anyhow.workspace = true
 nostr-sdk = { workspace = true, features = ["nip44"] }
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
