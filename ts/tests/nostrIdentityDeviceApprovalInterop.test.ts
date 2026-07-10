@@ -4,15 +4,14 @@ import { describe, expect, it } from 'vitest';
 import { finalizeEvent, nip44, type Event } from 'nostr-tools';
 
 import {
-  NOSTR_IDENTITY_DEVICE_APPROVAL_REQUEST_SECRET_MIN_LENGTH,
+  NOSTR_IDENTITY_DEVICE_APPROVAL_REQUEST_SECRET_BYTE_LENGTH,
   nostrIdentityDeviceApprovalRequestRelays,
   parseNostrIdentityDeviceApprovalReceiptEvent,
-  parseNostrIdentityDeviceApprovalRequest,
+  type NostrIdentityDeviceApprovalRequest,
 } from '../src';
 
 interface InteropFixture {
   profileId: string;
-  prefix: string;
   keys: {
     adminSecretKey: string;
     deviceAppKeySecretKey: string;
@@ -26,13 +25,10 @@ interface InteropFixture {
   requestType: string;
   resources: Array<{ type: string; id: string; scopes: string[] }>;
   label: string;
-  fullRequest: string;
   proofEvent: Event;
   receiptEvent: Event;
   expectedReceipt: Record<string, unknown>;
   tamperCases: {
-    request: Array<{ name: string; field?: string; resourceField?: string; value: unknown }>;
-    proof: Array<{ name: string; content?: string; tag?: string[] }>;
     receipt: Array<{
       name: string;
       eventField?: string;
@@ -50,15 +46,22 @@ const fixture = JSON.parse(readFileSync(
 
 const secretKey = (hex: string): Uint8Array => Uint8Array.from(Buffer.from(hex, 'hex'));
 
-function requestPayload(): Record<string, unknown> {
-  return JSON.parse(Buffer.from(
-    fixture.fullRequest.slice(fixture.prefix.length),
-    'base64url',
-  ).toString('utf8')) as Record<string, unknown>;
-}
-
-function encodeRequestPayload(payload: Record<string, unknown>): string {
-  return `${fixture.prefix}${Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url')}`;
+function fixtureRequest(): NostrIdentityDeviceApprovalRequest {
+  const adminAppKeyPubkey = fixture.proofEvent.tags.find((tag) => tag[0] === 'admin_pubkey')?.[1];
+  if (!adminAppKeyPubkey) throw new Error('fixture proof is missing admin_pubkey');
+  return {
+    requestPubkey: fixture.keys.requestPubkey,
+    deviceAppKeyPubkey: fixture.keys.deviceAppKeyPubkey,
+    requestSecret: fixture.requestSecret,
+    deviceAppKeyProof: JSON.stringify(fixture.proofEvent),
+    requestedAt: fixture.requestedAt,
+    requestType: fixture.requestType,
+    resources: fixture.resources,
+    expiresAt: fixture.expiresAt,
+    profileId: fixture.profileId,
+    adminAppKeyPubkey,
+    label: fixture.label,
+  };
 }
 
 function receiptEvent(receipt: Record<string, unknown>): Event {
@@ -73,8 +76,8 @@ function receiptEvent(receipt: Record<string, unknown>): Event {
 }
 
 describe('NostrIdentity device approval interop vectors', () => {
-  it('parses the shared full request, proof, and receipt', () => {
-    const request = parseNostrIdentityDeviceApprovalRequest(fixture.fullRequest);
+  it('parses the shared proof-bound receipt', () => {
+    const request = fixtureRequest();
     expect(request).toMatchObject({
       requestPubkey: fixture.keys.requestPubkey,
       deviceAppKeyPubkey: fixture.keys.deviceAppKeyPubkey,
@@ -86,44 +89,21 @@ describe('NostrIdentity device approval interop vectors', () => {
       profileId: fixture.profileId,
       label: fixture.label,
     });
-    expect(JSON.parse(request?.deviceAppKeyProof ?? '')).toEqual(fixture.proofEvent);
-    expect(nostrIdentityDeviceApprovalRequestRelays(request!)).toEqual(['wss://temp.iris.to']);
-    expect(fixture.requestSecret.length).toBeGreaterThanOrEqual(
-      NOSTR_IDENTITY_DEVICE_APPROVAL_REQUEST_SECRET_MIN_LENGTH,
+    expect(JSON.parse(request.deviceAppKeyProof)).toEqual(fixture.proofEvent);
+    expect(nostrIdentityDeviceApprovalRequestRelays(request)).toEqual(['wss://temp.iris.to']);
+    expect(Buffer.from(fixture.requestSecret, 'base64url')).toHaveLength(
+      NOSTR_IDENTITY_DEVICE_APPROVAL_REQUEST_SECRET_BYTE_LENGTH,
     );
 
     const receipt = parseNostrIdentityDeviceApprovalReceiptEvent(fixture.receiptEvent, {
       requestSecretKey: secretKey(fixture.keys.requestSecretKey),
-      request: request!,
+      request,
     });
     expect(receipt).toEqual(fixture.expectedReceipt);
   });
 
-  it.each(fixture.tamperCases.request)('rejects request tamper: $name', (tamper) => {
-    const payload = requestPayload();
-    if (tamper.resourceField !== undefined) {
-      const resources = payload.resources as Array<Record<string, unknown>>;
-      resources[0] = { ...resources[0], [tamper.resourceField]: tamper.value };
-    } else if (tamper.field !== undefined) {
-      payload[tamper.field] = tamper.value;
-    }
-    expect(parseNostrIdentityDeviceApprovalRequest(encodeRequestPayload(payload))).toBeNull();
-  });
-
-  it.each(fixture.tamperCases.proof)('rejects proof tamper: $name', (tamper) => {
-    const payload = requestPayload();
-    const proof = finalizeEvent({
-      kind: fixture.proofEvent.kind,
-      created_at: fixture.proofEvent.created_at,
-      tags: tamper.tag ? [...fixture.proofEvent.tags, tamper.tag] : fixture.proofEvent.tags,
-      content: tamper.content ?? '',
-    }, secretKey(fixture.keys.deviceAppKeySecretKey));
-    payload.deviceAppKeyProof = JSON.stringify(proof);
-    expect(parseNostrIdentityDeviceApprovalRequest(encodeRequestPayload(payload))).toBeNull();
-  });
-
   it.each(fixture.tamperCases.receipt)('rejects receipt tamper: $name', (tamper) => {
-    const request = parseNostrIdentityDeviceApprovalRequest(fixture.fullRequest)!;
+    const request = fixtureRequest();
     const event = tamper.eventField !== undefined
       ? { ...fixture.receiptEvent, [tamper.eventField]: tamper.value } as Event
       : tamper.tag !== undefined

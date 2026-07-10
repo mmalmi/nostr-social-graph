@@ -9,14 +9,11 @@ import {
   buildNostrIdentityDeviceApprovalReceiptEvent,
   buildNostrIdentityRosterOpEvent,
   approveNostrIdentityDeviceApprovalRequest,
-  compactNostrIdentityDeviceApprovalRequestHasPrefix,
   createNostrIdentityDeviceApprovalRequest,
   createNostrIdentityDeviceLinkInvite,
   createNostrIdentityDeviceLinkRequest,
   createNostrIdentityManualDeviceAddRosterOp,
   encryptedDeviceLabelPayloadsFromNostrIdentityRosterOpEvent,
-  encodeCompactNostrIdentityDeviceApprovalRequest,
-  encodeNostrIdentityDeviceApprovalRequest,
   encodeNostrIdentityDeviceLinkInvite,
   isCompleteNostrIdentityDeviceLinkInviteInput,
   nostrIdentityAppKeyApprovalCandidateFilters,
@@ -25,8 +22,6 @@ import {
   nostrIdentityDeviceApprovalRelayResource,
   nostrIdentityDeviceApprovalRequestRelays,
   nostrIdentityRosterOpMatchesDeviceApprovalReceipt,
-  parseCompactNostrIdentityDeviceApprovalRequest,
-  parseNostrIdentityDeviceApprovalRequest,
   parseNostrIdentityDeviceApprovalReceiptEvent,
   parseNostrIdentityDeviceApprovalReceiptRosterOp,
   parseNostrIdentityDeviceLinkInvite,
@@ -37,6 +32,7 @@ import {
 } from '../src';
 
 const profileId = '6b7f5df4-1d2d-43a7-9b87-873e41a2d99a';
+const requestSecret = Buffer.from(Uint8Array.from({ length: 32 }, (_, index) => index)).toString('base64url');
 
 describe('NostrIdentity', () => {
   it('stores app-key names only in encrypted extension facts', () => {
@@ -200,7 +196,7 @@ describe('NostrIdentity', () => {
     const request = createNostrIdentityDeviceApprovalRequest({
       deviceAppKeySecretKey: deviceSecret,
       requestSecretKey,
-      requestSecret: 'secret_abcdefghijklmnopqrstuvwxyz123456',
+      requestSecret,
       requestedAt: 41,
       requestType: 'device_link',
       resources: [{ type: 'chat_group', id: profileId, scopes: ['admin'] }],
@@ -209,70 +205,6 @@ describe('NostrIdentity', () => {
     });
     expect(request.requestPubkey).toBe(requestPubkey);
     expect(request.deviceAppKeyPubkey).toBe(devicePubkey);
-    const encoded = encodeNostrIdentityDeviceApprovalRequest(request, {
-      prefix: 'https://chat.iris.to/approve-device/',
-    });
-    const parsedRequest = parseNostrIdentityDeviceApprovalRequest(encoded, {
-      prefixes: ['https://chat.iris.to/approve-device/'],
-    });
-    expect(parsedRequest).toEqual({
-      requestPubkey: request.requestPubkey,
-      deviceAppKeyPubkey: request.deviceAppKeyPubkey,
-      requestSecret: request.requestSecret,
-      deviceAppKeyProof: request.deviceAppKeyProof,
-      requestedAt: request.requestedAt,
-      requestType: request.requestType,
-      resources: request.resources,
-      expiresAt: request.expiresAt,
-      label: request.label,
-    });
-
-    const approvalPrefix = 'https://chat.iris.to/approve-device/';
-    const tamperedPayload = JSON.parse(Buffer.from(encoded.slice(approvalPrefix.length), 'base64url').toString('utf8'));
-    tamperedPayload.resources = [{ type: 'chat_group', id: profileId, scopes: ['read'] }];
-    const tampered = parseNostrIdentityDeviceApprovalRequest(
-      `${approvalPrefix}${Buffer.from(JSON.stringify(tamperedPayload), 'utf8').toString('base64url')}`,
-      { prefixes: [approvalPrefix] },
-    );
-    expect(tampered).toBeNull();
-
-    const requestPayload = JSON.parse(
-      Buffer.from(encoded.slice(approvalPrefix.length), 'base64url').toString('utf8'),
-    );
-    expect(parseNostrIdentityDeviceApprovalRequest(
-      `${approvalPrefix}${Buffer.from(JSON.stringify({ ...requestPayload, unexpected: true }), 'utf8').toString('base64url')}`,
-      { prefixes: [approvalPrefix] },
-    )).toBeNull();
-
-    const proofEvent = JSON.parse(request.deviceAppKeyProof) as Event;
-    const nonEmptyProof = finalizeEvent({
-      kind: proofEvent.kind,
-      created_at: proofEvent.created_at,
-      tags: proofEvent.tags,
-      content: 'unexpected',
-    }, deviceSecret);
-    expect(parseNostrIdentityDeviceApprovalRequest(
-      `${approvalPrefix}${Buffer.from(JSON.stringify({
-        ...requestPayload,
-        deviceAppKeyProof: JSON.stringify(nonEmptyProof),
-      }), 'utf8').toString('base64url')}`,
-      { prefixes: [approvalPrefix] },
-    )).toBeNull();
-
-    const duplicateRequestPubkeyProof = finalizeEvent({
-      kind: proofEvent.kind,
-      created_at: proofEvent.created_at,
-      tags: [...proofEvent.tags, ['request_pubkey', getPublicKey(generateSecretKey())]],
-      content: '',
-    }, deviceSecret);
-    expect(parseNostrIdentityDeviceApprovalRequest(
-      `${approvalPrefix}${Buffer.from(JSON.stringify({
-        ...requestPayload,
-        deviceAppKeyProof: JSON.stringify(duplicateRequestPubkeyProof),
-      }), 'utf8').toString('base64url')}`,
-      { prefixes: [approvalPrefix] },
-    )).toBeNull();
-
     expect(request.deviceAppKeyProof).not.toContain(request.requestSecret);
 
     const approvalContent = approveNostrIdentityDeviceApprovalRequest({
@@ -281,7 +213,7 @@ describe('NostrIdentity', () => {
       rosterOps: [bootstrap],
       approvedByPubkey: adminPubkey,
       approvedAt: 42,
-      clientNonce: nostrIdentityDeviceApprovalClientNonce('public_nonce_abcdefghijklmnopqrstuvwxyz123456'),
+      clientNonce: nostrIdentityDeviceApprovalClientNonce(Buffer.alloc(32, 9).toString('base64url')),
     });
     const approval = buildNostrIdentityRosterOpEvent({
       signerSecretKey: adminSecret,
@@ -375,33 +307,6 @@ describe('NostrIdentity', () => {
         nostrIdentityDeviceApprovalRelayResource('wss://other.example'),
       ],
     })).toThrow('one relay');
-  });
-
-  it('encodes compact roster-discovery approval links with only the joining app key', () => {
-    const adminPubkey = getPublicKey(generateSecretKey());
-    const devicePubkey = getPublicKey(generateSecretKey());
-    const prefix = 'iris-drive://app-key-link';
-
-    const encoded = encodeCompactNostrIdentityDeviceApprovalRequest(devicePubkey, { prefix });
-    expect(encoded).toBe(`${prefix}?app_key=${devicePubkey}`);
-    expect(encoded.length).toBeLessThan(120);
-    expect(encoded).not.toContain(profileId);
-    expect(encoded).not.toContain(adminPubkey);
-    expect(compactNostrIdentityDeviceApprovalRequestHasPrefix(`nostr:${encoded}`, {
-      prefixes: [prefix],
-    })).toBe(true);
-    expect(parseCompactNostrIdentityDeviceApprovalRequest(encoded, {
-      prefixes: [prefix],
-    })).toEqual({ deviceAppKeyPubkey: devicePubkey });
-
-    const oneSlash = `iris-drive:/app-key-link?device=${devicePubkey}`;
-    expect(parseCompactNostrIdentityDeviceApprovalRequest(oneSlash, {
-      prefixes: [prefix, 'iris-drive:/app-key-link?'],
-    })).toEqual({ deviceAppKeyPubkey: devicePubkey });
-    expect(() => parseCompactNostrIdentityDeviceApprovalRequest(
-      `${prefix}?app_key=not-a-key`,
-      { prefixes: [prefix] },
-    )).toThrow('pubkey');
   });
 
   it('projects app-key approval candidates from real roster events that tag the joining key', () => {

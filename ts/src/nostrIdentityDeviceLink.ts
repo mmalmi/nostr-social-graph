@@ -1,3 +1,4 @@
+import { sha256 } from '@noble/hashes/sha2.js';
 import { finalizeEvent, generateSecretKey, getPublicKey, nip19, nip44, type Event, type Filter } from 'nostr-tools';
 import { FACT_OP_KIND } from './factEvents';
 import {
@@ -20,14 +21,14 @@ import { requireValidSignature } from './nostrIdentityJson';
 import { nostrIdentityRosterParentIds, projectNostrIdentityRoster } from './nostrIdentityProjection';
 
 export const NOSTR_IDENTITY_DEVICE_LINK_INVITE_PREFIX = 'nostr-identity://device-link/';
-export const NOSTR_IDENTITY_DEVICE_APPROVAL_REQUEST_PREFIX = 'nostr-identity://device-approval/';
-export const NOSTR_IDENTITY_COMPACT_DEVICE_APPROVAL_REQUEST_PREFIX = 'nostr-identity://device-approval';
+export const NOSTR_IDENTITY_DEVICE_APPROVAL_BOOTSTRAP_PREFIX = 'nostr-identity://device-approval/';
 export const NOSTR_IDENTITY_DEVICE_LINK_INVITE_VERSION = 1;
-export const NOSTR_IDENTITY_DEVICE_APPROVAL_REQUEST_VERSION = 1;
 export const NOSTR_IDENTITY_DEVICE_APPROVAL_PROOF_TYPE = 'nostr_identity_device_approval_proof';
+export const NOSTR_IDENTITY_DEVICE_APPROVAL_REQUEST_EVENT_TYPE = 'nostr_identity_device_approval_request';
 export const NOSTR_IDENTITY_DEVICE_APPROVAL_RECEIPT_TYPE = 'nostr_identity_device_approval_receipt';
 export const NOSTR_IDENTITY_DEVICE_APPROVAL_RECEIPT_SCHEMA = 1;
-export const NOSTR_IDENTITY_DEVICE_APPROVAL_REQUEST_SECRET_MIN_LENGTH = 32;
+export const NOSTR_IDENTITY_DEVICE_APPROVAL_REQUEST_SECRET_BYTE_LENGTH = 32;
+export const NOSTR_IDENTITY_DEVICE_APPROVAL_BOOTSTRAP_MAX_URI_LENGTH = 360;
 export const NOSTR_IDENTITY_DEVICE_APPROVAL_CLIENT_NONCE_PREFIX = 'nostr_identity_device_approval:';
 export const NOSTR_IDENTITY_MANUAL_DEVICE_ADD_CLIENT_NONCE_PREFIX = 'nostr_identity_manual_device_add:';
 export const KIND_NOSTR_IDENTITY_DEVICE_LINK_REQUEST = FACT_OP_KIND;
@@ -79,8 +80,22 @@ export interface NostrIdentityDeviceApprovalRequest {
   label?: string;
 }
 
-export interface NostrIdentityCompactDeviceApprovalRequest {
-  deviceAppKeyPubkey: string;
+export interface NostrIdentityDeviceApprovalBootstrap {
+  deviceAppKeyNpub: string;
+  requestNpub: string;
+  requestSecret: string;
+}
+
+export interface NostrIdentityDeviceApprovalRequestEventContent {
+  requestSecretCommitment: string;
+  deviceAppKeyProof: string;
+  requestedAt: number;
+  requestType?: string;
+  resources?: NostrIdentityDeviceApprovalRequestedResource[];
+  expiresAt?: number;
+  profileId?: NostrIdentityId;
+  adminAppKeyNpub?: string;
+  label?: string;
 }
 
 export interface NostrIdentityDeviceApprovalRequestedResource {
@@ -123,34 +138,21 @@ interface NostrIdentityDeviceLinkInvitePayload {
   inviteNpub: string;
 }
 
-interface NostrIdentityDeviceApprovalRequestPayload {
-  v: number;
-  requestNpub: string;
-  deviceAppKeyNpub: string;
-  requestSecret: string;
-  deviceAppKeyProof: string;
-  requestedAt: number;
-  requestType?: string;
-  resources?: NostrIdentityDeviceApprovalRequestedResource[];
-  expiresAt?: number;
-  profileId?: string;
-  adminAppKeyNpub?: string;
-  label?: string;
-}
-
 const DEVICE_LINK_INVITE_PAYLOAD_FIELDS = new Set([
   'v',
   'profileId',
   'adminAppKeyNpub',
   'inviteNpub',
 ]);
-const DEVICE_APPROVAL_REQUEST_PAYLOAD_FIELDS = new Set([
-  'v',
-  'requestNpub',
+const DEVICE_APPROVAL_BOOTSTRAP_FIELDS = new Set([
   'deviceAppKeyNpub',
+  'requestNpub',
   'requestSecret',
+]);
+const DEVICE_APPROVAL_REQUEST_EVENT_CONTENT_FIELDS = new Set([
   'deviceAppKeyProof',
   'requestedAt',
+  'requestSecretCommitment',
   'requestType',
   'resources',
   'expiresAt',
@@ -348,6 +350,9 @@ export function createNostrIdentityDeviceApprovalRequest(options: {
   const deviceAppKeyPubkey = getPublicKey(options.deviceAppKeySecretKey);
   const requestSecretKey = options.requestSecretKey ?? generateSecretKey();
   const requestPubkey = getPublicKey(requestSecretKey);
+  if (requestPubkey === deviceAppKeyPubkey) {
+    throw new Error('device approval stable and ephemeral keys must be distinct');
+  }
   const requestSecret = requireRequestSecret(options.requestSecret ?? randomDeviceApprovalSecret());
   const requestedAt = requireInteger(options.requestedAt, 'requestedAt');
   const requestType = normalizeOptionalDeviceApprovalString(options.requestType, 'requestType');
@@ -361,7 +366,6 @@ export function createNostrIdentityDeviceApprovalRequest(options: {
   const proof = buildNostrIdentityDeviceApprovalProofEvent({
     deviceAppKeySecretKey: options.deviceAppKeySecretKey,
     requestPubkey,
-    requestSecret,
     requestedAt,
     ...(requestType !== undefined ? { requestType } : {}),
     ...(resources !== undefined ? { resources } : {}),
@@ -416,78 +420,134 @@ export function nostrIdentityDeviceApprovalRequestRelays(
   return relays;
 }
 
-export function encodeNostrIdentityDeviceApprovalRequest(
-  request: NostrIdentityDeviceApprovalRequest,
+export function encodeNostrIdentityDeviceApprovalBootstrap(
+  bootstrap: NostrIdentityDeviceApprovalBootstrap,
   options: EncodeNostrIdentityDeviceLinkOptions = {},
 ): string {
-  const payload: NostrIdentityDeviceApprovalRequestPayload = {
-    v: NOSTR_IDENTITY_DEVICE_APPROVAL_REQUEST_VERSION,
-    requestNpub: pubkeyToNpub(request.requestPubkey),
-    deviceAppKeyNpub: pubkeyToNpub(request.deviceAppKeyPubkey),
-    requestSecret: requireRequestSecret(request.requestSecret),
-    deviceAppKeyProof: requireValidDeviceApprovalProof(request),
-    requestedAt: requireInteger(request.requestedAt, 'requestedAt'),
-    ...(request.requestType !== undefined
-      ? { requestType: normalizeOptionalDeviceApprovalString(request.requestType, 'requestType') }
-      : {}),
-    ...(request.resources !== undefined ? { resources: normalizeDeviceApprovalResources(request.resources) } : {}),
-    ...(request.expiresAt !== undefined ? { expiresAt: requireInteger(request.expiresAt, 'expiresAt') } : {}),
-    ...(request.profileId !== undefined ? { profileId: requireProfileId(request.profileId) } : {}),
-    ...(request.adminAppKeyPubkey !== undefined ? { adminAppKeyNpub: pubkeyToNpub(request.adminAppKeyPubkey) } : {}),
-    ...(request.label?.trim() ? { label: request.label.trim() } : {}),
-  };
-  return `${options.prefix ?? NOSTR_IDENTITY_DEVICE_APPROVAL_REQUEST_PREFIX}${base64UrlEncode(JSON.stringify(payload))}`;
-}
-
-export function encodeCompactNostrIdentityDeviceApprovalRequest(
-  deviceAppKeyPubkey: string,
-  options: EncodeNostrIdentityDeviceLinkOptions = {},
-): string {
-  const prefix = (options.prefix ?? NOSTR_IDENTITY_COMPACT_DEVICE_APPROVAL_REQUEST_PREFIX).trim().replace(/\?+$/u, '');
+  const prefix = (options.prefix ?? NOSTR_IDENTITY_DEVICE_APPROVAL_BOOTSTRAP_PREFIX).trim();
   if (!prefix) throw new Error('compact device approval prefix is empty');
-  return `${prefix}?app_key=${requirePubkey(deviceAppKeyPubkey, 'device AppKey')}`;
+  if (/[?#]/u.test(prefix)) throw new Error('compact device approval prefix must not contain query or fragment');
+  const normalized = normalizeDeviceApprovalBootstrap(bootstrap);
+  const uri = `${prefix}${base64UrlEncode(JSON.stringify(normalized))}`;
+  if (uri.length > NOSTR_IDENTITY_DEVICE_APPROVAL_BOOTSTRAP_MAX_URI_LENGTH) {
+    throw new Error(`device approval bootstrap URI must not exceed ${NOSTR_IDENTITY_DEVICE_APPROVAL_BOOTSTRAP_MAX_URI_LENGTH} characters`);
+  }
+  return uri;
 }
 
-export function parseCompactNostrIdentityDeviceApprovalRequest(
+export function parseNostrIdentityDeviceApprovalBootstrap(
   input: string,
   options: ParseNostrIdentityDeviceLinkOptions = {},
-): NostrIdentityCompactDeviceApprovalRequest | null {
-  const query = queryFromPrefixedUrl(input, [
+): NostrIdentityDeviceApprovalBootstrap | null {
+  const payload = strictPayloadFromBootstrapUri(input, [
     ...(options.prefixes ?? []),
-    NOSTR_IDENTITY_COMPACT_DEVICE_APPROVAL_REQUEST_PREFIX,
-  ]);
-  if (query === null) return null;
-  const appKey = queryValue(query, 'app_key') ?? queryValue(query, 'device');
-  if (!appKey) throw new Error('device request is missing app_key');
-  return { deviceAppKeyPubkey: requirePubkey(appKey, 'device AppKey') };
-}
-
-export function compactNostrIdentityDeviceApprovalRequestHasPrefix(
-  input: string,
-  options: ParseNostrIdentityDeviceLinkOptions = {},
-): boolean {
-  return queryFromPrefixedUrl(input, [
-    ...(options.prefixes ?? []),
-    NOSTR_IDENTITY_COMPACT_DEVICE_APPROVAL_REQUEST_PREFIX,
-  ]) !== null;
-}
-
-export function parseNostrIdentityDeviceApprovalRequest(
-  input: string,
-  options: ParseNostrIdentityDeviceLinkOptions = {},
-): NostrIdentityDeviceApprovalRequest | null {
-  const payload = payloadFromPrefixedUrl(input, [
-    ...(options.prefixes ?? []),
-    NOSTR_IDENTITY_DEVICE_APPROVAL_REQUEST_PREFIX,
+    NOSTR_IDENTITY_DEVICE_APPROVAL_BOOTSTRAP_PREFIX,
   ]);
   if (payload === null) return null;
   try {
-    return normalizeDeviceApprovalRequestPayload(
+    return normalizeDeviceApprovalBootstrap(
       JSON.parse(base64UrlDecode(payload)) as unknown,
     );
   } catch {
     return null;
   }
+}
+
+export function nostrIdentityDeviceApprovalBootstrapHasPrefix(
+  input: string,
+  options: ParseNostrIdentityDeviceLinkOptions = {},
+): boolean {
+  return strictPayloadFromBootstrapUri(input, [
+    ...(options.prefixes ?? []),
+    NOSTR_IDENTITY_DEVICE_APPROVAL_BOOTSTRAP_PREFIX,
+  ]) !== null;
+}
+
+export function createNostrIdentityDeviceApprovalBootstrap(
+  request: Pick<NostrIdentityDeviceApprovalRequest, 'deviceAppKeyPubkey' | 'requestPubkey' | 'requestSecret'>,
+): NostrIdentityDeviceApprovalBootstrap {
+  const deviceAppKeyPubkey = requirePubkey(request.deviceAppKeyPubkey, 'device AppKey');
+  const requestPubkey = requirePubkey(request.requestPubkey, 'request');
+  if (deviceAppKeyPubkey === requestPubkey) {
+    throw new Error('device approval stable and ephemeral keys must be distinct');
+  }
+  return {
+    deviceAppKeyNpub: pubkeyToNpub(deviceAppKeyPubkey),
+    requestNpub: pubkeyToNpub(requestPubkey),
+    requestSecret: requireRequestSecret(request.requestSecret),
+  };
+}
+
+export function buildNostrIdentityDeviceApprovalRequestEvent(options: {
+  requestSecretKey: Uint8Array;
+  request: NostrIdentityDeviceApprovalRequest;
+}): Event {
+  const bootstrap = createNostrIdentityDeviceApprovalBootstrap(options.request);
+  const requestPubkey = npubToPubkey(bootstrap.requestNpub)!;
+  if (getPublicKey(options.requestSecretKey) !== requestPubkey) {
+    throw new Error('device approval request event signer must be the ephemeral request key');
+  }
+  const content = deviceApprovalRequestEventContent(options.request, bootstrap.requestSecret);
+  return finalizeEvent({
+    kind: FACT_OP_KIND,
+    created_at: content.requestedAt,
+    tags: [
+      ['type', NOSTR_IDENTITY_DEVICE_APPROVAL_REQUEST_EVENT_TYPE],
+      ['p', npubToPubkey(bootstrap.deviceAppKeyNpub)!],
+    ],
+    content: JSON.stringify(content),
+  }, options.requestSecretKey);
+}
+
+export function parseNostrIdentityDeviceApprovalRequestEvent(
+  event: Event,
+  bootstrap: NostrIdentityDeviceApprovalBootstrap,
+): NostrIdentityDeviceApprovalRequest {
+  const normalizedBootstrap = normalizeDeviceApprovalBootstrap(bootstrap);
+  const requestPubkey = npubToPubkey(normalizedBootstrap.requestNpub)!;
+  const deviceAppKeyPubkey = npubToPubkey(normalizedBootstrap.deviceAppKeyNpub)!;
+
+  requireFreshValidSignature(event);
+  if (event.kind !== FACT_OP_KIND) throw new Error('device approval request event has invalid kind');
+  if (event.pubkey !== requestPubkey) throw new Error('device approval request event signer mismatch');
+  const expectedTags = [
+    ['type', NOSTR_IDENTITY_DEVICE_APPROVAL_REQUEST_EVENT_TYPE],
+    ['p', deviceAppKeyPubkey],
+  ];
+  if (JSON.stringify(event.tags) !== JSON.stringify(expectedTags)) {
+    throw new Error('device approval request event tags mismatch');
+  }
+
+  const content = normalizeDeviceApprovalRequestEventContent(
+    JSON.parse(event.content) as unknown,
+  );
+  if (event.created_at !== content.requestedAt) {
+    throw new Error('device approval request event requestedAt mismatch');
+  }
+  const expectedCommitment = requestSecretCommitment(normalizedBootstrap.requestSecret);
+  if (content.requestSecretCommitment !== expectedCommitment) {
+    throw new Error('device approval request secret commitment mismatch');
+  }
+
+  let adminAppKeyPubkey: string | undefined;
+  if (content.adminAppKeyNpub !== undefined) {
+    adminAppKeyPubkey = requireCanonicalNpub(content.adminAppKeyNpub, 'admin AppKey').pubkey;
+  }
+  const request: NostrIdentityDeviceApprovalRequest = {
+    requestPubkey,
+    deviceAppKeyPubkey,
+    requestSecret: normalizedBootstrap.requestSecret,
+    deviceAppKeyProof: content.deviceAppKeyProof,
+    requestedAt: content.requestedAt,
+    ...(content.requestType !== undefined ? { requestType: content.requestType } : {}),
+    ...(content.resources !== undefined ? { resources: content.resources } : {}),
+    ...(content.expiresAt !== undefined ? { expiresAt: content.expiresAt } : {}),
+    ...(content.profileId !== undefined ? { profileId: content.profileId } : {}),
+    ...(adminAppKeyPubkey !== undefined ? { adminAppKeyPubkey } : {}),
+    ...(content.label !== undefined ? { label: content.label } : {}),
+  };
+  requireValidDeviceApprovalProof(request);
+  return request;
 }
 
 export function approveNostrIdentityDeviceApprovalRequest(options: {
@@ -780,40 +840,91 @@ function normalizeDeviceLinkInvitePayload(
   };
 }
 
-function normalizeDeviceApprovalRequestPayload(
+function normalizeDeviceApprovalBootstrap(
   value: unknown,
-): NostrIdentityDeviceApprovalRequest | null {
-  const payload = requireExactObject(value, DEVICE_APPROVAL_REQUEST_PAYLOAD_FIELDS, 'device approval request');
-  if (payload.v !== NOSTR_IDENTITY_DEVICE_APPROVAL_REQUEST_VERSION) return null;
-  const requestPubkey = npubToPubkey(requireString(payload.requestNpub, 'requestNpub'));
-  const deviceAppKeyPubkey = npubToPubkey(requireString(payload.deviceAppKeyNpub, 'deviceAppKeyNpub'));
-  if (!requestPubkey || !deviceAppKeyPubkey) return null;
-  let adminAppKeyPubkey: string | undefined;
-  if (payload.adminAppKeyNpub != null) {
-    const parsedAdmin = npubToPubkey(requireString(payload.adminAppKeyNpub, 'adminAppKeyNpub'));
-    if (!parsedAdmin) return null;
-    adminAppKeyPubkey = parsedAdmin;
+): NostrIdentityDeviceApprovalBootstrap {
+  const bootstrap = requireExactObject(
+    value,
+    DEVICE_APPROVAL_BOOTSTRAP_FIELDS,
+    'compact device approval request',
+  );
+  const deviceAppKey = requireCanonicalNpub(
+    requireString(bootstrap.deviceAppKeyNpub, 'deviceAppKeyNpub'),
+    'device AppKey',
+  );
+  const request = requireCanonicalNpub(
+    requireString(bootstrap.requestNpub, 'requestNpub'),
+    'request',
+  );
+  if (deviceAppKey.pubkey === request.pubkey) {
+    throw new Error('device approval stable and ephemeral keys must be distinct');
   }
-  const label = normalizeOptionalDeviceApprovalLabel(payload.label);
-  const request = {
-    requestPubkey,
-    deviceAppKeyPubkey,
-    requestSecret: requireRequestSecret(requireString(payload.requestSecret, 'requestSecret')),
-    deviceAppKeyProof: requireString(payload.deviceAppKeyProof, 'deviceAppKeyProof'),
-    requestedAt: requireInteger(payload.requestedAt, 'requestedAt'),
-    ...(payload.requestType != null
-      ? { requestType: normalizeOptionalDeviceApprovalString(payload.requestType, 'requestType') }
+  return {
+    deviceAppKeyNpub: deviceAppKey.npub,
+    requestNpub: request.npub,
+    requestSecret: requireRequestSecret(bootstrap.requestSecret),
+  };
+}
+
+function deviceApprovalRequestEventContent(
+  request: NostrIdentityDeviceApprovalRequest,
+  requestSecret: string,
+): NostrIdentityDeviceApprovalRequestEventContent {
+  return {
+    requestSecretCommitment: requestSecretCommitment(requestSecret),
+    deviceAppKeyProof: requireValidDeviceApprovalProof(request),
+    requestedAt: requireInteger(request.requestedAt, 'requestedAt'),
+    ...(request.requestType !== undefined
+      ? { requestType: normalizeOptionalDeviceApprovalString(request.requestType, 'requestType') }
       : {}),
-    ...(payload.resources !== undefined ? { resources: normalizeDeviceApprovalResources(payload.resources) } : {}),
-    ...(payload.expiresAt != null ? { expiresAt: requireInteger(payload.expiresAt, 'expiresAt') } : {}),
-    ...(payload.profileId != null
-      ? { profileId: requireProfileId(requireString(payload.profileId, 'profileId')) }
+    ...(request.resources !== undefined ? { resources: normalizeDeviceApprovalResources(request.resources) } : {}),
+    ...(request.expiresAt !== undefined ? { expiresAt: requireInteger(request.expiresAt, 'expiresAt') } : {}),
+    ...(request.profileId !== undefined ? { profileId: requireProfileId(request.profileId) } : {}),
+    ...(request.adminAppKeyPubkey !== undefined
+      ? { adminAppKeyNpub: pubkeyToNpub(request.adminAppKeyPubkey) }
       : {}),
-    ...(adminAppKeyPubkey !== undefined ? { adminAppKeyPubkey } : {}),
+    ...(request.label?.trim() ? { label: request.label.trim() } : {}),
+  };
+}
+
+function normalizeDeviceApprovalRequestEventContent(
+  value: unknown,
+): NostrIdentityDeviceApprovalRequestEventContent {
+  const content = requireExactObject(
+    value,
+    DEVICE_APPROVAL_REQUEST_EVENT_CONTENT_FIELDS,
+    'device approval request event content',
+  );
+  let adminAppKeyNpub: string | undefined;
+  if (content.adminAppKeyNpub !== undefined) {
+    adminAppKeyNpub = requireCanonicalNpub(
+      requireString(content.adminAppKeyNpub, 'adminAppKeyNpub'),
+      'admin AppKey',
+    ).npub;
+  }
+  const requestSecretCommitment = requireString(
+    content.requestSecretCommitment,
+    'requestSecretCommitment',
+  );
+  if (!/^[0-9a-f]{64}$/u.test(requestSecretCommitment)) {
+    throw new Error('requestSecretCommitment must be lowercase SHA-256 hex');
+  }
+  const label = normalizeOptionalDeviceApprovalLabel(content.label);
+  return {
+    requestSecretCommitment,
+    deviceAppKeyProof: requireNonEmpty(content.deviceAppKeyProof, 'deviceAppKeyProof'),
+    requestedAt: requireInteger(content.requestedAt, 'requestedAt'),
+    ...(content.requestType !== undefined
+      ? { requestType: normalizeOptionalDeviceApprovalString(content.requestType, 'requestType') }
+      : {}),
+    ...(content.resources !== undefined ? { resources: normalizeDeviceApprovalResources(content.resources) } : {}),
+    ...(content.expiresAt !== undefined ? { expiresAt: requireInteger(content.expiresAt, 'expiresAt') } : {}),
+    ...(content.profileId !== undefined
+      ? { profileId: requireProfileId(requireString(content.profileId, 'profileId')) }
+      : {}),
+    ...(adminAppKeyNpub !== undefined ? { adminAppKeyNpub } : {}),
     ...(label !== undefined ? { label } : {}),
   };
-  requireValidDeviceApprovalProof(request);
-  return request;
 }
 
 function normalizeDeviceApprovalReceipt(
@@ -876,7 +987,6 @@ function assertReceiptRosterOpMatches(
 function buildNostrIdentityDeviceApprovalProofEvent(options: {
   deviceAppKeySecretKey: Uint8Array;
   requestPubkey: string;
-  requestSecret: string;
   requestedAt: number;
   requestType?: string;
   resources?: NostrIdentityDeviceApprovalRequestedResource[];
@@ -1120,35 +1230,17 @@ function payloadFromPrefixedUrl(input: string, prefixes: string[]): string | nul
   return payload || null;
 }
 
-function queryFromPrefixedUrl(input: string, prefixes: string[]): string | null {
-  const value = input.trim().replace(/^nostr:/i, '');
-  if (!value) return null;
-  const lower = value.toLowerCase();
+function strictPayloadFromBootstrapUri(input: string, prefixes: string[]): string | null {
+  if (!input || input !== input.trim() || /^nostr:/iu.test(input) || /[?#]/u.test(input)) {
+    return null;
+  }
   for (const rawPrefix of prefixes) {
     const prefix = rawPrefix.trim();
-    if (!prefix || !lower.startsWith(prefix.toLowerCase())) continue;
-    const rest = value.slice(prefix.length);
-    const query = prefix.endsWith('?') ? rest : rest.startsWith('?') ? rest.slice(1) : null;
-    const normalized = query?.split('#', 1)[0].trim() ?? '';
-    if (normalized) return normalized;
+    if (!prefix || !input.startsWith(prefix)) continue;
+    const payload = input.slice(prefix.length);
+    return payload && /^[A-Za-z0-9_-]+$/u.test(payload) ? payload : null;
   }
   return null;
-}
-
-function queryValue(query: string, name: string): string | null {
-  for (const part of query.split('&')) {
-    const [key, value = ''] = part.split('=', 2);
-    if (key.toLowerCase() === name.toLowerCase()) return percentDecode(value);
-  }
-  return null;
-}
-
-function percentDecode(value: string): string {
-  try {
-    return decodeURIComponent(value);
-  } catch {
-    return value;
-  }
 }
 
 function rosterOpMentionedPubkeys(op: SignedNostrIdentityRosterOp): Set<string> {
@@ -1192,6 +1284,10 @@ function base64UrlEncodeBytes(bytes: Uint8Array): string {
 }
 
 function base64UrlDecode(value: string): string {
+  return new TextDecoder('utf-8', { fatal: true }).decode(base64UrlDecodeBytes(value));
+}
+
+function base64UrlDecodeBytes(value: string): Uint8Array {
   const normalized = value.trim();
   if (looksLikePlaceholder(normalized)) throw new Error('device link payload is a placeholder');
   if (normalized.length % 4 === 1 || !/^[A-Za-z0-9_-]+$/u.test(normalized)) {
@@ -1202,7 +1298,7 @@ function base64UrlDecode(value: string): string {
     if (bytes.toString('base64url') !== normalized) {
       throw new Error('device link payload has invalid base64url padding bits');
     }
-    return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    return bytes;
   }
   let base64 = normalized.replace(/-/g, '+').replace(/_/g, '/');
   base64 += '='.repeat((4 - (base64.length % 4)) % 4);
@@ -1211,7 +1307,7 @@ function base64UrlDecode(value: string): string {
   if (base64UrlEncodeBytes(bytes) !== normalized) {
     throw new Error('device link payload has invalid base64url padding bits');
   }
-  return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  return bytes;
 }
 
 function requireProfileId(profileId: NostrIdentityId): NostrIdentityId {
@@ -1229,6 +1325,15 @@ function requirePubkey(value: string, label: string): string {
   throw new Error(`${label} pubkey must be npub or 64-char hex`);
 }
 
+function requireCanonicalNpub(value: string, label: string): { npub: string; pubkey: string } {
+  const trimmed = value.trim();
+  const pubkey = decodeNpubToPubkey(trimmed);
+  if (!pubkey) throw new Error(`${label} must be a valid npub`);
+  const npub = pubkeyToNpub(pubkey);
+  if (trimmed !== npub) throw new Error(`${label} must be a canonical lowercase npub`);
+  return { npub, pubkey };
+}
+
 function decodeNpubToPubkey(value: string): string | null {
   const trimmed = value.trim();
   if (!trimmed.toLowerCase().startsWith('npub1')) return null;
@@ -1244,13 +1349,27 @@ function decodeNpubToPubkey(value: string): string | null {
 
 function requireRequestSecret(value: unknown): string {
   const trimmed = requireString(value, 'requestSecret').trim();
-  if (
-    trimmed.length < NOSTR_IDENTITY_DEVICE_APPROVAL_REQUEST_SECRET_MIN_LENGTH
-    || !/^[A-Za-z0-9_-]+$/u.test(trimmed)
-  ) {
-    throw new Error('device approval request secret must be at least 32 base64url characters');
+  let bytes: Uint8Array;
+  try {
+    bytes = base64UrlDecodeBytes(trimmed);
+  } catch {
+    throw new Error('device approval request secret must be canonical unpadded base64url');
+  }
+  if (bytes.length !== NOSTR_IDENTITY_DEVICE_APPROVAL_REQUEST_SECRET_BYTE_LENGTH) {
+    throw new Error('device approval request secret must encode exactly 32 bytes');
   }
   return trimmed;
+}
+
+function requestSecretCommitment(requestSecret: string): string {
+  const domain = new TextEncoder().encode('nostr_identity_device_approval_request_secret_v1\0');
+  const secret = base64UrlDecodeBytes(requireRequestSecret(requestSecret));
+  const input = new Uint8Array(domain.length + secret.length);
+  input.set(domain);
+  input.set(secret, domain.length);
+  return Array.from(sha256(input))
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('');
 }
 
 function requireEventId(value: string): string {

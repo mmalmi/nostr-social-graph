@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Replace device-approval request URIs with a strict three-field bootstrap URI.
+- Add ephemeral-key-signed request events with domain-separated secret commitments and stable AppKey proofs.
+- Reject legacy query links, embedded request events, noncanonical keys and secrets, and unknown bootstrap fields.
+
 ## 1.0.39
 
 - Require strict secret-bound NostrIdentity device approval requests and receipts.
