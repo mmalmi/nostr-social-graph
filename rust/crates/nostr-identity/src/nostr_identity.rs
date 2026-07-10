@@ -44,7 +44,10 @@ pub const NOSTR_IDENTITY_DEVICE_APPROVAL_RECEIPT_TYPE: &str =
 pub const NOSTR_IDENTITY_DEVICE_APPROVAL_RECEIPT_SCHEMA: u32 = 1;
 pub const NOSTR_IDENTITY_DEVICE_APPROVAL_BOOTSTRAP_PREFIX: &str =
     "nostr-identity://device-approval/";
-pub const NOSTR_IDENTITY_DEVICE_APPROVAL_BOOTSTRAP_MAX_URI_LENGTH: usize = 360;
+/// Maximum encoded approval bootstrap URI length kept small enough for terminal QR renderers.
+pub const NOSTR_IDENTITY_DEVICE_APPROVAL_BOOTSTRAP_MAX_URI_LENGTH: usize = 384;
+/// Maximum optional approval label length in UTF-8 bytes.
+pub const NOSTR_IDENTITY_DEVICE_APPROVAL_LABEL_MAX_BYTES: usize = 16;
 pub const NOSTR_IDENTITY_DEVICE_APPROVAL_REQUEST_TYPE: &str =
     "nostr_identity_device_approval_request";
 pub const NOSTR_IDENTITY_DEVICE_APPROVAL_PROOF_TYPE: &str = "nostr_identity_device_approval_proof";
@@ -546,6 +549,8 @@ pub struct NostrIdentityDeviceApprovalBootstrap {
     pub device_app_key_npub: String,
     pub request_npub: String,
     pub request_secret: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -586,6 +591,23 @@ pub struct ApproveNostrIdentityDeviceApprovalRequestOptions {
     pub approved_at: i64,
     pub client_nonce: Option<String>,
     pub capabilities: Option<NostrIdentityCapabilities>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ApproveNostrIdentityDeviceApprovalBootstrapOptions {
+    pub bootstrap: NostrIdentityDeviceApprovalBootstrap,
+    pub profile_id: NostrIdentityId,
+    pub roster_ops: Vec<SignedNostrIdentityRosterOp>,
+    pub approved_by_pubkey: String,
+    pub approved_at: i64,
+    pub client_nonce: Option<String>,
+    pub capabilities: Option<NostrIdentityCapabilities>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ParseNostrIdentityDeviceApprovalReceiptForBootstrapOptions {
+    pub expected_profile_id: Option<NostrIdentityId>,
+    pub expected_admin_app_key_pubkey: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1017,6 +1039,7 @@ pub fn nostr_identity_device_approval_bootstrap(
         device_app_key_npub: pubkey_to_npub(&request.device_app_key_pubkey)?,
         request_npub: pubkey_to_npub(&request.request_pubkey)?,
         request_secret: request.request_secret,
+        label: request.label,
     })
 }
 
@@ -1180,6 +1203,41 @@ pub fn parse_nostr_identity_device_approval_request_event(
             .map(|value| strict_npub_to_pubkey(&value, "admin AppKey"))
             .transpose()?,
         label: payload.label,
+    })
+}
+
+pub fn approve_nostr_identity_device_approval_bootstrap(
+    options: ApproveNostrIdentityDeviceApprovalBootstrapOptions,
+) -> Result<NostrIdentityRosterOpContent, NostrIdentityError> {
+    let bootstrap = normalize_device_approval_bootstrap(options.bootstrap)?;
+    let approved_by_pubkey =
+        normalize_nostr_pubkey(&options.approved_by_pubkey, "approving AppKey")?;
+    let device_app_key_pubkey =
+        strict_npub_to_pubkey(&bootstrap.device_app_key_npub, "device AppKey")?;
+    let client_nonce = match options.client_nonce {
+        Some(value) => require_non_empty(value, "client_nonce")?,
+        None => nostr_identity_device_approval_client_nonce(&random_device_approval_secret())?,
+    };
+    let capabilities = options
+        .capabilities
+        .unwrap_or_else(NostrIdentityCapabilities::app_writer);
+    Ok(NostrIdentityRosterOpContent {
+        schema: NOSTR_IDENTITY_ROSTER_SCHEMA,
+        profile_id: options.profile_id,
+        actor_pubkey: approved_by_pubkey,
+        actor_seq: None,
+        parents: nostr_identity_roster_parent_ids(&options.roster_ops),
+        client_nonce,
+        created_at: options.approved_at,
+        op: NostrIdentityRosterOp::AddFacet {
+            facet: NostrIdentityFacet::app_key(
+                device_app_key_pubkey,
+                options.approved_at,
+                None,
+                capabilities,
+            )
+            .with_profile_id(options.profile_id),
+        },
     })
 }
 
@@ -1390,6 +1448,64 @@ pub fn parse_nostr_identity_device_approval_receipt_event_for_request(
         return Err(NostrIdentityError::BadContent(
             "device approval receipt signer mismatch".to_string(),
         ));
+    }
+    Ok(receipt)
+}
+
+pub fn parse_nostr_identity_device_approval_receipt_event_for_bootstrap(
+    event: &Event,
+    request_keys: &Keys,
+    bootstrap: &NostrIdentityDeviceApprovalBootstrap,
+) -> Result<NostrIdentityDeviceApprovalReceipt, NostrIdentityError> {
+    parse_nostr_identity_device_approval_receipt_event_for_bootstrap_with_options(
+        event,
+        request_keys,
+        bootstrap,
+        ParseNostrIdentityDeviceApprovalReceiptForBootstrapOptions::default(),
+    )
+}
+
+pub fn parse_nostr_identity_device_approval_receipt_event_for_bootstrap_with_options(
+    event: &Event,
+    request_keys: &Keys,
+    bootstrap: &NostrIdentityDeviceApprovalBootstrap,
+    options: ParseNostrIdentityDeviceApprovalReceiptForBootstrapOptions,
+) -> Result<NostrIdentityDeviceApprovalReceipt, NostrIdentityError> {
+    let bootstrap = normalize_device_approval_bootstrap(bootstrap.clone())?;
+    let request_pubkey = pubkey_to_npub(&request_keys.public_key().to_hex())?;
+    if bootstrap.request_npub != request_pubkey {
+        return Err(NostrIdentityError::BadContent(
+            "device approval receipt request mismatch".to_string(),
+        ));
+    }
+    let receipt = parse_nostr_identity_device_approval_receipt_event(event, request_keys)?;
+    if receipt.request_secret != bootstrap.request_secret {
+        return Err(NostrIdentityError::BadContent(
+            "device approval receipt secret mismatch".to_string(),
+        ));
+    }
+    let device_app_key_pubkey =
+        strict_npub_to_pubkey(&bootstrap.device_app_key_npub, "device AppKey")?;
+    if receipt.device_app_key_pubkey != device_app_key_pubkey {
+        return Err(NostrIdentityError::BadContent(
+            "device approval receipt device mismatch".to_string(),
+        ));
+    }
+    if let Some(profile_id) = options.expected_profile_id
+        && receipt.profile_id != profile_id
+    {
+        return Err(NostrIdentityError::BadContent(
+            "device approval receipt profile mismatch".to_string(),
+        ));
+    }
+    if let Some(expected_admin_app_key_pubkey) = options.expected_admin_app_key_pubkey {
+        let expected_admin_app_key_pubkey =
+            normalize_nostr_pubkey(&expected_admin_app_key_pubkey, "admin AppKey")?;
+        if receipt.approved_by_pubkey != expected_admin_app_key_pubkey {
+            return Err(NostrIdentityError::BadContent(
+                "device approval receipt signer mismatch".to_string(),
+            ));
+        }
     }
     Ok(receipt)
 }
@@ -2087,7 +2203,7 @@ fn normalize_device_approval_request(
             .admin_app_key_pubkey
             .map(|value| normalize_nostr_pubkey(&value, "admin AppKey"))
             .transpose()?,
-        label: normalize_optional_label(request.label),
+        label: normalize_device_approval_label(request.label)?,
     };
     normalized.device_app_key_proof = require_valid_device_approval_proof(&normalized)?;
     Ok(normalized)
@@ -2108,6 +2224,7 @@ fn normalize_device_approval_bootstrap(
         device_app_key_npub: pubkey_to_npub(&device_app_key_pubkey)?,
         request_npub: pubkey_to_npub(&request_pubkey)?,
         request_secret: require_request_secret(bootstrap.request_secret)?,
+        label: normalize_device_approval_label(bootstrap.label)?,
     })
 }
 
@@ -2343,6 +2460,21 @@ fn normalize_optional_label(value: Option<String>) -> Option<String> {
     value
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
+}
+
+fn normalize_device_approval_label(
+    value: Option<String>,
+) -> Result<Option<String>, NostrIdentityError> {
+    let Some(label) = normalize_optional_label(value) else {
+        return Ok(None);
+    };
+    if label.len() > NOSTR_IDENTITY_DEVICE_APPROVAL_LABEL_MAX_BYTES {
+        return Err(NostrIdentityError::BadContent(format!(
+            "device approval label exceeds {} UTF-8 bytes",
+            NOSTR_IDENTITY_DEVICE_APPROVAL_LABEL_MAX_BYTES
+        )));
+    }
+    Ok(Some(label))
 }
 
 fn require_request_secret(value: String) -> Result<String, NostrIdentityError> {
@@ -3152,6 +3284,113 @@ mod tests {
     }
 
     #[test]
+    fn device_approval_receipt_event_validates_against_bootstrap() {
+        let profile_id = NostrIdentityId::new_v4();
+        let admin = Keys::generate();
+        let request = Keys::generate();
+        let device = Keys::generate();
+        let request_secret = base64_url_encode(&[7_u8; 32]);
+        let bootstrap = normalize_device_approval_bootstrap(NostrIdentityDeviceApprovalBootstrap {
+            device_app_key_npub: device.public_key().to_bech32().unwrap(),
+            request_npub: request.public_key().to_bech32().unwrap(),
+            request_secret: request_secret.clone(),
+            label: Some("Phone".to_string()),
+        })
+        .unwrap();
+        let receipt = NostrIdentityDeviceApprovalReceipt {
+            schema: NOSTR_IDENTITY_DEVICE_APPROVAL_RECEIPT_SCHEMA,
+            profile_id,
+            request_pubkey: request.public_key().to_hex(),
+            device_app_key_pubkey: device.public_key().to_hex(),
+            approved_by_pubkey: admin.public_key().to_hex(),
+            approved_at: 42,
+            request_secret,
+            subject_pubkey: None,
+            roster_op_id: None,
+            signed_roster_event: None,
+        };
+        let receipt_event =
+            build_nostr_identity_device_approval_receipt_event(&admin, receipt.clone()).unwrap();
+
+        let parsed = parse_nostr_identity_device_approval_receipt_event_for_bootstrap_with_options(
+            &receipt_event,
+            &request,
+            &bootstrap,
+            ParseNostrIdentityDeviceApprovalReceiptForBootstrapOptions {
+                expected_profile_id: Some(profile_id),
+                expected_admin_app_key_pubkey: Some(admin.public_key().to_hex()),
+            },
+        )
+        .unwrap();
+        assert_eq!(parsed, receipt);
+        assert_eq!(
+            parse_nostr_identity_device_approval_receipt_event_for_bootstrap(
+                &receipt_event,
+                &request,
+                &bootstrap,
+            )
+            .unwrap(),
+            receipt
+        );
+
+        let mut wrong_secret = bootstrap.clone();
+        wrong_secret.request_secret = base64_url_encode(&[8_u8; 32]);
+        assert!(
+            parse_nostr_identity_device_approval_receipt_event_for_bootstrap(
+                &receipt_event,
+                &request,
+                &wrong_secret,
+            )
+            .is_err()
+        );
+
+        let mut wrong_device = bootstrap.clone();
+        wrong_device.device_app_key_npub = Keys::generate().public_key().to_bech32().unwrap();
+        assert!(
+            parse_nostr_identity_device_approval_receipt_event_for_bootstrap(
+                &receipt_event,
+                &request,
+                &wrong_device,
+            )
+            .is_err()
+        );
+
+        assert!(
+            parse_nostr_identity_device_approval_receipt_event_for_bootstrap(
+                &receipt_event,
+                &Keys::generate(),
+                &bootstrap,
+            )
+            .is_err()
+        );
+
+        assert!(
+            parse_nostr_identity_device_approval_receipt_event_for_bootstrap_with_options(
+                &receipt_event,
+                &request,
+                &bootstrap,
+                ParseNostrIdentityDeviceApprovalReceiptForBootstrapOptions {
+                    expected_profile_id: Some(NostrIdentityId::new_v4()),
+                    expected_admin_app_key_pubkey: Some(admin.public_key().to_hex()),
+                },
+            )
+            .is_err()
+        );
+        assert!(
+            parse_nostr_identity_device_approval_receipt_event_for_bootstrap_with_options(
+                &receipt_event,
+                &request,
+                &bootstrap,
+                ParseNostrIdentityDeviceApprovalReceiptForBootstrapOptions {
+                    expected_profile_id: Some(profile_id),
+                    expected_admin_app_key_pubkey: Some(Keys::generate().public_key().to_hex()),
+                },
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
     fn device_link_invite_url_roundtrips_with_custom_or_default_prefix() {
         let profile_id = NostrIdentityId::new_v4();
         let admin = Keys::generate();
@@ -3254,6 +3493,7 @@ mod tests {
                 .collect::<BTreeSet<_>>(),
             BTreeSet::from([
                 "deviceAppKeyNpub".to_string(),
+                "label".to_string(),
                 "requestNpub".to_string(),
                 "requestSecret".to_string(),
             ])
@@ -3332,6 +3572,44 @@ mod tests {
             }
             other => panic!("expected add facet, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn device_approval_bootstrap_can_create_roster_op_without_request_event() {
+        let profile_id = NostrIdentityId::new_v4();
+        let admin = Keys::generate();
+        let device = Keys::generate();
+        let request_keys = Keys::generate();
+        let bootstrap = normalize_device_approval_bootstrap(NostrIdentityDeviceApprovalBootstrap {
+            device_app_key_npub: device.public_key().to_bech32().unwrap(),
+            request_npub: request_keys.public_key().to_bech32().unwrap(),
+            request_secret: base64_url_encode(&[9_u8; 32]),
+            label: Some(" Phone ".to_string()),
+        })
+        .unwrap();
+
+        let op = approve_nostr_identity_device_approval_bootstrap(
+            ApproveNostrIdentityDeviceApprovalBootstrapOptions {
+                bootstrap: bootstrap.clone(),
+                profile_id,
+                roster_ops: Vec::new(),
+                approved_by_pubkey: admin.public_key().to_hex(),
+                approved_at: 77,
+                client_nonce: Some("bootstrap-client-nonce".to_string()),
+                capabilities: None,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(bootstrap.label.as_deref(), Some("Phone"));
+        assert_eq!(op.profile_id, profile_id);
+        assert_eq!(op.actor_pubkey, admin.public_key().to_hex());
+        assert_eq!(op.created_at, 77);
+        let NostrIdentityRosterOp::AddFacet { facet } = op.op else {
+            panic!("expected app-key add facet");
+        };
+        assert_eq!(facet.pubkey, device.public_key().to_hex());
+        assert_eq!(facet.profile_id, Some(profile_id));
     }
 
     #[test]
@@ -3689,6 +3967,52 @@ mod tests {
                 Some(&format!("nvpn://{}", "x".repeat(80))),
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn device_approval_bootstrap_label_is_bounded_by_utf8_bytes() {
+        let device = Keys::generate();
+        let request = Keys::generate();
+        let secret = base64_url_encode(&[11_u8; 32]);
+        let bootstrap = NostrIdentityDeviceApprovalBootstrap {
+            device_app_key_npub: device.public_key().to_bech32().unwrap(),
+            request_npub: request.public_key().to_bech32().unwrap(),
+            request_secret: secret,
+            label: Some("abcdefghijklmnop".to_string()),
+        };
+
+        let encoded = encode_nostr_identity_device_approval_bootstrap(&bootstrap, None).unwrap();
+        assert!(
+            encoded.len() <= NOSTR_IDENTITY_DEVICE_APPROVAL_BOOTSTRAP_MAX_URI_LENGTH,
+            "bootstrap URI was {} bytes",
+            encoded.len()
+        );
+        assert_eq!(
+            parse_nostr_identity_device_approval_bootstrap(&encoded, &[])
+                .unwrap()
+                .unwrap()
+                .label
+                .as_deref(),
+            Some("abcdefghijklmnop")
+        );
+
+        let mut too_long_ascii = bootstrap.clone();
+        too_long_ascii.label = Some("abcdefghijklmnopq".to_string());
+        assert!(encode_nostr_identity_device_approval_bootstrap(&too_long_ascii, None).is_err());
+
+        let mut max_multibyte = bootstrap.clone();
+        max_multibyte.label = Some("é".repeat(8));
+        assert_eq!(
+            max_multibyte.label.as_ref().unwrap().len(),
+            NOSTR_IDENTITY_DEVICE_APPROVAL_LABEL_MAX_BYTES
+        );
+        assert!(encode_nostr_identity_device_approval_bootstrap(&max_multibyte, None).is_ok());
+
+        let mut too_long_multibyte = bootstrap;
+        too_long_multibyte.label = Some("é".repeat(9));
+        assert!(
+            encode_nostr_identity_device_approval_bootstrap(&too_long_multibyte, None).is_err()
         );
     }
 
