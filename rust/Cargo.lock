@@ -698,7 +698,7 @@ checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
 
 [[package]]
 name = "hashtree-core"
-version = "0.2.76"
+version = "0.2.77"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -717,7 +717,7 @@ dependencies = [
 
 [[package]]
 name = "hashtree-fs"
-version = "0.2.76"
+version = "0.2.77"
 dependencies = [
  "async-trait",
  "hashtree-core",
@@ -1272,7 +1272,7 @@ dependencies = [
 
 [[package]]
 name = "nostr-identity"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "nostr-sdk",

@@ -5,6 +5,7 @@ import { finalizeEvent, nip44, type Event } from 'nostr-tools';
 
 import {
   NOSTR_IDENTITY_DEVICE_APPROVAL_REQUEST_SECRET_MIN_LENGTH,
+  nostrIdentityDeviceApprovalRequestRelays,
   parseNostrIdentityDeviceApprovalReceiptEvent,
   parseNostrIdentityDeviceApprovalRequest,
 } from '../src';
@@ -86,6 +87,7 @@ describe('NostrIdentity device approval interop vectors', () => {
       label: fixture.label,
     });
     expect(JSON.parse(request?.deviceAppKeyProof ?? '')).toEqual(fixture.proofEvent);
+    expect(nostrIdentityDeviceApprovalRequestRelays(request!)).toEqual(['wss://temp.iris.to']);
     expect(fixture.requestSecret.length).toBeGreaterThanOrEqual(
       NOSTR_IDENTITY_DEVICE_APPROVAL_REQUEST_SECRET_MIN_LENGTH,
     );

@@ -23,7 +23,7 @@ use crate::{
 use nostr_sdk::ToBech32;
 use nostr_sdk::nips::nip44::{self, Version as Nip44Version};
 use nostr_sdk::{
-    Alphabet, Event, EventId, Filter, JsonUtil, Keys, PublicKey, SingleLetterTag, TagKind,
+    Alphabet, Event, EventId, Filter, JsonUtil, Keys, PublicKey, RelayUrl, SingleLetterTag, TagKind,
 };
 use nostr_sdk::{EventBuilder, Kind, Tag};
 use serde::{Deserialize, Serialize};
@@ -61,6 +61,9 @@ const NOSTR_IDENTITY_DEVICE_APPROVAL_PROOF_TAGS: [&str; 9] = [
     "admin_pubkey",
     "label",
 ];
+const NOSTR_IDENTITY_DEVICE_APPROVAL_RELAY_RESOURCE_TYPE: &str = "nostr_relay";
+const NOSTR_IDENTITY_DEVICE_APPROVAL_RELAY_SCOPE: &str = "device_approval";
+const NOSTR_IDENTITY_DEVICE_APPROVAL_RELAY_LIMIT: usize = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -966,6 +969,42 @@ pub fn create_nostr_identity_device_approval_request(
         request: normalize_device_approval_request(request)?,
         request_keys,
     })
+}
+
+pub fn nostr_identity_device_approval_relay_resource(
+    relay_url: &str,
+) -> Result<NostrIdentityDeviceApprovalRequestedResource, NostrIdentityError> {
+    Ok(NostrIdentityDeviceApprovalRequestedResource {
+        resource_type: NOSTR_IDENTITY_DEVICE_APPROVAL_RELAY_RESOURCE_TYPE.to_string(),
+        id: normalize_device_approval_relay_url(relay_url)?,
+        scopes: vec![NOSTR_IDENTITY_DEVICE_APPROVAL_RELAY_SCOPE.to_string()],
+    })
+}
+
+pub fn nostr_identity_device_approval_request_relays(
+    request: &NostrIdentityDeviceApprovalRequest,
+) -> Result<Vec<String>, NostrIdentityError> {
+    let mut relays = Vec::new();
+    for resource in &request.resources {
+        if resource.resource_type != NOSTR_IDENTITY_DEVICE_APPROVAL_RELAY_RESOURCE_TYPE
+            || !resource
+                .scopes
+                .iter()
+                .any(|scope| scope == NOSTR_IDENTITY_DEVICE_APPROVAL_RELAY_SCOPE)
+        {
+            continue;
+        }
+        let relay = normalize_device_approval_relay_url(&resource.id)?;
+        if !relays.contains(&relay) {
+            relays.push(relay);
+        }
+        if relays.len() > NOSTR_IDENTITY_DEVICE_APPROVAL_RELAY_LIMIT {
+            return Err(NostrIdentityError::BadContent(
+                "device approval request must use at most one relay".to_string(),
+            ));
+        }
+    }
+    Ok(relays)
 }
 
 pub fn encode_nostr_identity_device_approval_request(
@@ -2086,6 +2125,73 @@ fn normalize_device_approval_resources(
         .collect()
 }
 
+fn normalize_device_approval_relay_url(relay_url: &str) -> Result<String, NostrIdentityError> {
+    let relay_url = relay_url.trim();
+    let (scheme, authority) = relay_url.split_once("://").ok_or_else(|| {
+        NostrIdentityError::BadContent("device approval relay URL must use ws or wss".to_string())
+    })?;
+    if !(scheme.eq_ignore_ascii_case("ws") || scheme.eq_ignore_ascii_case("wss"))
+        || authority.is_empty()
+        || authority.starts_with('/')
+    {
+        return Err(NostrIdentityError::BadContent(
+            "device approval relay URL must use ws or wss".to_string(),
+        ));
+    }
+    let authority_value = authority.split(['/', '?', '#']).next().unwrap_or(authority);
+    if authority_value.contains('@') {
+        return Err(NostrIdentityError::BadContent(
+            "device approval relay URL must not contain credentials".to_string(),
+        ));
+    }
+
+    let relay = RelayUrl::parse(relay_url).map_err(|error| {
+        NostrIdentityError::BadContent(format!("invalid device approval relay URL: {error}"))
+    })?;
+    let parsed: &nostr_sdk::Url = (&relay).into();
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(NostrIdentityError::BadContent(
+            "device approval relay URL must not contain credentials".to_string(),
+        ));
+    }
+
+    let mut path = String::with_capacity(parsed.path().len());
+    let mut previous_was_slash = false;
+    for character in parsed.path().chars() {
+        if character == '/' && previous_was_slash {
+            continue;
+        }
+        previous_was_slash = character == '/';
+        path.push(character);
+    }
+    while path.ends_with('/') {
+        path.pop();
+    }
+
+    let mut query_pairs = parsed
+        .query_pairs()
+        .map(|(name, value)| (name.into_owned(), value.into_owned()))
+        .collect::<Vec<_>>();
+    query_pairs.sort_by(|left, right| left.0.cmp(&right.0));
+    let mut query_url = parsed.clone();
+    if query_pairs.is_empty() {
+        query_url.set_query(None);
+    } else {
+        query_url
+            .query_pairs_mut()
+            .clear()
+            .extend_pairs(query_pairs.iter());
+    }
+
+    let mut normalized = parsed.origin().ascii_serialization();
+    normalized.push_str(&path);
+    if let Some(query) = query_url.query() {
+        normalized.push('?');
+        normalized.push_str(query);
+    }
+    Ok(normalized)
+}
+
 fn normalize_optional_device_approval_string(
     value: Option<String>,
     label: &str,
@@ -3115,6 +3221,82 @@ mod tests {
     }
 
     #[test]
+    fn device_approval_request_embeds_one_normalized_rendezvous_relay_resource() {
+        let relay_resource =
+            nostr_identity_device_approval_relay_resource(" WSS://TEMP.IRIS.TO:443/ ").unwrap();
+        assert_eq!(
+            relay_resource,
+            NostrIdentityDeviceApprovalRequestedResource {
+                resource_type: "nostr_relay".to_string(),
+                id: "wss://temp.iris.to".to_string(),
+                scopes: vec!["device_approval".to_string()],
+            }
+        );
+        assert_eq!(
+            nostr_identity_device_approval_relay_resource(
+                "ws://EXAMPLE.COM:80/approval//?z=2&a=1#ignored"
+            )
+            .unwrap()
+            .id,
+            "ws://example.com/approval?a=1&z=2"
+        );
+
+        let request = NostrIdentityDeviceApprovalRequest {
+            request_pubkey: String::new(),
+            device_app_key_pubkey: String::new(),
+            request_secret: String::new(),
+            device_app_key_proof: String::new(),
+            requested_at: 0,
+            request_type: None,
+            resources: vec![
+                NostrIdentityDeviceApprovalRequestedResource {
+                    resource_type: "collection".to_string(),
+                    id: "legacy-resource".to_string(),
+                    scopes: vec!["read".to_string()],
+                },
+                relay_resource.clone(),
+                NostrIdentityDeviceApprovalRequestedResource {
+                    resource_type: "nostr_relay".to_string(),
+                    id: "wss://temp.iris.to/".to_string(),
+                    scopes: vec!["device_approval".to_string()],
+                },
+                NostrIdentityDeviceApprovalRequestedResource {
+                    resource_type: "nostr_relay".to_string(),
+                    id: "wss://ignored.example".to_string(),
+                    scopes: vec!["read".to_string()],
+                },
+            ],
+            expires_at: None,
+            profile_id: None,
+            admin_app_key_pubkey: None,
+            label: None,
+        };
+        assert_eq!(
+            nostr_identity_device_approval_request_relays(&request).unwrap(),
+            vec!["wss://temp.iris.to".to_string()]
+        );
+
+        assert!(nostr_identity_device_approval_relay_resource("https://temp.iris.to").is_err());
+        assert!(nostr_identity_device_approval_relay_resource("wss://user@temp.iris.to").is_err());
+        assert!(nostr_identity_device_approval_relay_resource("wss://@temp.iris.to").is_err());
+        assert!(nostr_identity_device_approval_relay_resource("wss:///approval").is_err());
+
+        let mut credentialed_relay = request.clone();
+        credentialed_relay.resources = vec![NostrIdentityDeviceApprovalRequestedResource {
+            resource_type: "nostr_relay".to_string(),
+            id: "wss://user@temp.iris.to".to_string(),
+            scopes: vec!["device_approval".to_string()],
+        }];
+        assert!(nostr_identity_device_approval_request_relays(&credentialed_relay).is_err());
+
+        let mut two_relays = request;
+        two_relays
+            .resources
+            .push(nostr_identity_device_approval_relay_resource("wss://other.example").unwrap());
+        assert!(nostr_identity_device_approval_request_relays(&two_relays).is_err());
+    }
+
+    #[test]
     fn shared_ts_rust_device_approval_vectors_reject_tampering() {
         let fixture: serde_json::Value = serde_json::from_str(include_str!(
             "../../../../testdata/nostr-identity-device-approval-v1.json"
@@ -3135,6 +3317,10 @@ mod tests {
         assert_eq!(
             request.profile_id.unwrap().to_string(),
             fixture["profileId"]
+        );
+        assert_eq!(
+            nostr_identity_device_approval_request_relays(&request).unwrap(),
+            vec!["wss://temp.iris.to".to_string()]
         );
 
         let proof = Event::from_json(&request.device_app_key_proof).unwrap();

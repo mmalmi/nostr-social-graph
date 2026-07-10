@@ -159,6 +159,9 @@ const DEVICE_APPROVAL_REQUEST_PAYLOAD_FIELDS = new Set([
   'label',
 ]);
 const DEVICE_APPROVAL_RESOURCE_FIELDS = new Set(['type', 'id', 'scopes']);
+const DEVICE_APPROVAL_RELAY_RESOURCE_TYPE = 'nostr_relay';
+const DEVICE_APPROVAL_RELAY_SCOPE = 'device_approval';
+const DEVICE_APPROVAL_RELAY_LIMIT = 1;
 const DEVICE_APPROVAL_RECEIPT_FIELDS = new Set([
   'schema',
   'profileId',
@@ -381,6 +384,36 @@ export function createNostrIdentityDeviceApprovalRequest(options: {
     ...(adminAppKeyPubkey !== undefined ? { adminAppKeyPubkey } : {}),
     ...(label !== undefined ? { label } : {}),
   };
+}
+
+export function nostrIdentityDeviceApprovalRelayResource(
+  relayUrl: string,
+): NostrIdentityDeviceApprovalRequestedResource {
+  return {
+    type: DEVICE_APPROVAL_RELAY_RESOURCE_TYPE,
+    id: normalizeDeviceApprovalRelayUrl(relayUrl),
+    scopes: [DEVICE_APPROVAL_RELAY_SCOPE],
+  };
+}
+
+export function nostrIdentityDeviceApprovalRequestRelays(
+  request: Pick<NostrIdentityDeviceApprovalRequest, 'resources'>,
+): string[] {
+  const relays: string[] = [];
+  for (const resource of request.resources ?? []) {
+    if (
+      resource.type !== DEVICE_APPROVAL_RELAY_RESOURCE_TYPE
+      || !resource.scopes?.includes(DEVICE_APPROVAL_RELAY_SCOPE)
+    ) {
+      continue;
+    }
+    const relay = normalizeDeviceApprovalRelayUrl(resource.id);
+    if (!relays.includes(relay)) relays.push(relay);
+    if (relays.length > DEVICE_APPROVAL_RELAY_LIMIT) {
+      throw new Error('device approval request must use at most one relay');
+    }
+  }
+  return relays;
 }
 
 export function encodeNostrIdentityDeviceApprovalRequest(
@@ -958,6 +991,36 @@ function normalizeDeviceApprovalScopes(value: unknown, label: string): string[] 
     .map((scope) => normalizeRequiredDeviceApprovalString(scope, label))
     .filter((scope, index, array) => array.indexOf(scope) === index);
   return scopes.length ? scopes : undefined;
+}
+
+function normalizeDeviceApprovalRelayUrl(value: unknown): string {
+  const relayUrl = requireString(value, 'device approval relay URL').trim();
+  const schemeSeparator = relayUrl.indexOf('://');
+  const scheme = schemeSeparator >= 0 ? relayUrl.slice(0, schemeSeparator).toLowerCase() : '';
+  const authority = schemeSeparator >= 0 ? relayUrl.slice(schemeSeparator + 3) : '';
+  if ((scheme !== 'ws' && scheme !== 'wss') || !authority || authority.startsWith('/')) {
+    throw new Error('device approval relay URL must use ws or wss');
+  }
+  const authorityEnd = authority.search(/[/?#]/u);
+  const authorityValue = authorityEnd >= 0 ? authority.slice(0, authorityEnd) : authority;
+  if (authorityValue.includes('@')) {
+    throw new Error('device approval relay URL must not contain credentials');
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(relayUrl);
+  } catch {
+    throw new Error('device approval relay URL is invalid');
+  }
+  if (!parsed.hostname) throw new Error('device approval relay URL is invalid');
+  if (parsed.username || parsed.password) {
+    throw new Error('device approval relay URL must not contain credentials');
+  }
+
+  const path = parsed.pathname.replace(/\/{2,}/gu, '/').replace(/\/+$/u, '');
+  parsed.searchParams.sort();
+  return `${parsed.protocol}//${parsed.host}${path}${parsed.search}`;
 }
 
 function requireProofTag(event: Event, name: string, expected: string): void {

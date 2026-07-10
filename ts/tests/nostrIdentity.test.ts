@@ -22,6 +22,8 @@ import {
   nostrIdentityAppKeyApprovalCandidateFilters,
   nostrIdentityAppKeyApprovalCandidatesFromEvents,
   nostrIdentityDeviceApprovalClientNonce,
+  nostrIdentityDeviceApprovalRelayResource,
+  nostrIdentityDeviceApprovalRequestRelays,
   nostrIdentityRosterOpMatchesDeviceApprovalReceipt,
   parseCompactNostrIdentityDeviceApprovalRequest,
   parseNostrIdentityDeviceApprovalRequest,
@@ -331,6 +333,48 @@ describe('NostrIdentity', () => {
       clientNonce: 'manual-add',
     });
     expect(manualAdd.client_nonce).toBe('manual-add');
+  });
+
+  it('embeds exactly one normalized approval rendezvous relay in request resources', () => {
+    const relayResource = nostrIdentityDeviceApprovalRelayResource(
+      ' WSS://TEMP.IRIS.TO:443/ ',
+    );
+    expect(relayResource).toEqual({
+      type: 'nostr_relay',
+      id: 'wss://temp.iris.to',
+      scopes: ['device_approval'],
+    });
+    expect(nostrIdentityDeviceApprovalRelayResource(
+      'ws://EXAMPLE.COM:80/approval//?z=2&a=1#ignored',
+    ).id).toBe('ws://example.com/approval?a=1&z=2');
+
+    expect(nostrIdentityDeviceApprovalRequestRelays({
+      resources: [
+        { type: 'collection', id: 'legacy-resource', scopes: ['read'] },
+        relayResource,
+        { type: 'nostr_relay', id: 'wss://temp.iris.to/', scopes: ['device_approval'] },
+        { type: 'nostr_relay', id: 'wss://ignored.example', scopes: ['read'] },
+      ],
+    })).toEqual(['wss://temp.iris.to']);
+    expect(nostrIdentityDeviceApprovalRequestRelays({})).toEqual([]);
+
+    expect(() => nostrIdentityDeviceApprovalRelayResource('https://temp.iris.to')).toThrow('ws');
+    expect(() => nostrIdentityDeviceApprovalRelayResource('wss://user@temp.iris.to')).toThrow('credentials');
+    expect(() => nostrIdentityDeviceApprovalRelayResource('wss://@temp.iris.to')).toThrow('credentials');
+    expect(() => nostrIdentityDeviceApprovalRelayResource('wss:///approval')).toThrow('URL');
+    expect(() => nostrIdentityDeviceApprovalRequestRelays({
+      resources: [{
+        type: 'nostr_relay',
+        id: 'wss://user@temp.iris.to',
+        scopes: ['device_approval'],
+      }],
+    })).toThrow('credentials');
+    expect(() => nostrIdentityDeviceApprovalRequestRelays({
+      resources: [
+        relayResource,
+        nostrIdentityDeviceApprovalRelayResource('wss://other.example'),
+      ],
+    })).toThrow('one relay');
   });
 
   it('encodes compact roster-discovery approval links with only the joining app key', () => {
