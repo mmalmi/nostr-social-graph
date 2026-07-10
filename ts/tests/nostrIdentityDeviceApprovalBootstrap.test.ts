@@ -4,6 +4,7 @@ import { finalizeEvent, getPublicKey, nip19, type Event } from 'nostr-tools';
 import {
   FACT_OP_KIND,
   NOSTR_IDENTITY_DEVICE_APPROVAL_BOOTSTRAP_PREFIX,
+  NOSTR_IDENTITY_DEVICE_APPROVAL_LABEL_MAX_BYTES,
   NOSTR_IDENTITY_DEVICE_APPROVAL_REQUEST_EVENT_TYPE,
   buildNostrIdentityDeviceApprovalRequestEvent,
   createNostrIdentityDeviceApprovalBootstrap,
@@ -12,6 +13,7 @@ import {
   nostrIdentityDeviceApprovalBootstrapHasPrefix,
   parseNostrIdentityDeviceApprovalBootstrap,
   parseNostrIdentityDeviceApprovalRequestEvent,
+  randomNostrIdentityDeviceApprovalSecret,
 } from '../src';
 
 const secretKey = (byte: number): Uint8Array => new Uint8Array(32).fill(byte);
@@ -45,17 +47,18 @@ function encodeUriPayload(prefix: string, payload: Record<string, unknown>): str
 }
 
 describe('NostrIdentity compact device approval bootstrap', () => {
-  it('encodes exactly the stable npub, ephemeral npub, and canonical 32-byte secret', () => {
+  it('encodes exactly the stable npub, ephemeral npub, canonical 32-byte secret, and bounded label', () => {
     const { bootstrap, request } = setup();
     const prefix = NOSTR_IDENTITY_DEVICE_APPROVAL_BOOTSTRAP_PREFIX;
     const uri = encodeNostrIdentityDeviceApprovalBootstrap(bootstrap);
 
     expect(uri.startsWith(prefix)).toBe(true);
-    expect(uri.length).toBeLessThanOrEqual(360);
+    expect(uri.length).toBeLessThanOrEqual(384);
     expect(decodeUriPayload(uri, prefix)).toEqual({
       deviceAppKeyNpub: nip19.npubEncode(request.deviceAppKeyPubkey),
       requestNpub: nip19.npubEncode(request.requestPubkey),
       requestSecret,
+      label: 'WebVM',
     });
     expect(parseNostrIdentityDeviceApprovalBootstrap(uri)).toEqual(bootstrap);
     expect(nostrIdentityDeviceApprovalBootstrapHasPrefix(uri)).toBe(true);
@@ -70,6 +73,34 @@ describe('NostrIdentity compact device approval bootstrap', () => {
     expect(request.requestPubkey).not.toBe(request.deviceAppKeyPubkey);
     expect(Buffer.from(request.requestSecret, 'base64url')).toHaveLength(32);
     expect(Buffer.from(request.requestSecret, 'base64url').toString('base64url')).toBe(request.requestSecret);
+    const generatedSecret = randomNostrIdentityDeviceApprovalSecret();
+    expect(Buffer.from(generatedSecret, 'base64url')).toHaveLength(32);
+    expect(Buffer.from(generatedSecret, 'base64url').toString('base64url')).toBe(generatedSecret);
+  });
+
+  it('trims labels and bounds them by UTF-8 bytes', () => {
+    const { request } = setup();
+    const exactAscii = createNostrIdentityDeviceApprovalBootstrap({
+      ...request,
+      label: ` ${'a'.repeat(NOSTR_IDENTITY_DEVICE_APPROVAL_LABEL_MAX_BYTES)} `,
+    });
+    const exactUtf8 = createNostrIdentityDeviceApprovalBootstrap({
+      ...request,
+      label: 'é'.repeat(NOSTR_IDENTITY_DEVICE_APPROVAL_LABEL_MAX_BYTES / 2),
+    });
+
+    expect(exactAscii.label).toBe('a'.repeat(16));
+    expect(parseNostrIdentityDeviceApprovalBootstrap(
+      encodeNostrIdentityDeviceApprovalBootstrap(exactUtf8),
+    )?.label).toBe('é'.repeat(8));
+    expect(() => createNostrIdentityDeviceApprovalBootstrap({
+      ...request,
+      label: 'a'.repeat(17),
+    })).toThrow('16 UTF-8 bytes');
+    expect(() => createNostrIdentityDeviceApprovalBootstrap({
+      ...request,
+      label: 'é'.repeat(9),
+    })).toThrow('16 UTF-8 bytes');
   });
 
   it('strictly rejects legacy queries, unknown metadata, same keys, and malformed secrets', () => {
@@ -118,7 +149,7 @@ describe('NostrIdentity compact device approval bootstrap', () => {
     }), { prefixes: [prefix] })).toBeNull();
     expect(() => encodeNostrIdentityDeviceApprovalBootstrap(bootstrap, {
       prefix: `nvpn:${'x'.repeat(60)}`,
-    })).toThrow('360');
+    })).toThrow('384');
   });
 });
 

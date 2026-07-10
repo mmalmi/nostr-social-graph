@@ -28,7 +28,8 @@ export const NOSTR_IDENTITY_DEVICE_APPROVAL_REQUEST_EVENT_TYPE = 'nostr_identity
 export const NOSTR_IDENTITY_DEVICE_APPROVAL_RECEIPT_TYPE = 'nostr_identity_device_approval_receipt';
 export const NOSTR_IDENTITY_DEVICE_APPROVAL_RECEIPT_SCHEMA = 1;
 export const NOSTR_IDENTITY_DEVICE_APPROVAL_REQUEST_SECRET_BYTE_LENGTH = 32;
-export const NOSTR_IDENTITY_DEVICE_APPROVAL_BOOTSTRAP_MAX_URI_LENGTH = 360;
+export const NOSTR_IDENTITY_DEVICE_APPROVAL_BOOTSTRAP_MAX_URI_LENGTH = 384;
+export const NOSTR_IDENTITY_DEVICE_APPROVAL_LABEL_MAX_BYTES = 16;
 export const NOSTR_IDENTITY_DEVICE_APPROVAL_CLIENT_NONCE_PREFIX = 'nostr_identity_device_approval:';
 export const NOSTR_IDENTITY_MANUAL_DEVICE_ADD_CLIENT_NONCE_PREFIX = 'nostr_identity_manual_device_add:';
 export const KIND_NOSTR_IDENTITY_DEVICE_LINK_REQUEST = FACT_OP_KIND;
@@ -84,6 +85,7 @@ export interface NostrIdentityDeviceApprovalBootstrap {
   deviceAppKeyNpub: string;
   requestNpub: string;
   requestSecret: string;
+  label?: string;
 }
 
 export interface NostrIdentityDeviceApprovalRequestEventContent {
@@ -148,6 +150,7 @@ const DEVICE_APPROVAL_BOOTSTRAP_FIELDS = new Set([
   'deviceAppKeyNpub',
   'requestNpub',
   'requestSecret',
+  'label',
 ]);
 const DEVICE_APPROVAL_REQUEST_EVENT_CONTENT_FIELDS = new Set([
   'deviceAppKeyProof',
@@ -353,7 +356,9 @@ export function createNostrIdentityDeviceApprovalRequest(options: {
   if (requestPubkey === deviceAppKeyPubkey) {
     throw new Error('device approval stable and ephemeral keys must be distinct');
   }
-  const requestSecret = requireRequestSecret(options.requestSecret ?? randomDeviceApprovalSecret());
+  const requestSecret = requireRequestSecret(
+    options.requestSecret ?? randomNostrIdentityDeviceApprovalSecret(),
+  );
   const requestedAt = requireInteger(options.requestedAt, 'requestedAt');
   const requestType = normalizeOptionalDeviceApprovalString(options.requestType, 'requestType');
   const resources = normalizeDeviceApprovalResources(options.resources);
@@ -464,17 +469,19 @@ export function nostrIdentityDeviceApprovalBootstrapHasPrefix(
 }
 
 export function createNostrIdentityDeviceApprovalBootstrap(
-  request: Pick<NostrIdentityDeviceApprovalRequest, 'deviceAppKeyPubkey' | 'requestPubkey' | 'requestSecret'>,
+  request: Pick<NostrIdentityDeviceApprovalRequest, 'deviceAppKeyPubkey' | 'requestPubkey' | 'requestSecret' | 'label'>,
 ): NostrIdentityDeviceApprovalBootstrap {
   const deviceAppKeyPubkey = requirePubkey(request.deviceAppKeyPubkey, 'device AppKey');
   const requestPubkey = requirePubkey(request.requestPubkey, 'request');
   if (deviceAppKeyPubkey === requestPubkey) {
     throw new Error('device approval stable and ephemeral keys must be distinct');
   }
+  const label = normalizeOptionalDeviceApprovalLabel(request.label);
   return {
     deviceAppKeyNpub: pubkeyToNpub(deviceAppKeyPubkey),
     requestNpub: pubkeyToNpub(requestPubkey),
     requestSecret: requireRequestSecret(request.requestSecret),
+    ...(label !== undefined ? { label } : {}),
   };
 }
 
@@ -732,7 +739,8 @@ export function createNostrIdentityManualDeviceAddRosterOp(options: {
     actorPubkey: requirePubkey(options.approvedByPubkey, 'approving AppKey'),
     devicePubkey: requirePubkey(options.devicePubkey, 'device AppKey'),
     createdAt: options.addedAt,
-    clientNonce: options.clientNonce ?? `${NOSTR_IDENTITY_MANUAL_DEVICE_ADD_CLIENT_NONCE_PREFIX}${randomDeviceApprovalSecret()}`,
+    clientNonce: options.clientNonce
+      ?? `${NOSTR_IDENTITY_MANUAL_DEVICE_ADD_CLIENT_NONCE_PREFIX}${randomNostrIdentityDeviceApprovalSecret()}`,
     parents: nostrIdentityRosterParentIds(options.rosterOps),
     capabilities: options.capabilities ?? APP_KEY_WRITER_CAPABILITIES,
   });
@@ -799,7 +807,9 @@ export function nostrIdentityAppKeyApprovalCandidatesFromEvents(
   ));
 }
 
-export function nostrIdentityDeviceApprovalClientNonce(randomValue: string = randomDeviceApprovalSecret()): string {
+export function nostrIdentityDeviceApprovalClientNonce(
+  randomValue: string = randomNostrIdentityDeviceApprovalSecret(),
+): string {
   return `${NOSTR_IDENTITY_DEVICE_APPROVAL_CLIENT_NONCE_PREFIX}${requireRequestSecret(randomValue)}`;
 }
 
@@ -859,10 +869,12 @@ function normalizeDeviceApprovalBootstrap(
   if (deviceAppKey.pubkey === request.pubkey) {
     throw new Error('device approval stable and ephemeral keys must be distinct');
   }
+  const label = normalizeOptionalDeviceApprovalLabel(bootstrap.label);
   return {
     deviceAppKeyNpub: deviceAppKey.npub,
     requestNpub: request.npub,
     requestSecret: requireRequestSecret(bootstrap.requestSecret),
+    ...(label !== undefined ? { label } : {}),
   };
 }
 
@@ -1058,7 +1070,13 @@ function normalizeOptionalDeviceApprovalString(value: unknown, label: string): s
 function normalizeOptionalDeviceApprovalLabel(value: unknown): string | undefined {
   if (value == null) return undefined;
   const normalized = requireString(value, 'label').trim();
-  return normalized || undefined;
+  if (!normalized) return undefined;
+  if (new TextEncoder().encode(normalized).length > NOSTR_IDENTITY_DEVICE_APPROVAL_LABEL_MAX_BYTES) {
+    throw new Error(
+      `device approval label exceeds ${NOSTR_IDENTITY_DEVICE_APPROVAL_LABEL_MAX_BYTES} UTF-8 bytes`,
+    );
+  }
+  return normalized;
 }
 
 function normalizeDeviceApprovalResources(
@@ -1266,7 +1284,7 @@ function facetIsAppKey(facet: NostrIdentityFacet): boolean {
   return (facet.purposes ?? []).includes('app_key');
 }
 
-function randomDeviceApprovalSecret(): string {
+export function randomNostrIdentityDeviceApprovalSecret(): string {
   return base64UrlEncodeBytes(generateSecretKey());
 }
 
