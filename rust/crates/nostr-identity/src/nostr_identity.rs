@@ -42,6 +42,9 @@ pub const NOSTR_IDENTITY_DEVICE_LINK_INVITE_VERSION: u32 = 1;
 pub const NOSTR_IDENTITY_DEVICE_APPROVAL_RECEIPT_TYPE: &str =
     "nostr_identity_device_approval_receipt";
 pub const NOSTR_IDENTITY_DEVICE_APPROVAL_RECEIPT_SCHEMA: u32 = 1;
+pub const NOSTR_IDENTITY_DEVICE_APPROVAL_APPLIED_ACK_TYPE: &str =
+    "nostr_identity_device_approval_applied_ack";
+pub const NOSTR_IDENTITY_DEVICE_APPROVAL_APPLIED_ACK_SCHEMA: u32 = 1;
 pub const NOSTR_IDENTITY_DEVICE_APPROVAL_BOOTSTRAP_PREFIX: &str =
     "nostr-identity://device-approval/";
 /// Maximum encoded approval bootstrap URI length kept small enough for terminal QR renderers.
@@ -489,6 +492,22 @@ pub struct NostrIdentityDeviceApprovalReceipt {
     pub roster_op_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signed_roster_event: Option<String>,
+}
+
+/// Device-signed proof that an approval receipt was durably applied.
+///
+/// Transport implementations may retry the referenced approval until they
+/// receive this event. Receivers must emit it only after their application
+/// state has been persisted, and should replay it for duplicate approvals.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NostrIdentityDeviceApprovalAppliedAck {
+    pub schema: u32,
+    pub request_pubkey: String,
+    pub device_app_key_pubkey: String,
+    pub approval_event_id: String,
+    pub approved_by_pubkey: String,
+    pub applied_at: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1344,6 +1363,98 @@ pub fn build_nostr_identity_device_approval_receipt_event(
         )?))
         .sign_with_keys(signer_keys)
         .map_err(|error| NostrIdentityError::Event(error.to_string()))
+}
+
+pub fn build_nostr_identity_device_approval_applied_ack_event(
+    device_app_key_keys: &Keys,
+    ack: NostrIdentityDeviceApprovalAppliedAck,
+) -> Result<Event, NostrIdentityError> {
+    validate_device_approval_applied_ack(&ack)?;
+    if ack.device_app_key_pubkey != device_app_key_keys.public_key().to_hex() {
+        return Err(NostrIdentityError::BadContent(
+            "device approval applied ack signer mismatch".to_string(),
+        ));
+    }
+    let content = serde_json::to_string(&ack)
+        .map_err(|error| NostrIdentityError::BadContent(error.to_string()))?;
+    EventBuilder::new(Kind::from(FACT_OP_KIND), content)
+        .tag(
+            Tag::parse(["type", NOSTR_IDENTITY_DEVICE_APPROVAL_APPLIED_ACK_TYPE])
+                .map_err(|error| NostrIdentityError::Event(error.to_string()))?,
+        )
+        .tag(
+            Tag::parse(["p", ack.approved_by_pubkey.as_str()])
+                .map_err(|error| NostrIdentityError::Event(error.to_string()))?,
+        )
+        .tag(
+            Tag::parse(["e", ack.approval_event_id.as_str()])
+                .map_err(|error| NostrIdentityError::Event(error.to_string()))?,
+        )
+        .tag(
+            Tag::parse(["request_pubkey", ack.request_pubkey.as_str()])
+                .map_err(|error| NostrIdentityError::Event(error.to_string()))?,
+        )
+        .custom_created_at(nostr_sdk::Timestamp::from(non_negative_u64(
+            ack.applied_at,
+            "applied_at",
+        )?))
+        .sign_with_keys(device_app_key_keys)
+        .map_err(|error| NostrIdentityError::Event(error.to_string()))
+}
+
+pub fn parse_nostr_identity_device_approval_applied_ack_event(
+    event: &Event,
+) -> Result<NostrIdentityDeviceApprovalAppliedAck, NostrIdentityError> {
+    event
+        .verify()
+        .map_err(|error| NostrIdentityError::SignatureFailed(error.to_string()))?;
+    if event.kind.as_u16() != FACT_OP_KIND {
+        return Err(NostrIdentityError::WrongKind {
+            expected: FACT_OP_KIND,
+            got: event.kind.as_u16(),
+        });
+    }
+    validate_device_approval_applied_ack_tags(event)?;
+    let ack: NostrIdentityDeviceApprovalAppliedAck = serde_json::from_str(&event.content)
+        .map_err(|error| NostrIdentityError::BadContent(error.to_string()))?;
+    validate_device_approval_applied_ack(&ack)?;
+    if ack.device_app_key_pubkey != event.pubkey.to_hex() {
+        return Err(NostrIdentityError::BadContent(
+            "device approval applied ack signer mismatch".to_string(),
+        ));
+    }
+    require_exact_event_tag(
+        event,
+        &["type", NOSTR_IDENTITY_DEVICE_APPROVAL_APPLIED_ACK_TYPE],
+        "device approval applied ack",
+    )?;
+    require_exact_event_tag(
+        event,
+        &["p", ack.approved_by_pubkey.as_str()],
+        "device approval applied ack",
+    )?;
+    require_exact_event_tag(
+        event,
+        &["e", ack.approval_event_id.as_str()],
+        "device approval applied ack",
+    )?;
+    require_exact_event_tag(
+        event,
+        &["request_pubkey", ack.request_pubkey.as_str()],
+        "device approval applied ack",
+    )?;
+    let event_created_at = i64::try_from(event.created_at.as_secs()).map_err(|_| {
+        NostrIdentityError::BadContent(
+            "device approval applied ack timestamp overflows i64".to_string(),
+        )
+    })?;
+    if ack.applied_at != event_created_at {
+        return Err(NostrIdentityError::CreatedAtMismatch {
+            event_created_at,
+            content_created_at: ack.applied_at,
+        });
+    }
+    Ok(ack)
 }
 
 pub fn parse_nostr_identity_device_approval_receipt_event(
@@ -2652,6 +2763,39 @@ fn validate_device_approval_receipt_tags(event: &Event) -> Result<(), NostrIdent
     Ok(())
 }
 
+fn validate_device_approval_applied_ack_tags(event: &Event) -> Result<(), NostrIdentityError> {
+    let mut seen = BTreeSet::new();
+    for tag in event.tags.iter() {
+        let parts = tag.as_slice();
+        let Some(name) = parts.first().map(String::as_str) else {
+            return Err(NostrIdentityError::BadContent(
+                "device approval applied ack tag is malformed".to_string(),
+            ));
+        };
+        if !matches!(name, "type" | "p" | "e" | "request_pubkey") {
+            return Err(NostrIdentityError::BadContent(format!(
+                "device approval applied ack has unknown tag {name}"
+            )));
+        }
+        if parts.len() != 2 {
+            return Err(NostrIdentityError::BadContent(format!(
+                "device approval applied ack {name} tag is malformed"
+            )));
+        }
+        if !seen.insert(name) {
+            return Err(NostrIdentityError::BadContent(format!(
+                "device approval applied ack has duplicate tag {name}"
+            )));
+        }
+    }
+    if seen.len() != 4 {
+        return Err(NostrIdentityError::BadContent(
+            "device approval applied ack is missing required tags".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 fn require_exact_event_tag(
     event: &Event,
     expected: &[&str],
@@ -3042,6 +3186,20 @@ fn validate_device_approval_receipt(
     Ok(())
 }
 
+fn validate_device_approval_applied_ack(
+    ack: &NostrIdentityDeviceApprovalAppliedAck,
+) -> Result<(), NostrIdentityError> {
+    if ack.schema != NOSTR_IDENTITY_DEVICE_APPROVAL_APPLIED_ACK_SCHEMA {
+        return Err(NostrIdentityError::UnsupportedSchema(ack.schema));
+    }
+    validate_pubkey(&ack.request_pubkey)?;
+    validate_pubkey(&ack.device_app_key_pubkey)?;
+    validate_pubkey(&ack.approved_by_pubkey)?;
+    event_id_from_hex(&ack.approval_event_id)?;
+    non_negative_u64(ack.applied_at, "applied_at")?;
+    Ok(())
+}
+
 fn validate_device_approval_receipt_roster_op(
     receipt: &NostrIdentityDeviceApprovalReceipt,
     signed: &SignedNostrIdentityRosterOp,
@@ -3281,6 +3439,40 @@ mod tests {
         let receipt_roster_op =
             parse_nostr_identity_device_approval_receipt_roster_op(&parsed).unwrap();
         assert_eq!(receipt_roster_op.op_id, approval.op_id);
+    }
+
+    #[test]
+    fn device_approval_applied_ack_is_signed_by_the_approved_device() {
+        let admin = Keys::generate();
+        let device = Keys::generate();
+        let request = Keys::generate();
+        let approval_event = EventBuilder::text_note("approval receipt")
+            .sign_with_keys(&admin)
+            .unwrap();
+        let ack = NostrIdentityDeviceApprovalAppliedAck {
+            schema: NOSTR_IDENTITY_DEVICE_APPROVAL_APPLIED_ACK_SCHEMA,
+            request_pubkey: request.public_key().to_hex(),
+            device_app_key_pubkey: device.public_key().to_hex(),
+            approval_event_id: approval_event.id.to_hex(),
+            approved_by_pubkey: admin.public_key().to_hex(),
+            applied_at: 43,
+        };
+
+        let event = build_nostr_identity_device_approval_applied_ack_event(&device, ack.clone())
+            .expect("build applied ack");
+        assert!(fact_event_has_type(
+            &event,
+            NOSTR_IDENTITY_DEVICE_APPROVAL_APPLIED_ACK_TYPE
+        ));
+        assert_eq!(
+            parse_nostr_identity_device_approval_applied_ack_event(&event)
+                .expect("parse applied ack"),
+            ack
+        );
+
+        let mut forged = ack;
+        forged.device_app_key_pubkey = Keys::generate().public_key().to_hex();
+        assert!(build_nostr_identity_device_approval_applied_ack_event(&device, forged).is_err());
     }
 
     #[test]

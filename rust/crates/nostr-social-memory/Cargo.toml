@@ -11,7 +11,7 @@ readme = "../../README.md"
 [dependencies]
 anyhow.workspace = true
 chrono.workspace = true
-nostr-identity = { path = "../nostr-identity", version = "0.3.0" }
+nostr-identity = { path = "../nostr-identity", version = "0.3.1" }
 nostr-social-graph = { path = "../nostr-social-graph", version = "0.1.2" }
 nostr-sdk.workspace = true
 serde.workspace = true
