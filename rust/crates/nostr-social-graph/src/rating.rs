@@ -171,13 +171,35 @@ impl SocialGraph {
 
         let mut projection = RatingGraphProjection::default();
         let mut accepted = IndexSet::<String>::new();
+        let root = self.get_root().to_owned();
+
+        // Root ratings define the local authority boundary. Apply them before
+        // discovering transitive raters so input order cannot let a
+        // root-muted identity influence the projection through another path.
+        for rating in ratings {
+            if rating.rater != root
+                || !config.accepts_rating(rating)
+                || !accepted.insert(rating.id.clone())
+            {
+                continue;
+            }
+            self.apply_accepted_rating(rating, config, &mut projection)?;
+        }
+        let root_muted_raters = self
+            .get_muted_by_user(&root)
+            .into_iter()
+            .collect::<IndexSet<_>>();
 
         loop {
             projection.passes = projection.passes.saturating_add(1);
             let mut graph_changed = false;
 
             for rating in ratings {
-                if accepted.contains(&rating.id) || !config.accepts_rating(rating) {
+                if rating.rater == root
+                    || accepted.contains(&rating.id)
+                    || !config.accepts_rating(rating)
+                    || root_muted_raters.contains(&rating.rater)
+                {
                     continue;
                 }
 
@@ -188,33 +210,8 @@ impl SocialGraph {
                     continue;
                 }
 
-                let normalized_score = rating.normalized_score()?;
                 accepted.insert(rating.id.clone());
-                projection.accepted_ratings += 1;
-
-                if normalized_score >= config.min_positive_score {
-                    projection.positive_ratings += 1;
-                    if self.add_positive_relation(
-                        &rating.rater,
-                        &rating.subject,
-                        rating.created_at,
-                    )? {
-                        graph_changed = true;
-                        projection.positive_edges_added += 1;
-                    }
-                } else if normalized_score <= config.max_negative_score {
-                    projection.negative_ratings += 1;
-                    if self.add_negative_relation(
-                        &rating.rater,
-                        &rating.subject,
-                        rating.created_at,
-                    )? {
-                        graph_changed = true;
-                        projection.negative_edges_added += 1;
-                    }
-                } else {
-                    projection.neutral_ratings += 1;
-                }
+                graph_changed |= self.apply_accepted_rating(rating, config, &mut projection)?;
             }
 
             if !graph_changed {
@@ -224,6 +221,32 @@ impl SocialGraph {
 
         projection.ignored_ratings = ratings.len().saturating_sub(projection.accepted_ratings);
         Ok(projection)
+    }
+
+    fn apply_accepted_rating(
+        &mut self,
+        rating: &Rating,
+        config: &RatingGraphConfig,
+        projection: &mut RatingGraphProjection,
+    ) -> Result<bool> {
+        let normalized_score = rating.normalized_score()?;
+        projection.accepted_ratings += 1;
+        if normalized_score >= config.min_positive_score {
+            projection.positive_ratings += 1;
+            let changed =
+                self.add_positive_relation(&rating.rater, &rating.subject, rating.created_at)?;
+            projection.positive_edges_added += usize::from(changed);
+            Ok(changed)
+        } else if normalized_score <= config.max_negative_score {
+            projection.negative_ratings += 1;
+            let changed =
+                self.add_negative_relation(&rating.rater, &rating.subject, rating.created_at)?;
+            projection.negative_edges_added += usize::from(changed);
+            Ok(changed)
+        } else {
+            projection.neutral_ratings += 1;
+            Ok(false)
+        }
     }
 }
 
@@ -437,5 +460,88 @@ mod tests {
             UNKNOWN_FOLLOW_DISTANCE
         );
         assert_eq!(graph.get_follow_distance("peer:strong"), 1);
+    }
+
+    #[test]
+    fn root_mute_suppresses_reachable_raters_influence() {
+        let mut graph = SocialGraph::new("local:root");
+        let projection = graph
+            .apply_ratings(
+                &poisoning_ratings(0),
+                &RatingGraphConfig::for_scopes(["peer"]),
+            )
+            .unwrap();
+
+        assert_root_revocation_projection(&graph, &projection);
+    }
+
+    #[test]
+    fn root_mute_projection_is_input_order_independent() {
+        let ratings = poisoning_ratings(0);
+        let mut reversed = ratings.clone();
+        reversed.reverse();
+        let config = RatingGraphConfig::for_scopes(["peer"]);
+        let mut forward_graph = SocialGraph::new("local:root");
+        let mut reversed_graph = SocialGraph::new("local:root");
+
+        let forward = forward_graph.apply_ratings(&ratings, &config).unwrap();
+        let reversed = reversed_graph.apply_ratings(&reversed, &config).unwrap();
+
+        assert_root_revocation_projection(&forward_graph, &forward);
+        assert_root_revocation_projection(&reversed_graph, &reversed);
+        assert_eq!(projection_counts(&forward), projection_counts(&reversed));
+    }
+
+    #[test]
+    fn root_recovery_reactivates_retained_ratings_on_rebuild() {
+        let mut graph = SocialGraph::new("local:root");
+        let projection = graph
+            .apply_ratings(
+                &poisoning_ratings(100),
+                &RatingGraphConfig::for_scopes(["peer"]),
+            )
+            .unwrap();
+
+        assert_eq!(projection.accepted_ratings, 5);
+        assert_eq!(projection.ignored_ratings, 0);
+        assert_eq!(graph.get_follow_distance("peer:poisoner"), 1);
+        assert!(graph.get_user_muted_by("peer:poisoner").is_empty());
+        for target in ["peer:target-one", "peer:target-two"] {
+            assert_eq!(
+                graph.get_user_muted_by(target),
+                vec!["peer:poisoner".to_owned()]
+            );
+        }
+    }
+
+    fn poisoning_ratings(root_to_poisoner: i64) -> Vec<Rating> {
+        vec![
+            rating("local:root", "peer:origin", "peer", 100),
+            rating("peer:origin", "peer:poisoner", "peer", 100),
+            rating("peer:poisoner", "peer:target-one", "peer", 0),
+            rating("peer:poisoner", "peer:target-two", "peer", 0),
+            rating("local:root", "peer:poisoner", "peer", root_to_poisoner),
+        ]
+    }
+
+    fn assert_root_revocation_projection(graph: &SocialGraph, projection: &RatingGraphProjection) {
+        assert_eq!(projection.accepted_ratings, 3);
+        assert_eq!(projection.ignored_ratings, 2);
+        assert_eq!(graph.get_follow_distance("peer:poisoner"), 2);
+        assert_eq!(
+            graph.get_user_muted_by("peer:poisoner"),
+            vec!["local:root".to_owned()]
+        );
+        assert!(graph.get_user_muted_by("peer:target-one").is_empty());
+        assert!(graph.get_user_muted_by("peer:target-two").is_empty());
+    }
+
+    fn projection_counts(projection: &RatingGraphProjection) -> (usize, usize, usize, usize) {
+        (
+            projection.accepted_ratings,
+            projection.ignored_ratings,
+            projection.positive_edges_added,
+            projection.negative_edges_added,
+        )
     }
 }
