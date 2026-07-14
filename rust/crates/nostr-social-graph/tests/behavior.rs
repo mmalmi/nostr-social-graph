@@ -197,34 +197,6 @@ fn invalid_tags_and_self_references_are_ignored() {
     );
 }
 
-#[test]
-fn real_binary_fixture_matches_typescript_summary_for_default_root() {
-    let path = real_binary_path();
-    assert!(
-        path.exists(),
-        "missing real binary fixture at {}",
-        path.display()
-    );
-
-    let mut graph = SocialGraph::from_binary(ADAM, &read_bytes(&path)).unwrap();
-    let ts_summary = ts_fixture_load(ADAM, &path);
-    assert_eq!(summary(&mut graph), without_binary(ts_summary));
-}
-
-#[test]
-fn real_binary_fixture_matches_typescript_summary_for_alternate_root() {
-    let path = real_binary_path();
-    assert!(
-        path.exists(),
-        "missing real binary fixture at {}",
-        path.display()
-    );
-
-    let mut graph = SocialGraph::from_binary(SIRIUS, &read_bytes(&path)).unwrap();
-    let ts_summary = ts_fixture_load(SIRIUS, &path);
-    assert_eq!(summary(&mut graph), without_binary(ts_summary));
-}
-
 fn sorted(mut values: Vec<String>) -> Vec<String> {
     values.sort();
     values

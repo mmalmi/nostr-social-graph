@@ -117,10 +117,6 @@ pub fn event(pubkey: &str, kind: u32, created_at: u64, tagged: Vec<&str>) -> Nos
     }
 }
 
-pub fn real_binary_path() -> PathBuf {
-    repo_root().join("ts/data/socialGraph.bin")
-}
-
 pub fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .ancestors()

@@ -1,6 +1,7 @@
 mod support;
 
 use std::fs;
+use std::path::PathBuf;
 
 use nostr_social_graph::{BinaryBudget, SocialGraph};
 use support::*;
@@ -169,4 +170,34 @@ fn budgeted_chunk_output_reassembles_to_direct_binary() {
 
     let reassembled: Vec<u8> = chunks.into_iter().flatten().collect();
     assert_eq!(reassembled, direct);
+}
+
+#[test]
+fn real_binary_fixture_matches_typescript_summary_for_default_root() {
+    let path = real_binary_path();
+    assert!(
+        path.exists(),
+        "missing real binary fixture at {}",
+        path.display()
+    );
+    let mut graph = SocialGraph::from_binary(ADAM, &read_bytes(&path)).unwrap();
+    let ts_summary = ts_fixture_load(ADAM, &path);
+    assert_eq!(summary(&mut graph), without_binary(ts_summary));
+}
+
+#[test]
+fn real_binary_fixture_matches_typescript_summary_for_alternate_root() {
+    let path = real_binary_path();
+    assert!(
+        path.exists(),
+        "missing real binary fixture at {}",
+        path.display()
+    );
+    let mut graph = SocialGraph::from_binary(SIRIUS, &read_bytes(&path)).unwrap();
+    let ts_summary = ts_fixture_load(SIRIUS, &path);
+    assert_eq!(summary(&mut graph), without_binary(ts_summary));
+}
+
+fn real_binary_path() -> PathBuf {
+    repo_root().join("ts/data/socialGraph.bin")
 }
