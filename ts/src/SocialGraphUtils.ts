@@ -382,7 +382,7 @@ export class SocialGraphUtils {
     
     console.timeEnd('pruneOvermutedUsers');
     console.log(`✅ Pruning complete: removed ${totalRemoved.toLocaleString()} overmuted users total`);
-    graph.recalculateFollowDistances();
+    await graph.recalculateFollowDistances();
     return totalRemoved;
   }
-} 
+}

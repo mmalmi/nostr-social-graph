@@ -18,6 +18,37 @@ describe('utils', () => {
     expect(isValidPubKey('invalid_pubkey')).toBe(false);
   });
 
+  it('waits for pruning to finish recalculating follow distances', async () => {
+    const graph = new SocialGraph(pubKeys.adam);
+    const followed = Array.from({ length: 1_001 }, (_, index) =>
+      (index + 1).toString(16).padStart(64, '0')
+    );
+    const secondHop = 'f'.repeat(64);
+    graph.handleEvent({
+      created_at: 1_000,
+      content: '',
+      tags: followed.map((pubkey) => ['p', pubkey]),
+      kind: 3,
+      pubkey: pubKeys.adam,
+      id: 'wide-follow-list',
+      sig: 'signature',
+    }, true);
+    graph.handleEvent({
+      created_at: 1_001,
+      content: '',
+      tags: [['p', secondHop]],
+      kind: 3,
+      pubkey: followed.at(-1)!,
+      id: 'second-hop-follow-list',
+      sig: 'signature',
+    }, true);
+    await graph.recalculateFollowDistances();
+
+    await SocialGraphUtils.pruneOvermutedUsers(graph);
+
+    expect(graph.getFollowDistance(secondHop)).toBe(2);
+  });
+
   describe('SocialGraphUtils - hasFollowers', () => {
     it('should return true for users with followers', async () => {
       const graph = new SocialGraph(pubKeys.adam);
