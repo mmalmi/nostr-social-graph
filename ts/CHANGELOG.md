@@ -1,10 +1,11 @@
 # Changelog
 
-## 2.0.0 - 2026-07-10
+## 2.0.0 - 2026-07-16
 
 - Replace device-approval request URIs with a strict three-field bootstrap URI.
 - Add ephemeral-key-signed request events with domain-separated secret commitments and stable AppKey proofs.
 - Reject legacy query links, embedded request events, noncanonical keys and secrets, and unknown bootstrap fields.
+- Add signed FIPS transport identity facts with shared Rust/TypeScript vectors and strict normalization.
 
 ## 1.0.39
 

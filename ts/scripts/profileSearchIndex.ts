@@ -1,4 +1,4 @@
-import { SearchIndex, type SearchOptions, type SearchResult } from './hashtreeIndex';
+import { SearchIndex, type SearchOptions, type SearchResult } from '@hashtree/index';
 import { fromHex, nhashEncode, toHex, type CID, type Store } from './hashtreeAdapter';
 
 export type ProfileSearchRecord = {

@@ -30,16 +30,7 @@
   },
   "pnpm": {
     "overrides": {
-      "@hashtree/collection": "link:../hashtree/ts/packages/hashtree-collection",
-      "@hashtree/core": "link:../hashtree/ts/packages/hashtree",
-      "@hashtree/dexie": "link:../hashtree/ts/packages/hashtree-dexie",
-      "@hashtree/fips-transport": "link:../hashtree/ts/packages/hashtree-fips-transport",
-      "@hashtree/git": "link:../hashtree/ts/packages/hashtree-git",
-      "@hashtree/index": "link:../hashtree/ts/packages/hashtree-index",
-      "@hashtree/merge": "link:../hashtree/ts/packages/hashtree-merge",
-      "@hashtree/mesh": "link:../hashtree/ts/packages/hashtree-mesh",
-      "@hashtree/nostr": "link:../hashtree/ts/packages/hashtree-nostr",
-      "@hashtree/worker": "link:../hashtree/ts/packages/hashtree-worker"
+      "@hashtree/core": "https://github.com/mmalmi/hashtree/releases/download/hashtree-core-ts-v0.1.8/hashtree-core-0.1.8.tgz"
     }
   }
 }

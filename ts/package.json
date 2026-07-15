@@ -52,7 +52,8 @@
   ],
   "devDependencies": {
     "@cashu/cashu-ts": "^3.6.4",
-    "@hashtree/core": "link:../../hashtree/ts/packages/hashtree",
+    "@hashtree/core": "https://github.com/mmalmi/hashtree/releases/download/hashtree-core-ts-v0.1.8/hashtree-core-0.1.8.tgz",
+    "@hashtree/index": "https://github.com/mmalmi/hashtree/releases/download/hashtree-index-ts-v0.1.9/hashtree-index-0.1.9.tgz",
     "@playwright/test": "^1.57.0",
     "@scure/base": "^2.0.0",
     "@types/express": "^5.0.1",
