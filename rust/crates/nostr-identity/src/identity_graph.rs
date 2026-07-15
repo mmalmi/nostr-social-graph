@@ -733,6 +733,10 @@ fn project_identity_key_acceptances_with_provenance(
     (projection, acceptance_ids)
 }
 
+/// Resolves transport-only bindings from already verified identity events.
+///
+/// Callers must construct both input streams through the corresponding event
+/// parsers; projection structs do not retain signatures and cannot reverify them.
 pub fn resolve_fips_transport_identity_bindings(
     identity: Uuid,
     roster_ops: impl IntoIterator<Item = SignedIdentityRosterOp>,
@@ -1314,31 +1318,6 @@ mod tests {
     }
 
     #[test]
-    fn parses_shared_ts_rust_identity_link_request_fixture() {
-        let device_keys = fixed_keys(1);
-        let invite_keys = fixed_keys(2);
-        let device_pubkey = device_keys.public_key().to_hex();
-        let invite_pubkey = invite_keys.public_key().to_hex();
-        let event = Event::from_json(include_str!(
-            "../../../../testdata/identity-link-request.json"
-        ))
-        .unwrap();
-        let parsed = parse_identity_link_request_event(&event, &invite_keys).unwrap();
-
-        assert_eq!(parsed.signer_pubkey, device_pubkey);
-        assert_eq!(parsed.content.identity, subject());
-        assert_eq!(
-            parsed.content.admin_pubkey,
-            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-        );
-        assert_eq!(parsed.content.invite_pubkey, invite_pubkey);
-        assert_eq!(parsed.content.joining_pubkey, device_pubkey);
-        assert_eq!(parsed.content.client_nonce, "fixture-link-request");
-        assert_eq!(parsed.content.requested_at, 1_720_000_021);
-        assert_eq!(parsed.content.label, Some("Fixture Phone".to_owned()));
-    }
-
-    #[test]
     fn projects_admin_authorized_keys_and_rejects_non_admin_edits() {
         let admin_keys = Keys::generate();
         let app_keys = Keys::generate();
@@ -1713,18 +1692,10 @@ mod tests {
 
     #[test]
     fn resolves_only_active_self_accepted_fips_transport_bindings() {
-        let fixture: serde_json::Value = serde_json::from_str(include_str!(
-            "../../../../testdata/fips-transport-identity-v1.json"
-        ))
-        .unwrap();
-        let identity = Uuid::parse_str(fixture["identity"].as_str().unwrap()).unwrap();
-        let keys = |name: &str| {
-            Keys::new(SecretKey::from_hex(fixture["keys"][name].as_str().unwrap()).unwrap())
-        };
-        let timestamp = |name: &str| fixture["timestamps"][name].as_u64().unwrap();
-        let admin = keys("adminSecretKey");
-        let transport = keys("transportSecretKey");
-        let other = keys("otherSecretKey");
+        let identity = subject();
+        let admin = fixed_keys(1);
+        let transport = fixed_keys(2);
+        let other = fixed_keys(3);
         let transport_pubkey = transport.public_key().to_hex();
         let signed_roster = |signer: &Keys,
                              op: IdentityRosterOp,
@@ -1745,13 +1716,7 @@ mod tests {
             )
             .unwrap()
         };
-        assert_eq!(
-            fixture["purpose"].as_str(),
-            Some(IDENTITY_PURPOSE_FIPS_TRANSPORT)
-        );
-        assert_eq!(fixture["keys"]["transportPubkey"], transport_pubkey);
-
-        let bootstrap_at = timestamp("bootstrap");
+        let bootstrap_at = 10;
         let bootstrap = signed_roster(
             &admin,
             IdentityRosterOp::AddKey {
@@ -1768,7 +1733,7 @@ mod tests {
             "fips-bootstrap",
             bootstrap_at,
         );
-        let add_at = timestamp("addTransport");
+        let add_at = 11;
         let add_transport = signed_roster(
             &admin,
             IdentityRosterOp::AddKey {
@@ -1799,7 +1764,7 @@ mod tests {
             )
             .unwrap()
         };
-        let acceptance_at = timestamp("acceptTransport");
+        let acceptance_at = 12;
         let acceptance =
             signed_acceptance(add_transport.op_id.clone(), "fips-accept", acceptance_at);
         let resolve = |ops: Vec<SignedIdentityRosterOp>,
@@ -1905,7 +1870,7 @@ mod tests {
             tied_latest_is_correct.then_some(tied[1].acceptance_id.as_str())
         );
 
-        let final_at = timestamp("tombstoneTransport");
+        let final_at = 13;
         let grant_write = signed_roster(
             &admin,
             IdentityRosterOp::SetKeyCapabilities {

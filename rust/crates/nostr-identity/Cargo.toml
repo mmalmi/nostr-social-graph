@@ -1,12 +1,13 @@
 [package]
 name = "nostr-identity"
-version = "0.3.1"
+version = "0.4.0"
 description = "Tag-native UUID fact, roster, and snapshot events for Nostr"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage = "https://github.com/mmalmi/nostr-social-graph"
 readme = "../../README.md"
+exclude = ["tests/repository_interop.rs"]
 
 [dependencies]
 anyhow.workspace = true
