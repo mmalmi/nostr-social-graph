@@ -9,7 +9,7 @@ import {
   type FactOp,
 } from './factEvents';
 import type { NostrEvent } from './utils';
-import { finalizeEvent, getPublicKey, nip44, type Event } from 'nostr-tools';
+import { finalizeEvent, getPublicKey, nip44, verifyEvent, type Event } from 'nostr-tools';
 
 export const IDENTITY_GRAPH_ROSTER_SCHEMA = 1;
 export const IDENTITY_GRAPH_KEY_ACCEPTANCE_SCHEMA = 1;
@@ -27,6 +27,7 @@ export const IDENTITY_PURPOSE_APP = 'app';
 export const IDENTITY_PURPOSE_RECOVERY = 'recovery';
 export const IDENTITY_PURPOSE_REMOTE_SIGNER = 'remote_signer';
 export const IDENTITY_PURPOSE_PROFILE = 'profile';
+export const IDENTITY_PURPOSE_FIPS_TRANSPORT = 'fips_transport';
 
 export type IdentityGraphId = string;
 export type IdentityKeyPurpose = string;
@@ -130,6 +131,12 @@ export interface IdentityKeyAcceptanceProjection {
   acceptedKeys: Record<string, IdentityKeyAcceptanceContent>;
   acceptedAcceptanceIds: string[];
   rejectedAcceptanceIds: string[];
+}
+
+export interface FipsTransportIdentityBinding {
+  transportPubkey: string;
+  rosterOpId: string;
+  acceptanceId: string;
 }
 
 export interface BuildIdentityRosterOpDraftOptions {
@@ -261,8 +268,10 @@ export function buildIdentityLinkRequestEvent(
   }, options.signerSecretKey);
 }
 
+/** Parse a roster event whose event ID and signature are trusted or verified separately. */
 export function parseIdentityRosterOpEvent(event: NostrEvent): SignedIdentityRosterOp {
-  const op = parseFactOpEvent({ ...event, content: '' });
+  if (event.content !== '') throw new Error('identity roster op event must have empty content');
+  const op = parseFactOpEvent(event);
   const content = rosterOpContentFromFacts(op);
   if (content.actorPubkey !== normalizeHexPubkey(event.pubkey)) {
     throw new Error('identity roster actor signer mismatch');
@@ -277,7 +286,9 @@ export function parseIdentityRosterOpEvent(event: NostrEvent): SignedIdentityRos
   };
 }
 
+/** Parse an acceptance event whose event ID and signature are trusted or verified separately. */
 export function parseIdentityKeyAcceptanceEvent(event: NostrEvent): SignedIdentityKeyAcceptance {
+  if (event.content !== '') throw new Error('identity key acceptance event must have empty content');
   const op = parseFactOpEvent(event);
   const content = keyAcceptanceContentFromFacts(op);
   if (content.keyPubkey !== normalizeHexPubkey(event.pubkey)) {
@@ -345,6 +356,13 @@ export function projectIdentityRoster(
   identity: IdentityGraphId,
   ops: SignedIdentityRosterOp[],
 ): IdentityRosterProjection {
+  return projectIdentityRosterWithProvenance(identity, ops).projection;
+}
+
+function projectIdentityRosterWithProvenance(
+  identity: IdentityGraphId,
+  ops: SignedIdentityRosterOp[],
+): { projection: IdentityRosterProjection; activeAddOpIds: Map<string, string> } {
   const normalizedIdentity = requireIdentityId(identity);
   const projection: IdentityRosterProjection = {
     identity: normalizedIdentity,
@@ -354,6 +372,7 @@ export function projectIdentityRoster(
     acceptedOpIds: [],
     rejectedOpIds: [],
   };
+  const activeAddOpIds = new Map<string, string>();
   const sorted = ops
     .filter((op) => op.content.identity === normalizedIdentity)
     .slice()
@@ -365,8 +384,14 @@ export function projectIdentityRoster(
       continue;
     }
     projection.acceptedOpIds.push(signed.opId);
+    const op = signed.content.op;
+    if (op.op === 'add_key' && !activeAddOpIds.has(op.key.pubkey)) {
+      activeAddOpIds.set(op.key.pubkey, signed.opId);
+    } else if (op.op === 'tombstone_key') {
+      activeAddOpIds.delete(op.pubkey);
+    }
   }
-  return projection;
+  return { projection, activeAddOpIds };
 }
 
 export function applyIdentityRosterOp(
@@ -445,6 +470,13 @@ export function projectIdentityKeyAcceptances(
   identity: IdentityGraphId,
   acceptances: SignedIdentityKeyAcceptance[],
 ): IdentityKeyAcceptanceProjection {
+  return projectIdentityKeyAcceptancesWithProvenance(identity, acceptances).projection;
+}
+
+function projectIdentityKeyAcceptancesWithProvenance(
+  identity: IdentityGraphId,
+  acceptances: SignedIdentityKeyAcceptance[],
+): { projection: IdentityKeyAcceptanceProjection; acceptanceIds: Map<string, string> } {
   const normalizedIdentity = requireIdentityId(identity);
   const projection: IdentityKeyAcceptanceProjection = {
     identity: normalizedIdentity,
@@ -452,6 +484,7 @@ export function projectIdentityKeyAcceptances(
     acceptedAcceptanceIds: [],
     rejectedAcceptanceIds: [],
   };
+  const acceptanceIds = new Map<string, string>();
   const sorted = acceptances
     .filter((acceptance) => acceptance.content.identity === normalizedIdentity)
     .slice()
@@ -465,9 +498,79 @@ export function projectIdentityKeyAcceptances(
       continue;
     }
     projection.acceptedKeys[signed.content.keyPubkey] = signed.content;
+    acceptanceIds.set(signed.content.keyPubkey, signed.acceptanceId);
     projection.acceptedAcceptanceIds.push(signed.acceptanceId);
   }
-  return projection;
+  return { projection, acceptanceIds };
+}
+
+export function resolveFipsTransportIdentityBindings(
+  identity: IdentityGraphId,
+  rosterEvents: readonly NostrEvent[],
+  acceptanceEvents: readonly NostrEvent[],
+): FipsTransportIdentityBinding[] {
+  return resolveTrustedFipsTransportIdentityBindings(
+    identity,
+    parseVerifiedIdentityEvents(rosterEvents, parseIdentityRosterOpEvent),
+    parseVerifiedIdentityEvents(acceptanceEvents, parseIdentityKeyAcceptanceEvent),
+  );
+}
+
+/** Resolve records whose event IDs and signatures were verified before parsing. */
+export function resolveTrustedFipsTransportIdentityBindings(
+  identity: IdentityGraphId,
+  rosterOps: SignedIdentityRosterOp[],
+  acceptances: SignedIdentityKeyAcceptance[],
+): FipsTransportIdentityBinding[] {
+  const normalizedIdentity = requireIdentityId(identity);
+  const { projection: roster, activeAddOpIds } = projectIdentityRosterWithProvenance(
+    normalizedIdentity,
+    rosterOps,
+  );
+
+  const { projection: acceptanceProjection, acceptanceIds } = (
+    projectIdentityKeyAcceptancesWithProvenance(normalizedIdentity, acceptances)
+  );
+  return Object.entries(roster.activeKeys)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .flatMap(([transportPubkey, key]) => {
+      if ((key.capabilities ?? []).length !== 0
+        || key.purposes?.length !== 1
+        || !(key.purposes ?? []).includes(IDENTITY_PURPOSE_FIPS_TRANSPORT)) return [];
+      const rosterOpId = activeAddOpIds.get(transportPubkey);
+      const acceptance = acceptanceProjection.acceptedKeys[transportPubkey];
+      if (!rosterOpId
+        || acceptance?.rosterOpId !== rosterOpId
+        || acceptance.purposes.length !== 1
+        || !acceptance.purposes.includes(IDENTITY_PURPOSE_FIPS_TRANSPORT)) return [];
+      const acceptanceId = acceptanceIds.get(transportPubkey);
+      return acceptanceId ? [{ transportPubkey, rosterOpId, acceptanceId }] : [];
+    });
+}
+
+function parseVerifiedIdentityEvents<T>(
+  events: readonly NostrEvent[],
+  parse: (event: NostrEvent) => T,
+): T[] {
+  const parsed: T[] = [];
+  for (const event of events) {
+    try {
+      const wireEvent: NostrEvent = {
+        id: event.id,
+        pubkey: event.pubkey,
+        created_at: event.created_at,
+        kind: event.kind,
+        tags: event.tags.map((tag) => tag.slice()),
+        content: event.content,
+        sig: event.sig,
+      };
+      if (!verifyEvent(wireEvent)) continue;
+      parsed.push(parse(wireEvent));
+    } catch {
+      // Relay result sets may contain unrelated or malformed kind-7368 events.
+    }
+  }
+  return parsed;
 }
 
 export function identityKeyCanAdmin(projection: IdentityRosterProjection, pubkey: string): boolean {

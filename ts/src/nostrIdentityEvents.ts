@@ -6,6 +6,7 @@ import {
   IDENTITY_CAPABILITY_RECOVER,
   IDENTITY_CAPABILITY_WRITE,
   IDENTITY_PURPOSE_APP,
+  IDENTITY_PURPOSE_FIPS_TRANSPORT,
   IDENTITY_PURPOSE_PROFILE,
   IDENTITY_PURPOSE_RECOVERY,
   IDENTITY_PURPOSE_REMOTE_SIGNER,
@@ -388,7 +389,9 @@ function nostrIdentityPurposeToIdentity(purpose: NostrIdentityKeyPurpose): Ident
   if (purpose === 'app_key') return IDENTITY_PURPOSE_APP;
   if (purpose === 'recovery_phrase') return IDENTITY_PURPOSE_RECOVERY;
   if (purpose === 'nip46_signer') return IDENTITY_PURPOSE_REMOTE_SIGNER;
-  return IDENTITY_PURPOSE_PROFILE;
+  if (purpose === 'social_profile') return IDENTITY_PURPOSE_PROFILE;
+  if (purpose === 'fips_transport') return IDENTITY_PURPOSE_FIPS_TRANSPORT;
+  throw new Error(`unsupported NostrIdentity purpose ${String(purpose)}`);
 }
 
 function identityPurposeToNostrIdentity(purpose: IdentityKeyPurpose): NostrIdentityKeyPurpose {
@@ -396,6 +399,7 @@ function identityPurposeToNostrIdentity(purpose: IdentityKeyPurpose): NostrIdent
   if (purpose === IDENTITY_PURPOSE_RECOVERY) return 'recovery_phrase';
   if (purpose === IDENTITY_PURPOSE_REMOTE_SIGNER) return 'nip46_signer';
   if (purpose === IDENTITY_PURPOSE_PROFILE) return 'social_profile';
+  if (purpose === IDENTITY_PURPOSE_FIPS_TRANSPORT) return 'fips_transport';
   throw new Error(`unsupported NostrIdentity purpose ${purpose}`);
 }
 

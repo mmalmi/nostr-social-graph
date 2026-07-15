@@ -15,6 +15,7 @@ import {
   createNostrIdentityManualDeviceAddRosterOp,
   encryptedDeviceLabelPayloadsFromNostrIdentityRosterOpEvent,
   encodeNostrIdentityDeviceLinkInvite,
+  fipsTransportFacet,
   isCompleteNostrIdentityDeviceLinkInviteInput,
   nostrIdentityAppKeyApprovalCandidateFilters,
   nostrIdentityAppKeyApprovalCandidatesFromEvents,
@@ -29,12 +30,60 @@ import {
   parseNostrIdentityRosterOpEvent,
   projectNostrIdentityRoster,
   signNostrIdentityDeviceLinkRequestEvent,
+  sortPurposes,
 } from '../src';
 
 const profileId = '6b7f5df4-1d2d-43a7-9b87-873e41a2d99a';
 const requestSecret = Buffer.from(Uint8Array.from({ length: 32 }, (_, index) => index)).toString('base64url');
 
 describe('NostrIdentity', () => {
+  it('roundtrips FIPS transport facets without application capabilities', () => {
+    const adminSecret = generateSecretKey();
+    const adminPubkey = getPublicKey(adminSecret);
+    const transportPubkey = getPublicKey(generateSecretKey());
+    const bootstrap = parseNostrIdentityRosterOpEvent(buildNostrIdentityRosterOpEvent({
+      signerSecretKey: adminSecret,
+      profileId,
+      createdAt: 8,
+      clientNonce: 'fips-bootstrap',
+      op: { op: 'add_facet', facet: appKeyFacet(adminPubkey, {
+        addedAt: 8,
+        capabilities: APP_KEY_ADMIN_CAPABILITIES,
+      }) },
+    }));
+    const transport = parseNostrIdentityRosterOpEvent(buildNostrIdentityRosterOpEvent({
+      signerSecretKey: adminSecret,
+      profileId,
+      parents: [bootstrap.op_id],
+      createdAt: 9,
+      clientNonce: 'fips-transport',
+      op: { op: 'add_facet', facet: fipsTransportFacet(transportPubkey, { addedAt: 9 }) },
+    }));
+
+    expect(transport.content.op).toEqual({
+      op: 'add_facet',
+      facet: {
+        pubkey: transportPubkey,
+        purposes: ['fips_transport'],
+        capabilities: {},
+        added_at: 9,
+      },
+    });
+    expect(sortPurposes([
+      'fips_transport',
+      'social_profile',
+      'app_key',
+      'nip46_signer',
+      'recovery_phrase',
+    ])).toEqual([
+      'app_key',
+      'recovery_phrase',
+      'nip46_signer',
+      'social_profile',
+      'fips_transport',
+    ]);
+  });
+
   it('stores app-key names only in encrypted extension facts', () => {
     const secretKey = generateSecretKey();
     const pubkey = getPublicKey(secretKey);

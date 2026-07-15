@@ -25,6 +25,7 @@ pub const IDENTITY_PURPOSE_APP: &str = "app";
 pub const IDENTITY_PURPOSE_RECOVERY: &str = "recovery";
 pub const IDENTITY_PURPOSE_REMOTE_SIGNER: &str = "remote_signer";
 pub const IDENTITY_PURPOSE_PROFILE: &str = "profile";
+pub const IDENTITY_PURPOSE_FIPS_TRANSPORT: &str = "fips_transport";
 
 pub const IDENTITY_ADMIN_CAPABILITIES: &[&str] = &[
     IDENTITY_CAPABILITY_ADMIN,
@@ -165,6 +166,13 @@ pub struct IdentityKeyAcceptanceProjection {
     pub accepted_keys: BTreeMap<String, IdentityKeyAcceptanceContent>,
     pub accepted_acceptance_ids: Vec<String>,
     pub rejected_acceptance_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FipsTransportIdentityBinding {
+    pub transport_pubkey: String,
+    pub roster_op_id: String,
+    pub acceptance_id: String,
 }
 
 pub struct BuildIdentityRosterOpEventOptions {
@@ -519,6 +527,13 @@ pub fn project_identity_roster(
     identity: Uuid,
     ops: impl IntoIterator<Item = SignedIdentityRosterOp>,
 ) -> IdentityRosterProjection {
+    project_identity_roster_with_provenance(identity, ops).0
+}
+
+fn project_identity_roster_with_provenance(
+    identity: Uuid,
+    ops: impl IntoIterator<Item = SignedIdentityRosterOp>,
+) -> (IdentityRosterProjection, BTreeMap<String, String>) {
     let mut projection = IdentityRosterProjection {
         identity,
         active_keys: BTreeMap::new(),
@@ -527,6 +542,7 @@ pub fn project_identity_roster(
         accepted_op_ids: Vec::new(),
         rejected_op_ids: Vec::new(),
     };
+    let mut active_add_op_ids = BTreeMap::new();
     let mut sorted = ops
         .into_iter()
         .filter(|op| op.content.identity == identity)
@@ -541,12 +557,25 @@ pub fn project_identity_roster(
     for signed in sorted {
         let op_id = signed.op_id.clone();
         if apply_identity_roster_op(&mut projection, &signed) {
+            match &signed.content.op {
+                IdentityRosterOp::AddKey { key } => {
+                    active_add_op_ids
+                        .entry(key.pubkey.clone())
+                        .or_insert_with(|| op_id.clone());
+                }
+                IdentityRosterOp::TombstoneKey { pubkey, .. } => {
+                    active_add_op_ids.remove(pubkey);
+                }
+                IdentityRosterOp::SetKeyCapabilities { .. }
+                | IdentityRosterOp::RotateSecretEpoch { .. }
+                | IdentityRosterOp::RepairSecretWraps { .. } => {}
+            }
             projection.accepted_op_ids.push(op_id);
         } else {
             projection.rejected_op_ids.push(op_id);
         }
     }
-    projection
+    (projection, active_add_op_ids)
 }
 
 pub fn apply_identity_roster_op(
@@ -659,12 +688,20 @@ pub fn project_identity_key_acceptances(
     identity: Uuid,
     acceptances: impl IntoIterator<Item = SignedIdentityKeyAcceptance>,
 ) -> IdentityKeyAcceptanceProjection {
+    project_identity_key_acceptances_with_provenance(identity, acceptances).0
+}
+
+fn project_identity_key_acceptances_with_provenance(
+    identity: Uuid,
+    acceptances: impl IntoIterator<Item = SignedIdentityKeyAcceptance>,
+) -> (IdentityKeyAcceptanceProjection, BTreeMap<String, String>) {
     let mut projection = IdentityKeyAcceptanceProjection {
         identity,
         accepted_keys: BTreeMap::new(),
         accepted_acceptance_ids: Vec::new(),
         rejected_acceptance_ids: Vec::new(),
     };
+    let mut acceptance_ids = BTreeMap::new();
     let mut sorted = acceptances
         .into_iter()
         .filter(|acceptance| acceptance.content.identity == identity)
@@ -685,11 +722,55 @@ pub fn project_identity_key_acceptances(
         projection
             .accepted_keys
             .insert(signed.content.key_pubkey.clone(), signed.content.clone());
+        acceptance_ids.insert(
+            signed.content.key_pubkey.clone(),
+            signed.acceptance_id.clone(),
+        );
         projection
             .accepted_acceptance_ids
             .push(signed.acceptance_id);
     }
-    projection
+    (projection, acceptance_ids)
+}
+
+pub fn resolve_fips_transport_identity_bindings(
+    identity: Uuid,
+    roster_ops: impl IntoIterator<Item = SignedIdentityRosterOp>,
+    acceptances: impl IntoIterator<Item = SignedIdentityKeyAcceptance>,
+) -> Vec<FipsTransportIdentityBinding> {
+    let (roster, active_add_op_ids) = project_identity_roster_with_provenance(identity, roster_ops);
+
+    let (acceptance_projection, acceptance_ids) =
+        project_identity_key_acceptances_with_provenance(identity, acceptances);
+
+    roster
+        .active_keys
+        .iter()
+        .filter_map(|(pubkey, key)| {
+            if !key.capabilities.is_empty()
+                || key.purposes.len() != 1
+                || !key_has_purpose(key, IDENTITY_PURPOSE_FIPS_TRANSPORT)
+            {
+                return None;
+            }
+            let roster_op_id = active_add_op_ids.get(pubkey)?;
+            let acceptance = acceptance_projection.accepted_keys.get(pubkey)?;
+            if acceptance.roster_op_id.as_deref() != Some(roster_op_id.as_str())
+                || acceptance.purposes.len() != 1
+                || !acceptance
+                    .purposes
+                    .iter()
+                    .any(|purpose| purpose == IDENTITY_PURPOSE_FIPS_TRANSPORT)
+            {
+                return None;
+            }
+            Some(FipsTransportIdentityBinding {
+                transport_pubkey: pubkey.clone(),
+                roster_op_id: roster_op_id.clone(),
+                acceptance_id: acceptance_ids.get(pubkey)?.clone(),
+            })
+        })
+        .collect()
 }
 
 pub fn identity_key_can_admin(projection: &IdentityRosterProjection, pubkey: &str) -> bool {
@@ -1628,6 +1709,262 @@ mod tests {
             vec![signed.acceptance_id]
         );
         assert!(projection.accepted_keys.contains_key(&signed.signer_pubkey));
+    }
+
+    #[test]
+    fn resolves_only_active_self_accepted_fips_transport_bindings() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../testdata/fips-transport-identity-v1.json"
+        ))
+        .unwrap();
+        let identity = Uuid::parse_str(fixture["identity"].as_str().unwrap()).unwrap();
+        let keys = |name: &str| {
+            Keys::new(SecretKey::from_hex(fixture["keys"][name].as_str().unwrap()).unwrap())
+        };
+        let timestamp = |name: &str| fixture["timestamps"][name].as_u64().unwrap();
+        let admin = keys("adminSecretKey");
+        let transport = keys("transportSecretKey");
+        let other = keys("otherSecretKey");
+        let transport_pubkey = transport.public_key().to_hex();
+        let signed_roster = |signer: &Keys,
+                             op: IdentityRosterOp,
+                             parents: Vec<String>,
+                             client_nonce: &str,
+                             created_at: u64| {
+            parse_identity_roster_op_event(
+                &build_identity_roster_op_event(
+                    signer,
+                    identity,
+                    op,
+                    parents,
+                    None,
+                    client_nonce,
+                    created_at,
+                )
+                .unwrap(),
+            )
+            .unwrap()
+        };
+        assert_eq!(
+            fixture["purpose"].as_str(),
+            Some(IDENTITY_PURPOSE_FIPS_TRANSPORT)
+        );
+        assert_eq!(fixture["keys"]["transportPubkey"], transport_pubkey);
+
+        let bootstrap_at = timestamp("bootstrap");
+        let bootstrap = signed_roster(
+            &admin,
+            IdentityRosterOp::AddKey {
+                key: identity_key(
+                    admin.public_key().to_hex(),
+                    bootstrap_at,
+                    [IDENTITY_PURPOSE_APP.to_owned()],
+                    capabilities(IDENTITY_ADMIN_CAPABILITIES),
+                    None,
+                )
+                .unwrap(),
+            },
+            vec![],
+            "fips-bootstrap",
+            bootstrap_at,
+        );
+        let add_at = timestamp("addTransport");
+        let add_transport = signed_roster(
+            &admin,
+            IdentityRosterOp::AddKey {
+                key: identity_key(
+                    transport_pubkey.clone(),
+                    add_at,
+                    [IDENTITY_PURPOSE_FIPS_TRANSPORT.to_owned()],
+                    [],
+                    None,
+                )
+                .unwrap(),
+            },
+            vec![bootstrap.op_id.clone()],
+            "fips-add",
+            add_at,
+        );
+        let signed_acceptance = |roster_op_id: String, client_nonce: &str, accepted_at: u64| {
+            parse_identity_key_acceptance_event(
+                &build_identity_key_acceptance_event(
+                    &transport,
+                    identity,
+                    [IDENTITY_PURPOSE_FIPS_TRANSPORT.to_owned()],
+                    Some(roster_op_id),
+                    client_nonce,
+                    accepted_at,
+                )
+                .unwrap(),
+            )
+            .unwrap()
+        };
+        let acceptance_at = timestamp("acceptTransport");
+        let acceptance =
+            signed_acceptance(add_transport.op_id.clone(), "fips-accept", acceptance_at);
+        let resolve = |ops: Vec<SignedIdentityRosterOp>,
+                       acceptances: Vec<SignedIdentityKeyAcceptance>| {
+            resolve_fips_transport_identity_bindings(identity, ops, acceptances)
+        };
+
+        assert_eq!(
+            resolve(
+                vec![bootstrap.clone(), add_transport.clone()],
+                vec![acceptance.clone()],
+            ),
+            vec![FipsTransportIdentityBinding {
+                transport_pubkey: transport_pubkey.clone(),
+                roster_op_id: add_transport.op_id.clone(),
+                acceptance_id: acceptance.acceptance_id.clone(),
+            }]
+        );
+        assert!(resolve(vec![bootstrap.clone(), add_transport.clone()], vec![]).is_empty());
+        let mut wrong_signer = acceptance.clone();
+        wrong_signer.signer_pubkey = other.public_key().to_hex();
+        assert!(
+            resolve(
+                vec![bootstrap.clone(), add_transport.clone()],
+                vec![wrong_signer]
+            )
+            .is_empty()
+        );
+        let mut wrong_link = acceptance.clone();
+        wrong_link.content.roster_op_id = Some("99".repeat(32));
+        assert!(
+            resolve(
+                vec![bootstrap.clone(), add_transport.clone()],
+                vec![wrong_link]
+            )
+            .is_empty()
+        );
+        let mut extra_key_purpose = add_transport.clone();
+        let IdentityRosterOp::AddKey { key } = &mut extra_key_purpose.content.op else {
+            unreachable!()
+        };
+        key.purposes.push(IDENTITY_PURPOSE_APP.to_owned());
+        assert!(
+            resolve(
+                vec![bootstrap.clone(), extra_key_purpose],
+                vec![acceptance.clone()]
+            )
+            .is_empty()
+        );
+        let mut extra_acceptance_purpose = acceptance.clone();
+        extra_acceptance_purpose
+            .content
+            .purposes
+            .push(IDENTITY_PURPOSE_APP.to_owned());
+        assert!(
+            resolve(
+                vec![bootstrap.clone(), add_transport.clone()],
+                vec![extra_acceptance_purpose]
+            )
+            .is_empty()
+        );
+        let superseding_wrong_link = signed_acceptance(
+            "98".repeat(32),
+            "fips-superseding-wrong-link",
+            acceptance_at + 1,
+        );
+        assert!(
+            resolve(
+                vec![bootstrap.clone(), add_transport.clone()],
+                vec![acceptance.clone(), superseding_wrong_link]
+            )
+            .is_empty()
+        );
+        let renewed = signed_acceptance(
+            add_transport.op_id.clone(),
+            "fips-renewed",
+            acceptance_at + 2,
+        );
+        assert_eq!(
+            resolve(
+                vec![bootstrap.clone(), add_transport.clone()],
+                vec![acceptance.clone(), renewed.clone()],
+            )[0]
+            .acceptance_id,
+            renewed.acceptance_id
+        );
+        let mut tied = vec![
+            signed_acceptance(
+                add_transport.op_id.clone(),
+                "fips-tie-correct",
+                acceptance_at + 3,
+            ),
+            signed_acceptance("97".repeat(32), "fips-tie-wrong", acceptance_at + 3),
+        ];
+        tied.sort_by(|left, right| left.acceptance_id.cmp(&right.acceptance_id));
+        let tied_latest_is_correct =
+            tied[1].content.roster_op_id.as_deref() == Some(add_transport.op_id.as_str());
+        let tied_result = resolve(vec![bootstrap.clone(), add_transport.clone()], tied.clone());
+        assert_eq!(
+            tied_result
+                .first()
+                .map(|binding| binding.acceptance_id.as_str()),
+            tied_latest_is_correct.then_some(tied[1].acceptance_id.as_str())
+        );
+
+        let final_at = timestamp("tombstoneTransport");
+        let grant_write = signed_roster(
+            &admin,
+            IdentityRosterOp::SetKeyCapabilities {
+                pubkey: transport_pubkey.clone(),
+                capabilities: vec![IDENTITY_CAPABILITY_WRITE.to_owned()],
+            },
+            vec![add_transport.op_id.clone()],
+            "fips-grant-write",
+            final_at,
+        );
+        assert!(
+            resolve(
+                vec![bootstrap.clone(), add_transport.clone(), grant_write],
+                vec![acceptance.clone()]
+            )
+            .is_empty()
+        );
+
+        let tombstone = signed_roster(
+            &admin,
+            IdentityRosterOp::TombstoneKey {
+                pubkey: transport_pubkey,
+                reason: None,
+            },
+            vec![add_transport.op_id.clone()],
+            "fips-remove",
+            final_at,
+        );
+        assert!(
+            resolve(
+                vec![bootstrap.clone(), add_transport.clone(), tombstone.clone()],
+                vec![acceptance.clone()]
+            )
+            .is_empty()
+        );
+        let readd_at = final_at + 1;
+        let readd = signed_roster(
+            &admin,
+            IdentityRosterOp::AddKey {
+                key: identity_key(
+                    transport.public_key().to_hex(),
+                    readd_at,
+                    [IDENTITY_PURPOSE_FIPS_TRANSPORT.to_owned()],
+                    [],
+                    None,
+                )
+                .unwrap(),
+            },
+            vec![tombstone.op_id.clone()],
+            "fips-readd",
+            readd_at,
+        );
+        assert!(
+            resolve(
+                vec![bootstrap, add_transport, tombstone, readd],
+                vec![acceptance]
+            )
+            .is_empty()
+        );
     }
 
     #[test]

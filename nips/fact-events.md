@@ -217,12 +217,13 @@ reviewed object id.
 
 ### Nostr Identity
 
-The current `nostr-identity` implementation defines profile identity events on
-top of fact operations. Generic fact-event consumers do not need to implement
-this profile.
+The `nostr-identity` implementation defines profile identity events on top of
+fact operations. Generic fact-event consumers do not need to implement this
+profile.
 
-Roster operations and facet acceptance events use kind `7368` with empty
-`content`. Link requests use kind `7368` with encrypted `content`.
+Roster operations and facet acceptance events use kind `7368` and MUST have
+empty `content`; parsers MUST reject non-empty `content`. Link requests use kind
+`7368` with encrypted `content`.
 
 Roster operations have:
 
@@ -246,11 +247,12 @@ Operation-specific facts:
 
 Neutral capabilities are `admin`, `write`, `recover`, `receive_secret_wraps`,
 and `decrypt_secret_epochs`. Neutral purposes are `app`, `recovery`,
-`remote_signer`, and `profile`.
+`remote_signer`, `profile`, and `fips_transport`.
 
 The app-facing `NostrIdentity` API maps:
 
-- purposes to `app_key`, `recovery_phrase`, `nip46_signer`, `social_profile`
+- purposes to `app_key`, `recovery_phrase`, `nip46_signer`, `social_profile`,
+  and `fips_transport`
 - capabilities to `can_write_roots`, `can_admin_profile`,
   `can_recover_app_keys`, `can_receive_secret_wraps`,
   `can_decrypt_secret_epochs`
@@ -270,6 +272,36 @@ Facet self-acceptance events have:
 - optional `roster_op_id`
 - `client_nonce`
 - `accepted_at`, which MUST equal event `created_at`
+
+Only events with valid event IDs and signatures participate in acceptance
+projection. For each key, consumers MUST order valid acceptances by
+`accepted_at`, then by lowercase hexadecimal event ID, both ascending. The last
+event in that order is the projected acceptance. A later acceptance whose
+purposes or `roster_op_id` do not satisfy a binding suppresses an older valid
+binding until a still-later valid acceptance renews it. An invalidly signed
+event MUST NOT suppress a valid acceptance.
+
+#### FIPS transport identity
+
+The `fips_transport` purpose binds a profile identity to a FIPS process or
+device transport key without granting that key application authority. A
+consumer resolves an active binding only when all of these conditions hold:
+
+- the projected roster contains an admin-authorized `add_key` for the transport
+  pubkey with `fips_transport` as its only purpose and zero capabilities;
+- the transport key signed a key-acceptance event containing
+  `fips_transport` as its only purpose; and
+- that acceptance's `roster_op_id` names the exact `add_key` operation that is
+  still active in the projected roster.
+
+A `tombstone_key` invalidates the binding. Re-adding the same transport pubkey
+requires a new self-acceptance linked to the new `add_key`. Any projected
+capability or additional purpose makes the key ineligible as a transport-only
+binding.
+
+Applications SHOULD generate a transport keypair distinct from profile and app
+keys. These rules reuse the kind-7368 roster and acceptance projections; they
+do not define another event kind or application authorization path.
 
 Link requests are encrypted extension events with:
 

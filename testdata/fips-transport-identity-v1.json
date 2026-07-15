@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "identity": "6b7f5df4-1d2d-43a7-9b87-873e41a2d99a",
+  "purpose": "fips_transport",
+  "keys": {
+    "adminSecretKey": "0000000000000000000000000000000000000000000000000000000000000001",
+    "transportSecretKey": "0000000000000000000000000000000000000000000000000000000000000002",
+    "otherSecretKey": "0000000000000000000000000000000000000000000000000000000000000003",
+    "transportPubkey": "c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5"
+  },
+  "timestamps": {
+    "bootstrap": 10,
+    "addTransport": 11,
+    "acceptTransport": 12,
+    "tombstoneTransport": 13
+  }
+}

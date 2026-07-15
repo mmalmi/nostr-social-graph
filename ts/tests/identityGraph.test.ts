@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { getPublicKey } from 'nostr-tools';
+import { finalizeEvent, getPublicKey } from 'nostr-tools';
 import { describe, expect, it } from 'vitest';
 import {
   IDENTITY_ADMIN_CAPABILITIES,
@@ -9,6 +9,7 @@ import {
   IDENTITY_CAPABILITY_RECOVER,
   IDENTITY_CAPABILITY_WRITE,
   IDENTITY_PURPOSE_APP,
+  IDENTITY_PURPOSE_FIPS_TRANSPORT,
   IDENTITY_PURPOSE_RECOVERY,
   IDENTITY_PURPOSE_REMOTE_SIGNER,
   IDENTITY_GRAPH_KEY_ACCEPTANCE_TYPE,
@@ -23,6 +24,8 @@ import {
   parseIdentityRosterOpEvent,
   projectIdentityKeyAcceptances,
   projectIdentityRoster,
+  resolveFipsTransportIdentityBindings,
+  resolveTrustedFipsTransportIdentityBindings,
 } from '../src/identityGraph';
 import { fact } from '../src/factEvents';
 import type { IdentityEventDraft } from '../src/identityGraph';
@@ -39,6 +42,14 @@ const linkRequestInvitePubkey = getPublicKey(linkRequestInviteSecret);
 const fixtureLinkRequest = JSON.parse(
   readFileSync(new URL('../../testdata/identity-link-request.json', import.meta.url), 'utf8'),
 ) as NostrEvent;
+const fipsTransportFixture = JSON.parse(
+  readFileSync(new URL('../../testdata/fips-transport-identity-v1.json', import.meta.url), 'utf8'),
+) as {
+  identity: string;
+  purpose: string;
+  keys: Record<'adminSecretKey' | 'transportSecretKey' | 'otherSecretKey' | 'transportPubkey', string>;
+  timestamps: Record<'bootstrap' | 'addTransport' | 'acceptTransport' | 'tombstoneTransport', number>;
+};
 
 function eventId(byte: string): string {
   return byte.repeat(64);
@@ -436,6 +447,250 @@ describe('identity graph', () => {
       IDENTITY_PURPOSE_APP,
       IDENTITY_PURPOSE_REMOTE_SIGNER,
     ]);
+  });
+
+  it('resolves only active self-accepted FIPS transport bindings', () => {
+    const fixture = fipsTransportFixture;
+    const pubkey = (name: 'adminSecretKey' | 'transportSecretKey' | 'otherSecretKey') => (
+      getPublicKey(Uint8Array.from(Buffer.from(fixture.keys[name], 'hex')))
+    );
+    const admin = pubkey('adminSecretKey');
+    const transport = pubkey('transportSecretKey');
+    const other = pubkey('otherSecretKey');
+    const signedRoster = (options: Parameters<typeof buildIdentityRosterOpDraft>[0], id: string) => (
+      parseIdentityRosterOpEvent(eventFromDraft(buildIdentityRosterOpDraft(options), id, options.signerPubkey))
+    );
+    expect([fixture.purpose, transport]).toEqual([
+      IDENTITY_PURPOSE_FIPS_TRANSPORT,
+      fixture.keys.transportPubkey,
+    ]);
+
+    const bootstrap = signedRoster({
+      signerPubkey: admin,
+      identity: fixture.identity,
+      createdAt: fixture.timestamps.bootstrap,
+      clientNonce: 'fips-bootstrap',
+      op: { op: 'add_key', key: identityKey(admin, {
+        addedAt: fixture.timestamps.bootstrap,
+        purposes: [IDENTITY_PURPOSE_APP],
+        capabilities: IDENTITY_ADMIN_CAPABILITIES,
+      }) },
+    }, eventId('6'));
+    const addTransport = signedRoster({
+      signerPubkey: admin,
+      identity: fixture.identity,
+      parents: [bootstrap.opId],
+      createdAt: fixture.timestamps.addTransport,
+      clientNonce: 'fips-add',
+      op: { op: 'add_key', key: identityKey(transport, {
+        addedAt: fixture.timestamps.addTransport,
+        purposes: [IDENTITY_PURPOSE_FIPS_TRANSPORT],
+        capabilities: [],
+      }) },
+    }, eventId('7'));
+    const signedAcceptance = (rosterOpId: string, id: string, acceptedAt: number) => (
+      parseIdentityKeyAcceptanceEvent(eventFromDraft(buildIdentityKeyAcceptanceDraft({
+        signerPubkey: transport,
+        identity: fixture.identity,
+        rosterOpId,
+        purposes: [IDENTITY_PURPOSE_FIPS_TRANSPORT],
+        acceptedAt,
+        clientNonce: `fips-${id}`,
+      }), eventId(id), transport))
+    );
+    const acceptance = signedAcceptance(
+      addTransport.opId,
+      '8',
+      fixture.timestamps.acceptTransport,
+    );
+    const resolve = (ops = [bootstrap, addTransport], acceptances = [acceptance]) => (
+      resolveTrustedFipsTransportIdentityBindings(fixture.identity, ops, acceptances)
+    );
+
+    expect(resolve()).toEqual([{
+      transportPubkey: transport,
+      rosterOpId: addTransport.opId,
+      acceptanceId: acceptance.acceptanceId,
+    }]);
+    expect(resolve(undefined, [])).toEqual([]);
+    expect(resolve(undefined, [{ ...acceptance, signerPubkey: other }])).toEqual([]);
+    expect(resolve(undefined, [{
+      ...acceptance,
+      content: { ...acceptance.content, rosterOpId: eventId('9') },
+    }])).toEqual([]);
+    if (addTransport.content.op.op !== 'add_key') throw new Error('expected add_key');
+    const extraKeyPurpose = {
+      ...addTransport,
+      content: {
+        ...addTransport.content,
+        op: {
+          ...addTransport.content.op,
+          key: {
+            ...addTransport.content.op.key,
+            purposes: [IDENTITY_PURPOSE_APP, IDENTITY_PURPOSE_FIPS_TRANSPORT],
+          },
+        },
+      },
+    };
+    expect(resolve([bootstrap, extraKeyPurpose])).toEqual([]);
+    expect(resolve(undefined, [{
+      ...acceptance,
+      content: {
+        ...acceptance.content,
+        purposes: [IDENTITY_PURPOSE_APP, IDENTITY_PURPOSE_FIPS_TRANSPORT],
+      },
+    }])).toEqual([]);
+    const supersedingWrongLink = signedAcceptance(
+      eventId('9'),
+      'd',
+      fixture.timestamps.acceptTransport + 1,
+    );
+    expect(resolve(undefined, [acceptance, supersedingWrongLink])).toEqual([]);
+    const renewed = signedAcceptance(
+      addTransport.opId,
+      'e',
+      fixture.timestamps.acceptTransport + 2,
+    );
+    expect(resolve(undefined, [acceptance, renewed])[0]?.acceptanceId).toBe(renewed.acceptanceId);
+
+    const laterOp = (op: Parameters<typeof buildIdentityRosterOpDraft>[0]['op'], id: string) => signedRoster({
+      signerPubkey: admin,
+      identity: fixture.identity,
+      parents: [addTransport.opId],
+      createdAt: fixture.timestamps.tombstoneTransport,
+      clientNonce: `fips-${id}`,
+      op,
+    }, eventId(id));
+    const grantWrite = laterOp({
+      op: 'set_key_capabilities',
+      pubkey: transport,
+      capabilities: [IDENTITY_CAPABILITY_WRITE],
+    }, 'b');
+    const tombstone = laterOp({ op: 'tombstone_key', pubkey: transport }, 'a');
+    expect(resolve([bootstrap, addTransport, grantWrite])).toEqual([]);
+    expect(resolve([bootstrap, addTransport, tombstone])).toEqual([]);
+    const readd = signedRoster({
+      signerPubkey: admin,
+      identity: fixture.identity,
+      parents: [tombstone.opId],
+      createdAt: fixture.timestamps.tombstoneTransport + 1,
+      clientNonce: 'fips-readd',
+      op: { op: 'add_key', key: identityKey(transport, {
+        addedAt: fixture.timestamps.tombstoneTransport + 1,
+        purposes: [IDENTITY_PURPOSE_FIPS_TRANSPORT],
+        capabilities: [],
+      }) },
+    }, eventId('c'));
+    expect(resolve([bootstrap, addTransport, tombstone, readd])).toEqual([]);
+  });
+
+  it('verifies relay events before resolving FIPS transport bindings', () => {
+    const fixture = fipsTransportFixture;
+    const secret = (name: 'adminSecretKey' | 'transportSecretKey') => (
+      Uint8Array.from(Buffer.from(fixture.keys[name], 'hex'))
+    );
+    const adminSecret = secret('adminSecretKey');
+    const transportSecret = secret('transportSecretKey');
+    const admin = getPublicKey(adminSecret);
+    const transport = getPublicKey(transportSecret);
+    const signedRoster = (
+      options: Parameters<typeof buildIdentityRosterOpDraft>[0],
+      signerSecretKey: Uint8Array,
+    ) => finalizeEvent(buildIdentityRosterOpDraft(options), signerSecretKey);
+    const bootstrap = signedRoster({
+      signerPubkey: admin,
+      identity: fixture.identity,
+      createdAt: fixture.timestamps.bootstrap,
+      clientNonce: 'verified-bootstrap',
+      op: { op: 'add_key', key: identityKey(admin, {
+        addedAt: fixture.timestamps.bootstrap,
+        purposes: [IDENTITY_PURPOSE_APP],
+        capabilities: IDENTITY_ADMIN_CAPABILITIES,
+      }) },
+    }, adminSecret);
+    const addTransport = signedRoster({
+      signerPubkey: admin,
+      identity: fixture.identity,
+      parents: [bootstrap.id],
+      createdAt: fixture.timestamps.addTransport,
+      clientNonce: 'verified-add',
+      op: { op: 'add_key', key: identityKey(transport, {
+        addedAt: fixture.timestamps.addTransport,
+        purposes: [IDENTITY_PURPOSE_FIPS_TRANSPORT],
+        capabilities: [],
+      }) },
+    }, adminSecret);
+    const signedAcceptance = (rosterOpId: string, nonce: string, acceptedAt: number) => (
+      finalizeEvent(buildIdentityKeyAcceptanceDraft({
+        signerPubkey: transport,
+        identity: fixture.identity,
+        rosterOpId,
+        purposes: [IDENTITY_PURPOSE_FIPS_TRANSPORT],
+        acceptedAt,
+        clientNonce: nonce,
+      }), transportSecret)
+    );
+    const acceptance = signedAcceptance(
+      addTransport.id,
+      'verified-accept',
+      fixture.timestamps.acceptTransport,
+    );
+    const resolve = (
+      rosterEvents = [bootstrap, addTransport],
+      acceptanceEvents = [acceptance],
+    ) => resolveFipsTransportIdentityBindings(fixture.identity, rosterEvents, acceptanceEvents);
+    const expected = [{
+      transportPubkey: transport,
+      rosterOpId: addTransport.id,
+      acceptanceId: acceptance.id,
+    }];
+
+    expect(resolve()).toEqual(expected);
+    expect(resolve([bootstrap, { ...addTransport, sig: '0'.repeat(128) }])).toEqual([]);
+    expect(resolve([bootstrap, { ...addTransport, id: eventId('0') }])).toEqual([]);
+    expect(resolve(undefined, [{ ...acceptance, sig: '0'.repeat(128) }])).toEqual([]);
+
+    const wrongLink = signedAcceptance(
+      eventId('9'),
+      'verified-wrong-link',
+      fixture.timestamps.acceptTransport + 1,
+    );
+    expect(resolve(undefined, [acceptance, { ...wrongLink, sig: '0'.repeat(128) }])).toEqual(expected);
+    expect(resolve(undefined, [acceptance, wrongLink])).toEqual([]);
+    const renewed = signedAcceptance(
+      addTransport.id,
+      'verified-renewed',
+      fixture.timestamps.acceptTransport + 2,
+    );
+    expect(resolve(undefined, [acceptance, wrongLink, renewed])[0]?.acceptanceId).toBe(renewed.id);
+
+    const tied = [
+      signedAcceptance(addTransport.id, 'verified-tie-correct', fixture.timestamps.acceptTransport + 3),
+      signedAcceptance(eventId('8'), 'verified-tie-wrong', fixture.timestamps.acceptTransport + 3),
+    ].sort((left, right) => left.id.localeCompare(right.id));
+    const tiedResult = resolve(undefined, tied);
+    const tiedLatestIsCorrect = tied[1].tags.some((tag) => (
+      tag[0] === 'roster_op_id' && tag[1] === addTransport.id
+    ));
+    expect(tiedResult.map((binding) => binding.acceptanceId)).toEqual(
+      tiedLatestIsCorrect ? [tied[1].id] : [],
+    );
+
+    const nonEmpty = finalizeEvent({
+      kind: bootstrap.kind,
+      tags: bootstrap.tags,
+      created_at: bootstrap.created_at,
+      content: 'forbidden',
+    }, adminSecret);
+    expect(() => parseIdentityRosterOpEvent(nonEmpty)).toThrow(/empty content/);
+    const nonEmptyAcceptance = finalizeEvent({
+      kind: acceptance.kind,
+      tags: acceptance.tags,
+      created_at: acceptance.created_at,
+      content: 'forbidden',
+    }, transportSecret);
+    expect(() => parseIdentityKeyAcceptanceEvent(nonEmptyAcceptance)).toThrow(/empty content/);
+    expect(resolve(undefined, [acceptance, nonEmptyAcceptance])).toEqual(expected);
   });
 
   it('builds encrypted device link requests as neutral identity events', () => {

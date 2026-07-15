@@ -96,5 +96,7 @@ export function purposeRank(purpose: NostrIdentityKeyPurpose): number {
       return 2;
     case 'social_profile':
       return 3;
+    case 'fips_transport':
+      return 4;
   }
 }

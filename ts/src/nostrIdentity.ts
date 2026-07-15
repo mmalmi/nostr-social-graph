@@ -10,7 +10,8 @@ export type NostrIdentityKeyPurpose =
   | 'app_key'
   | 'recovery_phrase'
   | 'nip46_signer'
-  | 'social_profile';
+  | 'social_profile'
+  | 'fips_transport';
 
 export interface NostrIdentityCapabilities {
   can_write_roots?: boolean;
@@ -185,6 +186,20 @@ export function appKeyFacet(
     pubkey: normalized,
     purposes: ['app_key'],
     capabilities: normalizeCapabilities(options.capabilities ?? APP_KEY_WRITER_CAPABILITIES),
+    added_at: options.addedAt,
+  };
+}
+
+export function fipsTransportFacet(
+  pubkey: string,
+  options: { addedAt: number },
+): NostrIdentityFacet {
+  const normalized = normalizeHexPubkey(pubkey);
+  if (!normalized) throw new Error('FIPS transport pubkey must be 64-char hex');
+  return {
+    pubkey: normalized,
+    purposes: ['fips_transport'],
+    capabilities: {},
     added_at: options.addedAt,
   };
 }

@@ -13,10 +13,10 @@ use crate::{
     BuildIdentityRosterOpEventOptions, FACT_OP_KIND, IDENTITY_CAPABILITY_ADMIN,
     IDENTITY_CAPABILITY_DECRYPT_SECRET_EPOCHS, IDENTITY_CAPABILITY_RECEIVE_SECRET_WRAPS,
     IDENTITY_CAPABILITY_RECOVER, IDENTITY_CAPABILITY_WRITE, IDENTITY_GRAPH_KEY_ACCEPTANCE_TYPE,
-    IDENTITY_GRAPH_ROSTER_TYPE, IDENTITY_PURPOSE_APP, IDENTITY_PURPOSE_PROFILE,
-    IDENTITY_PURPOSE_RECOVERY, IDENTITY_PURPOSE_REMOTE_SIGNER, IdentityKey,
-    IdentityKeyAcceptanceContent, IdentityKeyTombstone, IdentityRosterOp, IdentityRosterOpContent,
-    IdentityRosterProjection, IdentitySecretEpoch, SignedIdentityRosterOp,
+    IDENTITY_GRAPH_ROSTER_TYPE, IDENTITY_PURPOSE_APP, IDENTITY_PURPOSE_FIPS_TRANSPORT,
+    IDENTITY_PURPOSE_PROFILE, IDENTITY_PURPOSE_RECOVERY, IDENTITY_PURPOSE_REMOTE_SIGNER,
+    IdentityKey, IdentityKeyAcceptanceContent, IdentityKeyTombstone, IdentityRosterOp,
+    IdentityRosterOpContent, IdentityRosterProjection, IdentitySecretEpoch, SignedIdentityRosterOp,
     build_identity_key_acceptance_event, build_identity_roster_op_event_with_options, fact,
     parse_identity_key_acceptance_event, parse_identity_roster_op_event, project_identity_roster,
 };
@@ -175,6 +175,7 @@ pub enum NostrIdentityKeyPurpose {
     RecoveryPhrase,
     Nip46Signer,
     SocialProfile,
+    FipsTransport,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -331,6 +332,17 @@ impl NostrIdentityFacet {
     }
 
     #[must_use]
+    pub fn fips_transport(pubkey: impl Into<String>, added_at: i64) -> Self {
+        Self::with_purposes(
+            pubkey,
+            [NostrIdentityKeyPurpose::FipsTransport],
+            NostrIdentityCapabilities::default(),
+            added_at,
+            None,
+        )
+    }
+
+    #[must_use]
     pub fn with_purposes<I>(
         pubkey: impl Into<String>,
         purposes: I,
@@ -365,6 +377,11 @@ impl NostrIdentityFacet {
     #[must_use]
     pub fn is_app_key(&self) -> bool {
         self.has_purpose(NostrIdentityKeyPurpose::AppKey)
+    }
+
+    #[must_use]
+    pub fn is_fips_transport(&self) -> bool {
+        self.has_purpose(NostrIdentityKeyPurpose::FipsTransport)
     }
 }
 
@@ -2169,6 +2186,7 @@ fn nostr_identity_purpose_to_identity(purpose: NostrIdentityKeyPurpose) -> Strin
         NostrIdentityKeyPurpose::RecoveryPhrase => IDENTITY_PURPOSE_RECOVERY,
         NostrIdentityKeyPurpose::Nip46Signer => IDENTITY_PURPOSE_REMOTE_SIGNER,
         NostrIdentityKeyPurpose::SocialProfile => IDENTITY_PURPOSE_PROFILE,
+        NostrIdentityKeyPurpose::FipsTransport => IDENTITY_PURPOSE_FIPS_TRANSPORT,
     }
     .to_string()
 }
@@ -2181,6 +2199,7 @@ fn identity_purpose_to_nostr_identity(
         IDENTITY_PURPOSE_RECOVERY => Ok(NostrIdentityKeyPurpose::RecoveryPhrase),
         IDENTITY_PURPOSE_REMOTE_SIGNER => Ok(NostrIdentityKeyPurpose::Nip46Signer),
         IDENTITY_PURPOSE_PROFILE => Ok(NostrIdentityKeyPurpose::SocialProfile),
+        IDENTITY_PURPOSE_FIPS_TRANSPORT => Ok(NostrIdentityKeyPurpose::FipsTransport),
         other => Err(NostrIdentityError::BadContent(format!(
             "unsupported NostrIdentity purpose {other}"
         ))),
@@ -3327,6 +3346,47 @@ mod tests {
         let profile_id = NostrIdentityId::new_v4();
         assert_eq!(profile_id.as_uuid().get_version_num(), 4);
         assert_eq!(profile_id.to_string().len(), 36);
+    }
+
+    #[test]
+    fn fips_transport_facet_roundtrips_without_application_capabilities() {
+        let profile_id = NostrIdentityId::new_v4();
+        let admin = Keys::generate();
+        let transport_pubkey = Keys::generate().public_key().to_hex();
+        let bootstrap = bootstrap_op(&admin, profile_id, 8);
+        let transport = signed_op_with_parents(
+            &admin,
+            profile_id,
+            vec![bootstrap.op_id],
+            NostrIdentityRosterOp::AddFacet {
+                facet: NostrIdentityFacet::fips_transport(transport_pubkey.clone(), 9),
+            },
+            9,
+        );
+
+        let NostrIdentityRosterOp::AddFacet { facet } = transport.content.op else {
+            panic!("expected add_facet");
+        };
+        assert_eq!(facet.pubkey, transport_pubkey);
+        assert!(facet.is_fips_transport());
+        assert_eq!(facet.capabilities, NostrIdentityCapabilities::default());
+        assert_eq!(
+            serde_json::to_value([
+                NostrIdentityKeyPurpose::AppKey,
+                NostrIdentityKeyPurpose::RecoveryPhrase,
+                NostrIdentityKeyPurpose::Nip46Signer,
+                NostrIdentityKeyPurpose::SocialProfile,
+                NostrIdentityKeyPurpose::FipsTransport,
+            ])
+            .unwrap(),
+            serde_json::json!([
+                "app_key",
+                "recovery_phrase",
+                "nip46_signer",
+                "social_profile",
+                "fips_transport"
+            ])
+        );
     }
 
     #[test]
