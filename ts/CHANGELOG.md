@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Refresh the library, example, and test dependency graph to supported versions;
+  the frozen workspace lock now has no known OSV advisories.
+
 ## 2.0.0 - 2026-07-16
 
 - Replace device-approval request URIs with a strict three-field bootstrap URI.
