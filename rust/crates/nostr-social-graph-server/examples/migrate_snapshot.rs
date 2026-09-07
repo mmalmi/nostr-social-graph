@@ -26,10 +26,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if reopened.to_binary()? != expected {
         return Err("persisted graph differs after reopening".into());
     }
+    // Startup resumes crawling from the store's mtime. Import time is newer
+    // than the captured data; preserve its checkpoint to cover that gap.
+    preserve_capture_time(target, fs::metadata(source)?.modified()?)?;
     let size = reopened.size();
     println!(
         "Verified import and reopen: {} users, {} follows, {} mutes",
         size.users, size.follows, size.mutes
     );
     Ok(())
+}
+
+fn preserve_capture_time(path: &Path, captured: std::time::SystemTime) -> std::io::Result<()> {
+    if path.is_dir() {
+        for entry in fs::read_dir(path)? {
+            preserve_capture_time(&entry?.path(), captured)?;
+        }
+    }
+    fs::File::open(path)?.set_times(fs::FileTimes::new().set_modified(captured))
 }
