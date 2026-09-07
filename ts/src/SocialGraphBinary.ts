@@ -13,110 +13,65 @@ const textDecoder = new TextDecoder('utf-8', { fatal: true });
 
 function planBudget(
   graph: SocialGraph,
-  maxNodes?: number, 
-  maxEdges?: number, 
-  maxDistance?: number, 
+  maxNodes?: number,
+  maxEdges?: number,
+  maxDistance?: number,
   maxEdgesPerNode?: number
 ) {
   const usedIds = new Set<number>();
   const followEdgeCount = new Map<number, number>();
   const muteEdgeCount = new Map<number, number>();
-  const validEdges: Array<{owner: number, target: number, isFollow: boolean}> = [];
-
-  const { followedByUser, mutedByUser } = graph.getInternalData();
+  const { followedByUser, mutedByUser, str } = graph.getInternalData();
+  const edgeTypes = [
+    [followedByUser, followEdgeCount],
+    [mutedByUser, muteEdgeCount],
+  ] as const;
   const usersByFollowDistance = (graph as any).usersByFollowDistance as Map<number, Set<number>>;
-
-  const allDistances = Array.from(usersByFollowDistance.keys()).sort((a: number, b: number) => a - b);
-  // Filter distances by maxDistance if specified
-  const distances = maxDistance !== undefined 
-    ? allDistances.filter((d: number) => d <= maxDistance)
-    : allDistances;
-
-  // Collect all potential edges first, respecting distance and per-node limits
-  const potentialEdges: Array<{owner: number, target: number, isFollow: boolean, distance: number}> = [];
-  
-  for (const d of distances) {
-    const users = usersByFollowDistance.get(d);
-    if (!users) continue;
-    
-    for (const owner of users) {
-      let ownerEdgeCount = 0;
-      
-      // Collect follow edges for this owner
-      const outsF = followedByUser.get(owner);
-      if (outsF) {
-        for (const target of outsF) {
-          if (!maxEdgesPerNode || ownerEdgeCount < maxEdgesPerNode) {
-            potentialEdges.push({owner, target, isFollow: true, distance: d});
-            ownerEdgeCount++;
-          }
-        }
-      }
-      
-      // Collect mute edges for this owner
-      const outsM = mutedByUser.get(owner);
-      if (outsM) {
-        for (const target of outsM) {
-          if (!maxEdgesPerNode || ownerEdgeCount < maxEdgesPerNode) {
-            potentialEdges.push({owner, target, isFollow: false, distance: d});
-            ownerEdgeCount++;
-          }
-        }
-      }
-    }
-  }
-
-  // Now process edges in distance order, checking both node and edge limits
+  const distances = Array.from(usersByFollowDistance.keys()).sort((a, b) => a - b);
   let edgeCount = 0;
-  const { str } = graph.getInternalData();
-  
-  for (const edge of potentialEdges) {
-    // Check edge limit
-    if (maxEdges && edgeCount >= maxEdges) break;
-    
-    // Validate that both owner and target actually exist in the UniqueIds mapping
-    try {
-      str(edge.owner);
-      str(edge.target);
-    } catch (error) {
-      // Skip edges that reference non-existent IDs
-      console.warn(`Skipping edge with invalid ID: owner=${edge.owner}, target=${edge.target}`);
-      continue;
-    }
-    
-    // Check if we can add both nodes without exceeding maxNodes
-    if (maxNodes) {
-      const ownerIsNew = !usedIds.has(edge.owner);
-      const targetIsNew = !usedIds.has(edge.target);
-      const newNodesCount = (ownerIsNew ? 1 : 0) + (targetIsNew ? 1 : 0);
-      
-      if (usedIds.size + newNodesCount > maxNodes) {
-        // Adding this edge would exceed the node limit
-        break; // Stop processing once we hit the node limit
+
+  // Select edges in distance, owner, then follow/mute order. Stop before scanning
+  // the rest of the graph once the export budget is exhausted.
+  budget: for (const distance of distances) {
+    if (maxDistance !== undefined && distance > maxDistance) break;
+    owners: for (const owner of usersByFollowDistance.get(distance)!) {
+      let ownerEdgeCount = 0;
+      for (const [edgesByOwner, counts] of edgeTypes) {
+        const targets = edgesByOwner.get(owner);
+        if (!targets) continue;
+        for (const target of targets) {
+          if (maxEdges && edgeCount >= maxEdges) break budget;
+          if (maxEdgesPerNode && ownerEdgeCount >= maxEdgesPerNode) continue owners;
+          ownerEdgeCount++;
+
+          try {
+            str(owner);
+            str(target);
+          } catch {
+            console.warn(`Skipping edge with invalid ID: owner=${owner}, target=${target}`);
+            continue;
+          }
+
+          if (maxNodes) {
+            const newNodesCount = Number(!usedIds.has(owner)) + Number(!usedIds.has(target));
+            if (usedIds.size + newNodesCount > maxNodes) break budget;
+          }
+
+          usedIds.add(owner);
+          usedIds.add(target);
+          edgeCount++;
+          counts.set(owner, (counts.get(owner) ?? 0) + 1);
+        }
       }
     }
-    
-    // Add the edge
-    validEdges.push(edge);
-    usedIds.add(edge.owner);
-    usedIds.add(edge.target);
-    edgeCount++;
-    
-    // Update edge counts per owner
-    const map = edge.isFollow ? followEdgeCount : muteEdgeCount;
-    map.set(edge.owner, (map.get(edge.owner) ?? 0) + 1);
   }
-
-  // owners we actually kept
-  const followOwners = Array.from(followEdgeCount.keys());
-  const muteOwners = Array.from(muteEdgeCount.keys());
 
   return {
     usedIds,
     followEdgeCount,
     muteEdgeCount,
-    followOwners,
-    muteOwners,
+    followOwners: Array.from(followEdgeCount.keys()),
+    muteOwners: Array.from(muteEdgeCount.keys()),
   };
 }
 
@@ -134,9 +89,12 @@ function hexToBytes(hex: string): Uint8Array {
     return bytes;
 }
 
-// Convert Uint8Array to hex string
+const byteHex = Array.from({ length: 256 }, (_, byte) => byte.toString(16).padStart(2, '0'));
+
 function bytesToHex(bytes: Uint8Array): string {
-    return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+    let hex = '';
+    for (const byte of bytes) hex += byteHex[byte];
+    return hex;
 }
 
 function isCanonicalUuid(value: string): boolean {
@@ -377,7 +335,7 @@ export async function fromBinary(root: string, data: Uint8Array): Promise<Social
         if (offset + len > data.length) {
             throw new Error('Unexpected end of binary data');
         }
-        const bytes = data.slice(offset, offset + len);
+        const bytes = data.subarray(offset, offset + len);
         offset += len;
         return bytes;
     };

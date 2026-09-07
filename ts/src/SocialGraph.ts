@@ -15,10 +15,9 @@ export class SocialGraph {
   private userMutedBy = new Map<number, Set<number>>();
   private muteListCreatedAt = new Map<number, number>()
   private ids = new UniqueIds();
-  private isRecalculating = false;
+  private recalculationRequested = false;
 
   constructor(root: string) {
-    this.ids = new UniqueIds();
     this.root = this.id(root);
     this.followDistanceByUser.set(this.root, 0);
     this.usersByFollowDistance.set(0, new Set([this.root]));
@@ -52,103 +51,69 @@ export class SocialGraph {
   setRoot(root: string): Promise<void> {
     const rootId = this.id(root);
     if (rootId === this.root) {
-      return Promise.resolve();
+      return this.recalculatingPromise ?? Promise.resolve();
     }
 
     this.root = rootId;
-
-    // If a recalculation is already in progress, queue another one to run
-    // afterwards so that follow distances are recomputed for the new root.
-    if (this.isRecalculating && this.recalculatingPromise) {
-      return this.recalculatingPromise.then(() => this.recalculateFollowDistances());
-    }
-
-    // No ongoing recalculation, start one immediately.
+    // Do not expose distances from the previous root while computing the new one.
+    this.followDistanceByUser = new Map([[rootId, 0]]);
+    this.usersByFollowDistance = new Map([[0, new Set([rootId])]]);
     return this.recalculateFollowDistances();
   }
-
-
-
 
   recalculateFollowDistances(
     batchSize = 1_000,
     logEvery = 100_000,
     logger: (msg: string) => void = console.log
   ): Promise<void> {
-    if (this.isRecalculating) {
-      // Already computing – run again afterwards.
-      return this.recalculatingPromise!.then(() => this.recalculateFollowDistances(batchSize, logEvery, logger));
+    if (!Number.isInteger(batchSize) || batchSize < 1) {
+      return Promise.reject(new RangeError('batchSize must be a positive integer'));
     }
+    this.recalculationRequested = true;
+    // All callers share one calculation, including any pass needed for updates
+    // received while it yields. Start in a microtask to coalesce synchronous bursts.
+    this.recalculatingPromise ??= Promise.resolve().then(async () => {
+      try {
+        do {
+          this.recalculationRequested = false;
+          const root = this.root;
+          const distances = new Map([[root, 0]]);
+          const usersByDistance = new Map([[0, new Set([root])]]);
+          const queue = [root];
+          let head = 0;
+          const start = performance.now();
+          logger(`recalculateFollowDistances: start (batchSize=${batchSize})`);
 
-    this.isRecalculating = true;
-    this.recalculatingPromise = new Promise((resolve) => {
-      // Fast local refs
-      const root = this.root;
-      const followDistanceByUser = this.followDistanceByUser;
-      const usersByFollowDistance = this.usersByFollowDistance;
-      const followedByUser = this.followedByUser;
-  
-      // Reset
-      followDistanceByUser.clear();
-      usersByFollowDistance.clear();
-      followDistanceByUser.set(root, 0);
-      usersByFollowDistance.set(0, new Set([root]));
-  
-      const queue: number[] = [root];
-      let head = 0;
-      let processed = 0;
-  
-      const start = performance.now?.() ?? Date.now();
-      logger(`recalculateFollowDistances: start (batchSize=${batchSize})`);
-  
-      const pump = () => {
-        const end = Math.min(head + batchSize, queue.length);
-  
-        for (; head < end; head++) {
-          const u = queue[head];
-          const d = followDistanceByUser.get(u)!;
-          const outs = followedByUser.get(u);
-          if (!outs) continue;
-  
-          const nd = d + 1;
-          for (const v of outs) {
-            if (!followDistanceByUser.has(v)) {
-              followDistanceByUser.set(v, nd);
-  
-              let bucket = usersByFollowDistance.get(nd);
-              if (!bucket) {
-                bucket = new Set<number>();
-                usersByFollowDistance.set(nd, bucket);
+          while (head < queue.length) {
+            const end = head + batchSize;
+            // Newly discovered users count toward this batch too. A deep graph
+            // should not need a separate timer for every degree of separation.
+            for (; head < end && head < queue.length; head++) {
+              const user = queue[head];
+              const distance = distances.get(user)! + 1;
+              for (const followed of this.followedByUser.get(user) ?? []) {
+                if (distances.has(followed)) continue;
+                distances.set(followed, distance);
+                let bucket = usersByDistance.get(distance);
+                if (!bucket) usersByDistance.set(distance, bucket = new Set());
+                bucket.add(followed);
+                queue.push(followed);
               }
-              bucket.add(v);
-  
-              queue.push(v);
             }
+            if (head > 0 && head % logEvery < batchSize) {
+              logger(`recalculateFollowDistances: ${head} processed, ${queue.length - head} remaining`);
+            }
+            if (head < queue.length) await new Promise(resolve => setTimeout(resolve, 0));
           }
-        }
-  
-        processed = head;
-  
-        if (processed > 0 && (processed % logEvery) < batchSize) {
-          logger(
-            `recalculateFollowDistances: ${processed} processed, ${queue.length - head} remaining`
-          );
-        }
-  
-        if (head < queue.length) {
-          setTimeout(pump, 0);
-        } else {
-          const dur = (performance.now?.() ?? Date.now()) - start;
-          logger(`recalculateFollowDistances: done (${processed} users) in ${dur.toFixed(1)}ms`);
-          // Mark recalculation as finished so that future calls can start a new one
-          this.isRecalculating = false;
-          this.recalculatingPromise = null;
-          resolve();
-        }
-      };
-  
-      // Kick off first chunk synchronously
-      pump();
+          if (!this.recalculationRequested) {
+            this.followDistanceByUser = distances;
+            this.usersByFollowDistance = usersByDistance;
+          }
+          logger(`recalculateFollowDistances: done (${head} users) in ${(performance.now() - start).toFixed(1)}ms`);
+        } while (this.recalculationRequested);
+      } finally {
+        this.recalculatingPromise = null;
+      }
     });
     return this.recalculatingPromise;
   }
@@ -293,7 +258,11 @@ export class SocialGraph {
     if (!this.followedByUser.has(follower)) {
       this.followedByUser.set(follower, new Set<number>());
     }
-    this.followedByUser.get(follower)!.add(followedUser);
+    const followed = this.followedByUser.get(follower)!;
+    if (!followed.has(followedUser)) {
+      followed.add(followedUser);
+      if (this.recalculatingPromise) this.recalculationRequested = true;
+    }
 
     // Maintain reverse index
     if (!this.followersByUser.has(followedUser)) {
@@ -331,7 +300,8 @@ export class SocialGraph {
   }
 
   private privateRemoveFollower(unfollowedUser: number, follower: number) {
-    this.followedByUser.get(follower)?.delete(unfollowedUser);
+    if (!this.followedByUser.get(follower)?.delete(unfollowedUser)) return;
+    if (this.recalculatingPromise) this.recalculationRequested = true;
 
     // Maintain reverse index
     this.followersByUser.get(unfollowedUser)?.delete(follower);
