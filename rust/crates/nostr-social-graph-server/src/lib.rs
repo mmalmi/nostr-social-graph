@@ -58,8 +58,6 @@ struct FuseIndexKey {
     id: &'static str,
     weight: u8,
     src: &'static str,
-    #[serde(rename = "getFn")]
-    get_fn: (),
 }
 
 #[derive(Debug, Serialize)]
@@ -222,21 +220,18 @@ fn build_profile_index<'a>(rows: impl IntoIterator<Item = &'a Vec<String>>) -> F
                 id: "name",
                 weight: 1,
                 src: "name",
-                get_fn: (),
             },
             FuseIndexKey {
                 path: ["pubKey"],
                 id: "pubKey",
                 weight: 1,
                 src: "pubKey",
-                get_fn: (),
             },
             FuseIndexKey {
                 path: ["nip05"],
                 id: "nip05",
                 weight: 1,
                 src: "nip05",
-                get_fn: (),
             },
         ],
         records: rows
@@ -516,6 +511,11 @@ fn empty_graph_state(root: &str) -> SocialGraphState {
 }
 
 pub async fn run(config: ServerConfig) -> Result<()> {
+    if config.relay_urls.is_empty() {
+        return Err(ServerError::Io(std::io::Error::other(
+            "RELAY_URLS must contain at least one Nostr relay for graph syncing",
+        )));
+    }
     fs::create_dir_all(&config.data_dir)?;
     let initial_graph_since = initial_graph_since_hint(
         &config.graph_db_dir,
@@ -1387,6 +1387,14 @@ fn unix_timestamp() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn server_rejects_missing_crawl_relays_before_opening_data() {
+        let mut config = ServerConfig::from_env();
+        config.relay_urls.clear();
+        let error = run(config).await.unwrap_err();
+        assert!(error.to_string().contains("RELAY_URLS must contain"));
+    }
 
     #[test]
     fn relay_urls_are_empty_until_explicitly_configured() {
