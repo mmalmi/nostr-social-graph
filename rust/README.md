@@ -42,3 +42,23 @@ Common commands:
 - `cargo fmt --manifest-path rust/Cargo.toml --all`
 
 For repo-wide context and the TypeScript package, see the [root README](../README.md).
+
+## Server upgrades
+
+The server stores its graph in `DATA_DIR/socialGraph.hashtree`. Configure
+`RELAY_URLS` explicitly as a comma-separated list of working Nostr relay URLs;
+the server has no default relays. The Docker build uses the locked, published
+Hashtree dependencies and requires no sibling checkout.
+
+When upgrading a server that used `socialGraph.heed`, retain its data directory
+and image for rollback. Export a fresh, unrestricted `/social-graph` snapshot
+and `/profile-data` response from the running service into a separate data
+directory as `socialGraph.large.bin` and `profileData.large.json`. Preserve the
+capture start time as their modification time so the next incremental crawl
+covers changes made during capture. An old binary export beside the LMDB database
+can be months behind the running graph and must not be used for this migration.
+
+On first startup, the new server imports the binary graph into Hashtree. Verify
+the imported follows, mutes, timestamps, and profiles against the captured data,
+then restart it and verify persistence before switching traffic. Take a final
+fresh export for the switch and keep the original LMDB data intact.

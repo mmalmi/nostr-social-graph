@@ -15,7 +15,7 @@ RUN apt-get update \
 COPY rust/Cargo.toml rust/Cargo.lock rust/
 COPY rust/crates rust/crates
 
-RUN cargo build --manifest-path rust/Cargo.toml -p ${RUST_PACKAGE} --bin ${RUST_BINARY} --release
+RUN cargo build --locked --manifest-path rust/Cargo.toml -p ${RUST_PACKAGE} --bin ${RUST_BINARY} --release
 
 FROM debian:bookworm-slim
 

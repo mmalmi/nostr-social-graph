@@ -269,9 +269,6 @@ fn write_manifest_atomic(path: &Path, manifest: &SnapshotManifest) -> Result<()>
     }
     let temp_path = path.with_extension("json.tmp");
     fs::write(&temp_path, serde_json::to_vec_pretty(manifest)?)?;
-    if path.exists() {
-        fs::remove_file(path)?;
-    }
     fs::rename(temp_path, path)?;
     Ok(())
 }

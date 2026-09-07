@@ -12,8 +12,8 @@ anyhow = "1"
 async-trait = "0.1"
 axum = "0.8"
 chrono = { version = "0.4", features = ["serde"] }
-hashtree-core = { version = "0.2.56", path = "../../hashtree/rust/crates/hashtree-core" }
-hashtree-fs = { version = "0.2.56", path = "../../hashtree/rust/crates/hashtree-fs" }
+hashtree-core = "=0.2.56"
+hashtree-fs = "=0.2.56"
 heed = "0.20"
 hex = "0.4"
 http-body-util = "0.1"

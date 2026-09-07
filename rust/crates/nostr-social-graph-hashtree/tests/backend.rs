@@ -57,11 +57,21 @@ fn flush_persists_snapshot_and_reopen_reads_it() {
     assert!(store.snapshot_exists(&cid).unwrap());
     drop(store);
 
-    let reopened = HashtreeSocialGraph::open(tempdir.path(), SIRIUS).unwrap();
+    let mut reopened = HashtreeSocialGraph::open(tempdir.path(), SIRIUS).unwrap();
     assert_eq!(reopened.get_root().unwrap(), ADAM);
     assert!(reopened.is_following(ADAM, FIATJAF).unwrap());
     assert!(reopened.is_following(FIATJAF, SNOWDEN).unwrap());
     assert_eq!(reopened.get_follow_distance(SNOWDEN).unwrap(), 2);
+
+    reopened
+        .handle_event(&event(SNOWDEN, 3, 1_200, vec![SIRIUS]), true, 1.0)
+        .unwrap();
+    reopened.flush().unwrap();
+    drop(reopened);
+    let updated = HashtreeSocialGraph::open(tempdir.path(), ADAM).unwrap();
+    assert!(updated.is_following(ADAM, FIATJAF).unwrap());
+    assert!(updated.is_following(SNOWDEN, SIRIUS).unwrap());
+    assert_eq!(updated.get_follow_distance(SIRIUS).unwrap(), 3);
 }
 
 #[test]
