@@ -4,6 +4,7 @@ export { UniqueIds } from './UniqueIds';
 export type { NostrEvent } from './utils';
 export { toBinaryChunks, toBinary, fromBinary, fromBinaryStream } from './SocialGraphBinary';
 export * from './factEvents';
+export * from './trustedAuthors';
 export * from './identityGraph';
 export { normalizeHexPubkey } from './identityGraph';
 export * from './nostrIdentity';
