@@ -1,12 +1,15 @@
 //! Hashtree-backed storage for `nostr-social-graph`.
 
-use std::fs;
+use std::collections::HashSet;
+use std::fs::{self, File, OpenOptions};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use futures::executor::block_on;
 use hashtree_core::{
-    Cid, CidParseError, HashTree, HashTreeConfig, HashTreeError, Store, StoreError,
+    Cid, CidParseError, HashTree, HashTreeConfig, HashTreeError, Store, StoreError, collect_hashes,
+    sha256, to_hex,
 };
 use hashtree_fs::FsBlobStore;
 use nostr_social_graph::{
@@ -15,6 +18,7 @@ use nostr_social_graph::{
 use serde::{Deserialize, Serialize};
 
 const MANIFEST_FILE: &str = "social-graph-root.json";
+const PREVIOUS_MANIFEST_FILE: &str = "social-graph-root.previous.json";
 const BLOBS_DIR: &str = "blobs";
 const MANIFEST_SCHEMA: &str = "nostr-social-graph.hashtree.v1";
 const MAX_SNAPSHOT_BYTES: u64 = 128 * 1024 * 1024;
@@ -45,6 +49,10 @@ pub enum HashtreeSocialGraphError {
         expected: u64,
         actual: u64,
     },
+    #[error("social graph checkpoint changed since it was opened; reopen before writing")]
+    StaleCheckpoint,
+    #[error("snapshot blob failed hash verification: {0}")]
+    CorruptBlob(String),
 }
 
 pub type Result<T> = std::result::Result<T, HashtreeSocialGraphError>;
@@ -93,6 +101,8 @@ impl HashtreeSocialGraph {
     pub fn open<P: AsRef<Path>>(path: P, default_root: &str) -> Result<Self> {
         let path = path.as_ref();
         fs::create_dir_all(path)?;
+        // Readers must finish loading a checkpoint before a writer can retire it.
+        let _lock = lock_store(path, false)?;
 
         let store = Arc::new(FsBlobStore::new(path.join(BLOBS_DIR))?);
         let tree = HashTree::new(HashTreeConfig::new(store.clone()).public());
@@ -155,14 +165,82 @@ impl HashtreeSocialGraph {
     }
 
     fn write_snapshot(&mut self) -> Result<()> {
+        let directory = self.manifest_path.parent().expect("manifest parent");
+        let _lock = lock_store(directory, true)?;
+        let previous = read_manifest(&self.manifest_path)?;
+        if previous != self.manifest {
+            return Err(HashtreeSocialGraphError::StaleCheckpoint);
+        }
+        // Fail closed before publishing or removing anything if the durable
+        // checkpoint is incomplete. This also provides the rollback root.
+        let mut retained = HashSet::new();
+        if let Some(manifest) = &previous {
+            retained.extend(self.verified_snapshot_hashes(manifest)?);
+        }
         let root = self.graph.get_root().to_string();
         let data = self.graph.to_binary()?;
         let (cid, size) = block_on(self.tree.put(&data))?;
         let manifest = SnapshotManifest::new(root, &cid, size);
+        let current_hashes = self.verified_snapshot_hashes(&manifest)?;
+        retained.extend(current_hashes);
+        let previous_path = directory.join(PREVIOUS_MANIFEST_FILE);
+        if previous.as_ref() == Some(&manifest) {
+            if let Some(previous) = read_manifest(&previous_path)? {
+                // An unchanged flush must not discard the distinct rollback root.
+                retained.extend(self.verified_snapshot_hashes(&previous)?);
+            }
+        }
+        // Both generations, including checkpoints created by older writers,
+        // must be durable before either manifest is committed or GC starts.
+        sync_blob_files(directory, &retained)?;
+        if previous.as_ref() != Some(&manifest) {
+            if let Some(previous) = &previous {
+                write_manifest_atomic(&previous_path, previous)?;
+            }
+        }
         write_manifest_atomic(&self.manifest_path, &manifest)?;
         self.manifest = Some(manifest);
         self.dirty = false;
+        // This directory is exclusively the graph's checkpoint store, not a
+        // shared Blossom cache. Retain both committed generations and all
+        // explicitly pinned blobs; only unreachable old snapshots are garbage.
+        for hash in self.store.list()? {
+            if !retained.contains(&hash) && self.store.pin_count(&hash) == 0 {
+                self.store.delete_sync(&hash)?;
+            }
+        }
         Ok(())
+    }
+
+    fn verified_snapshot_hashes(&self, manifest: &SnapshotManifest) -> Result<HashSet<[u8; 32]>> {
+        let cid = manifest.validate()?;
+        let data = block_on(self.tree.get(&cid, Some(MAX_SNAPSHOT_BYTES)))?.ok_or_else(|| {
+            HashtreeSocialGraphError::MissingSnapshot {
+                cid: manifest.cid.clone(),
+            }
+        })?;
+        if data.len() as u64 != manifest.size {
+            return Err(HashtreeSocialGraphError::SnapshotSizeMismatch {
+                cid: manifest.cid.clone(),
+                expected: manifest.size,
+                actual: data.len() as u64,
+            });
+        }
+        // Traversal alone tolerates missing blobs in the SDK. Full readback,
+        // graph decoding and explicit hash checks must precede any deletion.
+        SocialGraph::from_binary(&manifest.root_pubkey, &data)?;
+        let hashes = block_on(collect_hashes(&self.tree, &cid, 1))?;
+        for hash in &hashes {
+            let blob = self.store.get_sync(hash)?.ok_or_else(|| {
+                HashtreeSocialGraphError::MissingSnapshot {
+                    cid: manifest.cid.clone(),
+                }
+            })?;
+            if sha256(&blob) != *hash {
+                return Err(HashtreeSocialGraphError::CorruptBlob(to_hex(hash)));
+            }
+        }
+        Ok(hashes)
     }
 }
 
@@ -268,7 +346,54 @@ fn write_manifest_atomic(path: &Path, manifest: &SnapshotManifest) -> Result<()>
         fs::create_dir_all(parent)?;
     }
     let temp_path = path.with_extension("json.tmp");
-    fs::write(&temp_path, serde_json::to_vec_pretty(manifest)?)?;
+    let mut file = File::create(&temp_path)?;
+    file.write_all(&serde_json::to_vec_pretty(manifest)?)?;
+    file.sync_all()?;
     fs::rename(temp_path, path)?;
+    #[cfg(unix)]
+    File::open(path.parent().expect("manifest parent"))?.sync_all()?;
+    Ok(())
+}
+
+fn lock_store(directory: &Path, exclusive: bool) -> Result<File> {
+    let lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(directory.join("snapshot.lock"))?;
+    if exclusive {
+        lock.lock()?;
+    } else {
+        lock.lock_shared()?;
+    }
+    Ok(lock)
+}
+
+fn sync_blob_files(directory: &Path, hashes: &HashSet<[u8; 32]>) -> Result<()> {
+    let base = directory.join(BLOBS_DIR);
+    let mut directories = HashSet::from([base.clone()]);
+    for hash in hashes {
+        let hex = to_hex(hash);
+        let sharded = base.join(&hex[..2]).join(&hex[2..4]).join(&hex[4..]);
+        let path = if sharded.is_file() {
+            sharded
+        } else {
+            base.join(&hex[..2]).join(&hex[2..])
+        };
+        File::open(&path)?.sync_all()?;
+        let mut parent = path.parent();
+        while let Some(path) = parent {
+            if path == base {
+                break;
+            }
+            directories.insert(path.to_path_buf());
+            parent = path.parent();
+        }
+    }
+    #[cfg(unix)]
+    for directory in directories {
+        File::open(directory)?.sync_all()?;
+    }
     Ok(())
 }
