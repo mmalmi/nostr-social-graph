@@ -1,6 +1,6 @@
 //! Encrypted private preferences. Storage, authenticated sibling channels and relay delivery are caller-owned.
-use anyhow::{Result, bail, ensure};
-use nostr_sdk::{Event, EventBuilder, Keys, Kind, Tag, Timestamp, nips::nip44};
+use anyhow::{bail, ensure, Result};
+use nostr_sdk::{nips::nip44, Event, EventBuilder, Keys, Kind, Tag, Timestamp};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{cmp::Ordering, collections::BTreeMap};
@@ -430,14 +430,17 @@ pub fn acknowledge_private_contact_event(
     event_id: &str,
 ) -> PrivateContactSyncState {
     let mut result = state.clone();
-    if let Some(record) = result.records.get_mut(contact)
-        && record.pending
-        && record
-            .event
-            .as_ref()
-            .is_some_and(|event| event.id.to_hex() == event_id)
-    {
-        record.pending = false;
+    match result.records.get_mut(contact) {
+        Some(record)
+            if record.pending
+                && record
+                    .event
+                    .as_ref()
+                    .is_some_and(|event| event.id.to_hex() == event_id) =>
+        {
+            record.pending = false;
+        }
+        _ => {}
     }
     result
 }
@@ -695,14 +698,12 @@ mod tests {
             open_private_contact_event(next.event.as_ref().unwrap(), owner, &keys).unwrap(),
             next.state.records[contact].document
         );
-        assert!(
-            pending_private_contacts(&acknowledge_private_contact_event(
-                &next.state,
-                contact,
-                &next.event.unwrap().id.to_hex()
-            ))
-            .is_empty()
-        );
+        assert!(pending_private_contacts(&acknowledge_private_contact_event(
+            &next.state,
+            contact,
+            &next.event.unwrap().id.to_hex()
+        ))
+        .is_empty());
     }
     #[test]
     fn foreign_accounts_invalid_fields_and_bad_sizes_fail_closed() {
@@ -714,23 +715,19 @@ mod tests {
         assert!(open_private_contact_event(&event, contact, &keys).is_err());
         assert!(restore_private_contact_sync(&f["state"].to_string(), contact).is_err());
         let state = create_private_contact_sync(owner, &"1".repeat(32)).unwrap();
-        assert!(
-            edit_private_contact(
-                &state,
-                contact,
-                &patch(serde_json::json!({"accepted_name":"Bypass"})),
-                Some(&"a".repeat(32))
-            )
-            .is_err()
-        );
-        assert!(
-            edit_private_contact(
-                &state,
-                contact,
-                &patch(serde_json::json!({"note":"x".repeat(16385)})),
-                Some(&"a".repeat(32))
-            )
-            .is_err()
-        );
+        assert!(edit_private_contact(
+            &state,
+            contact,
+            &patch(serde_json::json!({"accepted_name":"Bypass"})),
+            Some(&"a".repeat(32))
+        )
+        .is_err());
+        assert!(edit_private_contact(
+            &state,
+            contact,
+            &patch(serde_json::json!({"note":"x".repeat(16385)})),
+            Some(&"a".repeat(32))
+        )
+        .is_err());
     }
 }
