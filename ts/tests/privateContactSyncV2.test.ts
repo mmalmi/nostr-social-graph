@@ -60,6 +60,8 @@ describe('private contact V2', () => {
     const state = editPrivateContact(createPrivateContactSync(owner, writer), contact, { favorite: true });
     const document = privateContactDocuments(state)[0];
     expect(() => validateV1(document, owner)).toThrow();
+    expect(() => parsePrivateContactControl({ ...buildPrivateContactControl(document), request: true }, owner)).toThrow();
+    expect(() => parsePrivateContactControl({ ...buildPrivateContactRequest(owner), document }, owner)).toThrow();
     expect(() => parsePrivateContactControl({ type: 'private-contact-sync', v: 1, document }, owner)).toThrow();
     expect(() => parsePrivateContactControl(buildPrivateContactControl(document), 'f'.repeat(64))).toThrow();
     expect(parsePrivateContactControl(buildPrivateContactRequest(owner), owner)).toEqual(buildPrivateContactRequest(owner));

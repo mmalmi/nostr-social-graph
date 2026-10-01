@@ -447,6 +447,18 @@ pub fn parse_private_contact_control_v2(
     owner: &str,
 ) -> Result<PrivateContactControlV2> {
     require_hex(owner, 64)?;
+    let fields = value
+        .as_object()
+        .ok_or_else(|| anyhow!("invalid private contact control"))?;
+    let allowed = if fields.get("type").and_then(Value::as_str) == Some("private-contact-sync") {
+        ["type", "v", "document"]
+    } else {
+        ["type", "v", "owner"]
+    };
+    ensure!(
+        fields.len() == 3 && fields.keys().all(|field| allowed.contains(&field.as_str())),
+        "ambiguous private contact control"
+    );
     let control: PrivateContactControlV2 = serde_json::from_value(value.clone())?;
     match &control {
         PrivateContactControlV2::Sync { v, document } => {

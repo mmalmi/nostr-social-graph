@@ -201,6 +201,8 @@ export function buildPrivateContactRequest(owner: string): PrivateContactControl
 export function parsePrivateContactControl(value: unknown, expectedOwner: string): PrivateContactControl {
   key(expectedOwner);
   if (!object(value) || value.v !== 2) throw new Error('Unsupported private contact control');
+  const allowed = value.type === 'private-contact-sync' ? ['type', 'v', 'document'] : ['type', 'v', 'owner'];
+  if (Object.keys(value).length !== 3 || Object.keys(value).some(field => !allowed.includes(field))) throw new Error('Ambiguous private contact control');
   if (value.type === 'private-contact-sync') {
     validatePrivateContactDocument(value.document, expectedOwner);
     return buildPrivateContactControl(value.document);
