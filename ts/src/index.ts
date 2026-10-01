@@ -5,6 +5,7 @@ export type { NostrEvent } from './utils';
 export { toBinaryChunks, toBinary, fromBinary, fromBinaryStream } from './SocialGraphBinary';
 export * from './factEvents';
 export * from './trustedAuthors';
+export * from './contactMemory';
 export * from './identityGraph';
 export { normalizeHexPubkey } from './identityGraph';
 export * from './nostrIdentity';

@@ -23,6 +23,31 @@ and trust scoring.
 - Tag-native UUID fact op and snapshot helpers
 - App-facing `NostrIdentity` roster/AppKey helpers with profile secret epochs, wrapped secrets, parent projection, and encrypted device-label payload tags
 - Optional social memory for entities, key/identifier attestations, and trust scoring
+- Portable private contact names, explicitly approved name changes, and favorites
+
+## Private contact memory
+
+`ContactMemory` in Rust's `nostr-social-memory` crate and the TypeScript
+`contactMemory` helpers share the JSON format in
+[`fixtures/contact-memory.json`](./fixtures/contact-memory.json). Apps keep one
+record per viewing account and contact, using their own SQLite, browser storage,
+or private sync. The helpers do not publish events or synchronize data by
+themselves. Keep public profile metadata and public follows separate.
+
+After the first interaction, call `observe_name` (Rust) or `observeContactName`
+(TypeScript) with the profile name. Missing or blank names can be filled when
+metadata arrives. Later observations preserve both the first name and the name
+accepted by the viewer. Show `accepted_name` where continuity matters; use
+`pending_name` / `pendingContactName` to offer a change. Only explicit
+`approve_name` / `approveContactName` calls update the accepted name and append
+history, and only when the name the viewer approved still matches the latest
+profile. Pass Unix seconds for approval timestamps. A private `favorite` flag
+does not add a public follow or confer a social-graph checkmark.
+
+These helpers own data and transition rules. Profile fetching/search, avatar
+components, checkmark appearance, interaction boundaries, and storage belong to
+the application. Cross-app reuse of the format requires an app-owned private
+export/import or sync mechanism; using the helper alone does not share records.
 
 ## Usage
 
