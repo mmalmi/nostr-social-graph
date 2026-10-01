@@ -26,14 +26,18 @@ export default defineConfig({
     },
   },
   build: {
+    rollupOptions: { external: ['nostr-tools'] },
     lib: {
-      entry: path.resolve(__dirname, "src/index.ts"),
+      entry: {
+        index: path.resolve(__dirname, "src/index.ts"),
+        privateContactSync: path.resolve(__dirname, "src/privateContactSync.ts"),
+        privateContactSyncController: path.resolve(__dirname, "src/privateContactSyncController.ts"),
+      },
       name: "nostr-social-graph",
       formats: ["es", "cjs"],
-      fileName: (format) =>
-        format === "cjs"
-          ? "nostr-social-graph.cjs"
-          : "nostr-social-graph.es.js",
+      fileName: (format, entry) => entry === 'index'
+        ? format === 'cjs' ? 'nostr-social-graph.cjs' : 'nostr-social-graph.es.js'
+        : `${entry}.${format === 'cjs' ? 'cjs' : 'js'}`,
     },
     outDir: path.resolve(__dirname, "dist"),
   },

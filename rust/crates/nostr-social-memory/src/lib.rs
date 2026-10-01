@@ -1,6 +1,7 @@
 mod attestation;
 mod attestation_store;
 mod contact_memory;
+mod private_contact_sync;
 mod counter_attestation;
 mod migrate;
 mod nostr_event;
@@ -12,6 +13,7 @@ mod types;
 
 pub use attestation::Attestation;
 pub use contact_memory::{AcceptedNameChange, ContactMemory};
+pub use private_contact_sync::*;
 pub use counter_attestation::CounterAttestation;
 pub use migrate::migrate_contacts;
 pub use nostr_event::*;

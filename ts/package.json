@@ -1,6 +1,6 @@
 {
   "name": "nostr-social-graph",
-  "version": "2.0.1",
+  "version": "2.0.2",
   "type": "module",
   "packageManager": "pnpm@10.28.2",
   "description": "Nostr social graph library",
@@ -12,6 +12,16 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/nostr-social-graph.es.js",
       "require": "./dist/nostr-social-graph.cjs"
+    },
+    "./privateContactSync": {
+      "types": "./dist/privateContactSync.d.ts",
+      "import": "./dist/privateContactSync.js",
+      "require": "./dist/privateContactSync.cjs"
+    },
+    "./privateContactSyncController": {
+      "types": "./dist/privateContactSyncController.d.ts",
+      "import": "./dist/privateContactSyncController.js",
+      "require": "./dist/privateContactSyncController.cjs"
     },
     "./data/socialGraph.bin": "./data/socialGraph.bin",
     "./data/profileData.json": "./data/profileData.json",

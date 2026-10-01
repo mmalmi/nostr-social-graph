@@ -6,6 +6,8 @@ export { toBinaryChunks, toBinary, fromBinary, fromBinaryStream } from './Social
 export * from './factEvents';
 export * from './trustedAuthors';
 export * from './contactMemory';
+export * from './privateContactSync';
+export * from './privateContactSyncController';
 export * from './identityGraph';
 export { normalizeHexPubkey } from './identityGraph';
 export * from './nostrIdentity';
