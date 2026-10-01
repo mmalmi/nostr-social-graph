@@ -338,7 +338,10 @@ pub fn stage_private_contact_document(
     record_id: Option<&str>,
 ) -> Result<PrivateContactSyncState> {
     let merged = merge_private_contact_document(state, document)?;
-    let fields = &merged.contacts[&document.contact];
+    let fields = merged
+        .contacts
+        .get(&document.contact)
+        .ok_or_else(|| anyhow::anyhow!("missing merged private contact"))?;
     if state
         .records
         .get(&document.contact)
@@ -466,13 +469,18 @@ pub fn open_private_contact_event(
         d.as_slice().len() == 2 && t.as_slice() == ["t", PRIVATE_CONTACT_SYNC_NAMESPACE],
         "invalid private contact tags"
     );
-    let suffix = d.as_slice()[1]
+    let address = d
+        .as_slice()
+        .get(1)
+        .ok_or_else(|| anyhow::anyhow!("missing private contact address"))?;
+    let suffix = address
         .strip_prefix(&format!("{PRIVATE_CONTACT_SYNC_NAMESPACE}:"))
         .ok_or_else(|| anyhow::anyhow!("invalid contact namespace"))?;
-    let ids: Vec<_> = suffix.split(':').collect();
-    ensure!(ids.len() == 2, "invalid contact address");
-    require_hex(ids[0], 32)?;
-    require_hex(ids[1], 32)?;
+    let (writer, record_id) = suffix
+        .split_once(':')
+        .ok_or_else(|| anyhow::anyhow!("invalid contact address"))?;
+    require_hex(writer, 32)?;
+    require_hex(record_id, 32)?;
     ensure!(
         keys.public_key().to_hex() == owner,
         "private contact decrypt account mismatch"
@@ -485,7 +493,7 @@ pub fn open_private_contact_event(
     let document: PrivateContactDocument = serde_json::from_str(&plaintext)?;
     validate_private_contact_document(&document, owner)?;
     ensure!(
-        d == &document_tags(&document)?[0],
+        document_tags(&document)?.first() == Some(d),
         "private contact address mismatch"
     );
     Ok(document)
