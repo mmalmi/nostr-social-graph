@@ -104,7 +104,7 @@ pub fn validate_private_contact_document_v2(
 ) -> Result<()> {
     require_hex(owner, 64)?;
     ensure!(
-        document.version == 2 && document.owner == owner,
+        document.version == PRIVATE_CONTACT_SYNC_VERSION && document.owner == owner,
         "private contact account or version mismatch"
     );
     require_hex(&document.contact, 64)?;
