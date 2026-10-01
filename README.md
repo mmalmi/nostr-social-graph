@@ -95,6 +95,9 @@ updates through the retired bridge.
 
 ### Legacy encrypted preference sync (v1, compatibility only)
 
+This retired format lacks forward secrecy: compromise of the long-lived owner key
+can decrypt retained self-encrypted records. It is not recommended for new writes.
+
 `nostr-social-graph/privateContactSync` and
 `nostr-social-graph/privateContactSyncController` provide the shared TypeScript
 core; Rust's `nostr-social-memory` exports matching `private_contact_*` helpers.
