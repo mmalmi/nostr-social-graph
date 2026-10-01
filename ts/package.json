@@ -25,7 +25,17 @@
     },
     "./data/socialGraph.bin": "./data/socialGraph.bin",
     "./data/profileData.json": "./data/profileData.json",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./privateContactSyncV2": {
+      "types": "./dist/privateContactSyncV2.d.ts",
+      "import": "./dist/privateContactSyncV2.js",
+      "require": "./dist/privateContactSyncV2.cjs"
+    },
+    "./privateContactSyncV2Controller": {
+      "types": "./dist/privateContactSyncV2Controller.d.ts",
+      "import": "./dist/privateContactSyncV2Controller.js",
+      "require": "./dist/privateContactSyncV2Controller.cjs"
+    }
   },
   "scripts": {
     "test": "vitest",

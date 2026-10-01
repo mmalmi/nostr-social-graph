@@ -30,6 +30,8 @@ export default defineConfig({
     lib: {
       entry: {
         index: path.resolve(__dirname, "src/index.ts"),
+        privateContactSyncV2: path.resolve(__dirname, "src/privateContactSyncV2.ts"),
+        privateContactSyncV2Controller: path.resolve(__dirname, "src/privateContactSyncV2Controller.ts"),
         privateContactSync: path.resolve(__dirname, "src/privateContactSync.ts"),
         privateContactSyncController: path.resolve(__dirname, "src/privateContactSyncController.ts"),
       },

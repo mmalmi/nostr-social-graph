@@ -44,7 +44,56 @@ history, and only when the name the viewer approved still matches the latest
 profile. Pass Unix seconds for approval timestamps. A private `favorite` flag
 does not add a public follow or confer a social-graph checkmark.
 
-### Encrypted preference sync
+### Queued sibling preference sync (v2)
+
+Use `nostr-social-graph/privateContactSyncV2` and
+`nostr-social-graph/privateContactSyncV2Controller`; Rust exports matching
+`*_v2` functions and `*V2` types from `nostr-social-memory`. The portable fixture
+is [`fixtures/private-contact-sync-v2.json`](./fixtures/private-contact-sync-v2.json).
+
+V2 keeps the existing per-field `{counter,writer,value}` merge rule, including
+explicit `false`/`null` clears, and adds private contact `muted`. This is separate
+from chat notification mutes and public mute lists. Notes, nicknames, favorites
+and mutes remain local-first; remembered public names/history stay separate.
+
+The document is `{version:2,owner,contact,fields}`. Carry it **inside** an
+already authenticated encrypted sibling message with inner kind `10452` and
+`{type:'private-contact-sync',v:2,document}`. A paired device requests a snapshot
+with `{type:'private-contact-sync-request',v:2,owner}` under the same inner kind.
+The receiver calls `queuePrivateContactSnapshot` to send all known registers,
+including clears, in bounded per-contact documents. These are field-wise merges,
+not replacement address-book snapshots. New/restarted peers request recovery;
+only original field stamps are forwarded. Never place contacts or values in
+public routing tags.
+
+The caller must validate the same owner and an authorized active sibling before
+parsing or merging a control. This library does not authenticate a channel.
+`mergeTrusted` resolves only after atomic local persistence and never stages an
+echo. An inbound message must remain in the messaging runtime's durable journal
+until that promise resolves; storage failure or a stopped controller rejects it.
+
+`send(document)` returns true only after an authenticated sibling runtime has
+**durably queued** the exact document and owns retries for intended offline
+recipients. False or thrown errors retain pending work. Only that exact revision
+is dequeued; a concurrent newer edit survives. `ready` means the controller has
+handed off its pending work, not that every device received it. Existing ratchet
+transport can carry the ciphertext over relays or available FIPS channels; this
+library introduces neither another encryption key nor a transport fallback.
+
+`migratePrivateContactSync` / `migrate_private_contact_sync_v2` imports a local V1
+state without changing any register stamps or clock, merges pending records, and
+queues its full merged snapshot once. It retires sealed events, relay ACKs and
+read caches. Stop the old publisher and subscription before migration, then persist V2
+atomically before enabling the new controller; never run both publishers. Import uncaptured nondefault local settings only as
+counter-zero seeds, so old copies cannot resurrect clears. Existing V1 exports
+remain for compatibility, but V2 never signs, decrypts, reads or publishes kind
+30078. Do not send V2 data under legacy kind10451, legacy `privateContacts` or
+legacy `contactDetails` snapshot fields: old apps can republish those. Use a
+versioned snapshot field (for example `privateContactsV2`) with the same strict
+V2 parser. Old apps safely ignore the new control instead of receiving private
+updates through the retired bridge.
+
+### Legacy encrypted preference sync (v1, compatibility only)
 
 `nostr-social-graph/privateContactSync` and
 `nostr-social-graph/privateContactSyncController` provide the shared TypeScript
