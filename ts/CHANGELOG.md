@@ -5,6 +5,12 @@
 - Refresh the library, example, and test dependency graph to supported versions;
   the frozen workspace lock now has no known OSV advisories.
 
+## 2.0.4 - 2026-10-02
+
+- Preserve public key identities when merging graphs with different internal ID
+  mappings, including follow and mute relationships and their timestamps.
+- Keep independent graph roots and input snapshots unchanged during a merge.
+
 ## 2.0.0 - 2026-07-16
 
 - Replace device-approval request URIs with a strict three-field bootstrap URI.
