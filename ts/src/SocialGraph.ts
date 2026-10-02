@@ -440,7 +440,14 @@ export class SocialGraph {
       console.log('size before merge', this.size());
       console.time('merge graph');
       
-      const users = Array.from(other);
+      // Lists belong to the source graph's ID space. Include timestamp-only
+      // empty lists and disconnected authors so newer removals are not lost.
+      const users = Array.from(new Set([
+        ...other.followListCreatedAt.keys(),
+        ...other.followedByUser.keys(),
+        ...other.muteListCreatedAt.keys(),
+        ...other.mutedByUser.keys(),
+      ]));
       let processedCount = 0;
 
       const processNextUser = () => {
@@ -458,18 +465,22 @@ export class SocialGraph {
         
         this.mergeUserLists(
           user,
+          other,
           this.followListCreatedAt,
           other.followListCreatedAt,
           this.followedByUser,
-          other.followedByUser
+          other.followedByUser,
+          this.followersByUser
         );
 
         this.mergeUserLists(
           user,
+          other,
           this.muteListCreatedAt,
           other.muteListCreatedAt,
           this.mutedByUser,
-          other.mutedByUser
+          other.mutedByUser,
+          this.userMutedBy
         );
         
         processedCount++;
@@ -487,37 +498,39 @@ export class SocialGraph {
 
 
   private mergeUserLists(
-    user: string,
+    theirUserId: number,
+    other: SocialGraph,
     ourCreatedAtMap: Map<number, number>,
     theirCreatedAtMap: Map<number, number>,
     ourUserMap: Map<number, Set<number>>, 
-    theirUserMap: Map<number, Set<number>>
+    theirUserMap: Map<number, Set<number>>,
+    ourReverseMap: Map<number, Set<number>>
   ) {
-    const userId = this.id(user);
+    const theirCreatedAt = theirCreatedAtMap.get(theirUserId);
+    const theirUsers = theirUserMap.get(theirUserId);
+    // No source list is different from an authoritative empty list.
+    if (theirCreatedAt === undefined && theirUsers === undefined) return;
+
+    const userId = this.id(other.str(theirUserId));
     const ourCreatedAt = ourCreatedAtMap.get(userId);
-    const theirCreatedAt = theirCreatedAtMap.get(userId);
+    if (ourCreatedAt !== undefined &&
+      (theirCreatedAt === undefined || theirCreatedAt <= ourCreatedAt)) return;
 
-    if (!ourCreatedAt || (theirCreatedAt && ourCreatedAt < theirCreatedAt)) {
-      const newUsers = theirUserMap.get(userId) || new Set<number>();
-      const currentUsers = ourUserMap.get(userId) || new Set<number>();
-
-      for (const newUser of newUsers) {
-        if (!currentUsers.has(newUser)) {
-          if (!ourUserMap.has(userId)) {
-            ourUserMap.set(userId, new Set<number>());
-          }
-          ourUserMap.get(userId)!.add(newUser);
-        }
-      }
-
-      for (const currentUser of currentUsers) {
-        if (!newUsers.has(currentUser)) {
-          ourUserMap.get(userId)!.delete(currentUser);
-        }
-      }
-
-      ourCreatedAtMap.set(userId, theirCreatedAt ?? 0);
+    // Numeric IDs are private to each graph, including IDs inside each list.
+    const newUsers = new Set<number>();
+    for (const theirTarget of theirUsers ?? []) {
+      newUsers.add(this.id(other.str(theirTarget)));
     }
+    for (const currentUser of ourUserMap.get(userId) ?? []) {
+      if (!newUsers.has(currentUser)) ourReverseMap.get(currentUser)?.delete(userId);
+    }
+    for (const newUser of newUsers) {
+      let reverse = ourReverseMap.get(newUser);
+      if (!reverse) ourReverseMap.set(newUser, reverse = new Set());
+      reverse.add(userId);
+    }
+    ourUserMap.set(userId, newUsers);
+    if (theirCreatedAt !== undefined) ourCreatedAtMap.set(userId, theirCreatedAt);
   }
 
   *userIterator(upToDistance?: number): Generator<string> {
