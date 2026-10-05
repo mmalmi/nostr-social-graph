@@ -239,7 +239,10 @@ Kind `37368` snapshots express one signer's current claim about that release:
 ```
 
 Each profile field is a single scalar. `approved` is exactly `true` or `false`;
-`false` revokes that signer's approval. The note describes the signer's claim, not
+the optional `warning` field is also exactly `true` or `false` and defaults to
+`false` when absent. Both fields cannot be true. `approved=true` endorses the
+release; `approved=false, warning=true` warns about it; both false withdraw the
+signer's claim without endorsing or warning. The note describes the signer's claim, not
 proof the work happened. A release hash must not be replaced by a package name or
 mutable version alias. Different versions or platforms have separate subjects.
 
@@ -248,6 +251,13 @@ trust policy. Duplicate snapshots do not create extra votes. Claims about an
 identity, product ratings, and generic fact operations are not release approval.
 Operation-level disputes remain separate claims and cannot revoke another
 signer's snapshot.
+
+Haps counts endorsements and warnings only from the reader and their unmuted
+direct follows (including an explicitly configured starting point). Publisher
+self-endorsements do not count, but a followed publisher can warn about its own
+build. An active trusted warning blocks installation and updates unless the user
+explicitly overrides warnings for that operation. Unknown or distant signers do
+not affect that policy. Haps versions before 0.1.6 do not enforce warnings.
 
 ### Nostr Identity
 
