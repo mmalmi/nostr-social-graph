@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.0 - 2026-10-06
+
+- Fact operation and snapshot subjects are opaque, case-sensitive strings, including release hashes. Identity profiles continue to require canonical UUIDs.
+- Builders still accept UUIDs through `ToString`; parsed subject fields now return `String`. `project_fact_ops` validates its subject and returns `Result<FactProjection>`.
+- Share a signed release-attestation fixture with TypeScript.
+
 ## 0.4.0 - 2026-07-16
 
 - Add the transport-only `fips_transport` identity purpose and app-facing facet.

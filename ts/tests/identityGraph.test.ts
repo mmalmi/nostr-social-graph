@@ -91,6 +91,9 @@ describe('identity graph', () => {
 
     const parsed = parseIdentityRosterOpEvent(eventFromDraft(draft, eventId('1'), adminPubkey));
     expect(parsed.content.identity).toBe(identity);
+    const nonUuid = { ...draft, tags: draft.tags.map(t => t[0] === 'i' && t[2] === 'subject' ? ['i', 'ab'.repeat(32), 'subject'] : t) };
+    expect(() => parseIdentityRosterOpEvent(eventFromDraft(nonUuid, eventId('1'), adminPubkey))).toThrow('canonical UUID');
+
     expect(parsed.content.actorPubkey).toBe(adminPubkey);
     expect(parsed.content.op).toEqual({
       op: 'add_key',

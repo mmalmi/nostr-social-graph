@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.1.0 - 2026-10-06
+
+- Allow release hashes and other case-sensitive identifiers as fact-event subjects; keep UUID validation in identity profiles.
+- Verify a shared signed release-attestation fixture against Rust.
+
 ## Unreleased
 
 - Refresh the library, example, and test dependency graph to supported versions;

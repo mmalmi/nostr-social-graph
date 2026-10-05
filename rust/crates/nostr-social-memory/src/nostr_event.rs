@@ -260,7 +260,8 @@ fn build_fact_record_event(
 }
 
 fn parse_social_memory_fact(event: &Event, expected_type: &str) -> Result<FactOp> {
-    let op = parse_fact_op_event(event)?;
+    let mut op = parse_fact_op_event(event)?;
+    op.subject = record_subject(&op.subject)?.to_string();
     let record_type = required_scalar(&op, "type")?;
     if record_type != expected_type {
         bail!("unexpected social-memory fact event type {record_type}");

@@ -12,7 +12,7 @@ pub use nostr_identity::*;
 /// Regular, append-only fact op events.
 pub const FACT_OP_KIND: u16 = 7368;
 
-/// Addressable latest-state snapshots for one UUID subject.
+/// Addressable latest-state snapshots for one subject.
 pub const FACT_SNAPSHOT_KIND: u16 = 37_368;
 
 const SUBJECT_MARKER: &str = "subject";
@@ -24,7 +24,7 @@ const SNAPSHOT_MS_TAG: &str = "ms";
 
 const RESERVED_TAGS: &[&str] = &["d", "e", "i", "p", SNAPSHOT_MS_TAG];
 
-/// A tag-native predicate assertion for one UUID subject.
+/// A tag-native predicate assertion for one subject.
 ///
 /// The Nostr tag name is the predicate. Tag values are predicate-specific
 /// object/argument strings. UUID and pubkey values are bare canonical strings.
@@ -54,7 +54,7 @@ pub struct FactOpLinks {
 pub struct FactOp {
     pub op_id: String,
     pub author_pubkey: String,
-    pub subject: Uuid,
+    pub subject: String,
     pub facts: Vec<Fact>,
     pub pubkeys: BTreeSet<String>,
     pub external_identifiers: BTreeSet<String>,
@@ -69,7 +69,7 @@ pub struct FactOp {
 pub struct FactSnapshot {
     pub snapshot_id: String,
     pub author_pubkey: String,
-    pub subject: Uuid,
+    pub subject: String,
     pub facts: Vec<Fact>,
     pub pubkeys: BTreeSet<String>,
     pub external_identifiers: BTreeSet<String>,
@@ -81,7 +81,7 @@ pub struct FactSnapshot {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FactProjection {
-    pub subject: Uuid,
+    pub subject: String,
     pub facts: BTreeMap<String, BTreeSet<Vec<String>>>,
     pub pubkeys: BTreeSet<String>,
     pub external_identifiers: BTreeSet<String>,
@@ -110,7 +110,7 @@ pub fn fact(predicate: impl Into<String>, values: &[&str]) -> Fact {
 
 pub fn build_fact_op_event(
     keys: &Keys,
-    subject: Uuid,
+    subject: impl ToString,
     facts: impl IntoIterator<Item = Fact>,
     prev: impl IntoIterator<Item = String>,
     created_at: u64,
@@ -129,7 +129,7 @@ pub fn build_fact_op_event(
 
 pub fn build_fact_op_event_with_links(
     keys: &Keys,
-    subject: Uuid,
+    subject: impl ToString,
     facts: impl IntoIterator<Item = Fact>,
     links: FactOpLinks,
     created_at: u64,
@@ -139,7 +139,7 @@ pub fn build_fact_op_event_with_links(
 
 pub fn build_fact_op_event_with_links_and_identifiers(
     keys: &Keys,
-    subject: Uuid,
+    subject: impl ToString,
     facts: impl IntoIterator<Item = Fact>,
     links: FactOpLinks,
     external_identifiers: impl IntoIterator<Item = String>,
@@ -158,7 +158,7 @@ pub fn build_fact_op_event_with_links_and_identifiers(
 
 pub fn build_fact_op_event_with_links_identifiers_and_extension_facts(
     keys: &Keys,
-    subject: Uuid,
+    subject: impl ToString,
     facts: impl IntoIterator<Item = Fact>,
     links: FactOpLinks,
     external_identifiers: impl IntoIterator<Item = String>,
@@ -168,7 +168,8 @@ pub fn build_fact_op_event_with_links_identifiers_and_extension_facts(
     let facts = normalize_facts(facts.into_iter().chain(extension_facts))?;
     let links = normalize_links(links)?;
     let external_identifiers = normalize_external_identifiers(external_identifiers)?;
-    let tags = fact_op_tags(subject, &facts, &links, &external_identifiers)?;
+    let subject = normalize_subject(&subject.to_string())?;
+    let tags = fact_op_tags(&subject, &facts, &links, &external_identifiers)?;
     EventBuilder::new(Kind::from(FACT_OP_KIND), "")
         .tags(tags)
         .custom_created_at(Timestamp::from(created_at))
@@ -178,7 +179,7 @@ pub fn build_fact_op_event_with_links_identifiers_and_extension_facts(
 
 pub fn build_fact_snapshot_event(
     keys: &Keys,
-    subject: Uuid,
+    subject: impl ToString,
     facts: impl IntoIterator<Item = Fact>,
     heads: impl IntoIterator<Item = String>,
     created_at: u64,
@@ -188,7 +189,7 @@ pub fn build_fact_snapshot_event(
 
 pub fn build_fact_snapshot_event_with_identifiers(
     keys: &Keys,
-    subject: Uuid,
+    subject: impl ToString,
     facts: impl IntoIterator<Item = Fact>,
     external_identifiers: impl IntoIterator<Item = String>,
     heads: impl IntoIterator<Item = String>,
@@ -207,7 +208,7 @@ pub fn build_fact_snapshot_event_with_identifiers(
 
 pub fn build_fact_snapshot_event_with_created_at_ms(
     keys: &Keys,
-    subject: Uuid,
+    subject: impl ToString,
     facts: impl IntoIterator<Item = Fact>,
     heads: impl IntoIterator<Item = String>,
     created_at: u64,
@@ -226,7 +227,7 @@ pub fn build_fact_snapshot_event_with_created_at_ms(
 
 pub fn build_fact_snapshot_event_with_identifiers_and_created_at_ms(
     keys: &Keys,
-    subject: Uuid,
+    subject: impl ToString,
     facts: impl IntoIterator<Item = Fact>,
     external_identifiers: impl IntoIterator<Item = String>,
     heads: impl IntoIterator<Item = String>,
@@ -246,7 +247,7 @@ pub fn build_fact_snapshot_event_with_identifiers_and_created_at_ms(
 
 fn build_fact_snapshot_event_inner(
     keys: &Keys,
-    subject: Uuid,
+    subject: impl ToString,
     facts: impl IntoIterator<Item = Fact>,
     external_identifiers: impl IntoIterator<Item = String>,
     heads: impl IntoIterator<Item = String>,
@@ -257,8 +258,9 @@ fn build_fact_snapshot_event_inner(
     let external_identifiers = normalize_external_identifiers(external_identifiers)?;
     let heads = normalize_event_ids(heads, HEAD_MARKER)?;
     let created_at_ms = validate_created_at_ms(created_at, created_at_ms)?;
+    let subject = normalize_subject(&subject.to_string())?;
     let tags = fact_snapshot_tags(
-        subject,
+        &subject,
         &facts,
         &external_identifiers,
         &heads,
@@ -307,7 +309,7 @@ pub fn parse_fact_snapshot_event(event: &Event) -> Result<FactSnapshot> {
         .tags
         .identifier()
         .ok_or_else(|| anyhow!("fact snapshot is missing d tag"))?;
-    let d_subject = parse_uuid(d_tag)?;
+    let d_subject = normalize_subject(d_tag)?;
     if d_subject != parsed.subject {
         bail!(
             "fact snapshot d tag {} does not match subject {}",
@@ -337,7 +339,11 @@ pub fn compare_fact_snapshots(left: &FactSnapshot, right: &FactSnapshot) -> std:
         .then_with(|| left.snapshot_id.cmp(&right.snapshot_id))
 }
 
-pub fn project_fact_ops(subject: Uuid, ops: impl IntoIterator<Item = FactOp>) -> FactProjection {
+pub fn project_fact_ops(
+    subject: impl ToString,
+    ops: impl IntoIterator<Item = FactOp>,
+) -> Result<FactProjection> {
+    let subject = normalize_subject(&subject.to_string())?;
     let mut ops: Vec<_> = ops.into_iter().filter(|op| op.subject == subject).collect();
     ops.sort_by(|left, right| {
         left.created_at
@@ -381,7 +387,7 @@ pub fn project_fact_ops(subject: Uuid, ops: impl IntoIterator<Item = FactOp>) ->
         .cloned()
         .collect::<BTreeSet<_>>();
 
-    FactProjection {
+    Ok(FactProjection {
         subject,
         facts,
         pubkeys,
@@ -391,7 +397,7 @@ pub fn project_fact_ops(subject: Uuid, ops: impl IntoIterator<Item = FactOp>) ->
         replaced_op_ids,
         disputed_op_ids,
         heads,
-    }
+    })
 }
 
 pub fn facts_from_projection(projection: &FactProjection) -> Vec<Fact> {
@@ -408,7 +414,7 @@ pub fn facts_from_projection(projection: &FactProjection) -> Vec<Fact> {
 }
 
 fn fact_op_tags(
-    subject: Uuid,
+    subject: &str,
     facts: &[Fact],
     links: &FactOpLinks,
     external_identifiers: &BTreeSet<String>,
@@ -449,7 +455,7 @@ fn fact_op_tags(
 }
 
 fn fact_snapshot_tags(
-    subject: Uuid,
+    subject: &str,
     facts: &[Fact],
     external_identifiers: &BTreeSet<String>,
     heads: &[String],
@@ -480,7 +486,7 @@ fn fact_snapshot_tags(
 }
 
 fn index_tags(
-    subject: Uuid,
+    subject: &str,
     facts: &[Fact],
     external_identifiers: &BTreeSet<String>,
 ) -> Vec<Vec<String>> {
@@ -489,7 +495,7 @@ fn index_tags(
     for fact in facts {
         for value in &fact.values {
             if let Ok(uuid) = parse_uuid(value) {
-                if uuid != subject {
+                if uuid.to_string() != subject {
                     uuid_indexes.insert(uuid);
                 }
             } else if let Some(pubkey) = normalize_pubkey(value) {
@@ -499,7 +505,7 @@ fn index_tags(
     }
     for identifier in external_identifiers {
         if let Ok(uuid) = parse_uuid(identifier)
-            && uuid != subject
+            && uuid.to_string() != subject
         {
             uuid_indexes.insert(uuid);
         }
@@ -693,8 +699,8 @@ fn parse_common_event(event: &Event, snapshot: bool) -> Result<ParsedFactEvent> 
                     bail!("fact i tag is missing value");
                 };
                 if parts.get(2).is_some_and(|marker| marker == SUBJECT_MARKER) {
-                    let uuid = parse_uuid(value)?;
-                    if subject.replace(uuid).is_some() {
+                    let identifier = normalize_subject(value)?;
+                    if subject.replace(identifier).is_some() {
                         bail!("fact event has multiple subject i tags");
                     }
                 } else if let Ok(uuid) = parse_uuid(value) {
@@ -761,7 +767,7 @@ fn parse_common_event(event: &Event, snapshot: bool) -> Result<ParsedFactEvent> 
     for fact in &facts {
         for value in &fact.values {
             if let Ok(uuid) = parse_uuid(value) {
-                if uuid != subject {
+                if uuid.to_string() != subject {
                     mentioned_subjects.insert(uuid);
                 }
             } else if let Some(pubkey) = normalize_pubkey(value) {
@@ -793,6 +799,15 @@ fn parse_common_event(event: &Event, snapshot: bool) -> Result<ParsedFactEvent> 
     })
 }
 
+/// Subjects are opaque, case-sensitive identifiers. Profile-specific validation
+/// (for example UUID identity subjects) belongs to that profile's parser.
+fn normalize_subject(value: &str) -> Result<String> {
+    if value.trim().is_empty() || value.chars().any(char::is_control) {
+        bail!("fact subject must be a non-empty identifier without control characters");
+    }
+    Ok(value.to_owned())
+}
+
 fn parse_uuid(value: &str) -> Result<Uuid> {
     let trimmed = value.trim();
     let uuid =
@@ -816,7 +831,7 @@ fn is_lower_hex(value: &str, len: usize) -> bool {
 }
 
 struct ParsedFactEvent {
-    subject: Uuid,
+    subject: String,
     facts: Vec<Fact>,
     pubkeys: BTreeSet<String>,
     external_identifiers: BTreeSet<String>,
@@ -845,6 +860,29 @@ mod tests {
     }
 
     #[test]
+    fn release_hash_and_case_sensitive_subjects_roundtrip() {
+        let keys = Keys::generate();
+        for subject in ["ab".repeat(32), "https://example.com/Package/V1".to_owned()] {
+            let event =
+                build_fact_op_event(&keys, &subject, [fact("checked", &["tests"])], [], 123)
+                    .unwrap();
+            let op = parse_fact_op_event(&event).unwrap();
+            assert_eq!(op.subject, subject);
+            assert_eq!(project_fact_ops(&subject, [op]).unwrap().subject, subject);
+            let snapshot =
+                build_fact_snapshot_event(&keys, &subject, [fact("checked", &["tests"])], [], 123)
+                    .unwrap();
+            assert_eq!(
+                parse_fact_snapshot_event(&snapshot).unwrap().subject,
+                subject
+            );
+        }
+        for subject in ["", "   ", "release\nother"] {
+            assert!(build_fact_op_event(&keys, subject, [], [], 123).is_err());
+        }
+    }
+
+    #[test]
     fn builds_and_parses_tag_only_fact_op() {
         let keys = Keys::generate();
         let event = build_fact_op_event_with_links_and_identifiers(
@@ -868,7 +906,7 @@ mod tests {
         assert!(event.content.is_empty());
 
         let parsed = parse_fact_op_event(&event).unwrap();
-        assert_eq!(parsed.subject, subject());
+        assert_eq!(parsed.subject, subject().to_string());
         assert_eq!(parsed.author_pubkey, keys.public_key().to_hex());
         assert_eq!(parsed.prev, vec![fake_event_id(1)]);
         assert!(parsed.pubkeys.contains(PUBKEY));
@@ -918,7 +956,7 @@ mod tests {
         assert_eq!(raw, sorted);
 
         let parsed = parse_fact_snapshot_event(&event).unwrap();
-        assert_eq!(parsed.subject, subject());
+        assert_eq!(parsed.subject, subject().to_string());
         assert_eq!(parsed.heads, vec![head]);
         assert!(parsed.facts.contains(&fact("same_as", &[OTHER])));
     }
@@ -1015,7 +1053,7 @@ mod tests {
         )
         .unwrap();
 
-        let projection = project_fact_ops(subject(), [first.clone(), second.clone()]);
+        let projection = project_fact_ops(subject(), [first.clone(), second.clone()]).unwrap();
         assert_eq!(projection.applied_op_ids.len(), 2);
         assert!(
             projection
@@ -1051,7 +1089,7 @@ mod tests {
         )
         .unwrap();
 
-        let projection = project_fact_ops(subject(), [old, replacement.clone()]);
+        let projection = project_fact_ops(subject(), [old, replacement.clone()]).unwrap();
         assert!(projection.replaced_op_ids.contains(&replacement.replace[0]));
         assert!(
             !projection

@@ -55,7 +55,10 @@ Each fact event MUST have exactly one subject tag:
 The subject MUST be a non-empty identifier string. For a given profile or
 publisher, the same logical entity SHOULD keep the same subject when keys,
 names, labels, metadata, or current facts change. Profiles MAY require a
-specific subject format, such as canonical lowercase hyphenated UUIDs.
+specific subject format, such as canonical lowercase hyphenated UUIDs. Generic
+helpers treat subjects as opaque, case-sensitive identifiers, without trimming
+or case folding. Subjects MUST NOT consist only of whitespace or contain control
+characters. Release event hashes can be subjects directly; they need no UUID.
 
 The event `pubkey` is the claim author, not the subject.
 
@@ -214,6 +217,37 @@ Suggested predicates:
 
 Crawlers SHOULD add `i` tags for source review id, source URL, reviewer id, and
 reviewed object id.
+
+### Haps Release Attestation
+
+Uses the canonical lowercase hex event ID of an exact signed software release as
+its subject. The release event commits to its publisher, version, platform, and
+content root. No UUID mapping is needed.
+
+Kind `37368` snapshots express one signer's current claim about that release:
+
+```json
+[
+  ["d", "<release-event-id>"],
+  ["i", "<release-event-id>", "subject"],
+  ["type", "haps_release_attestation"],
+  ["schema", "1"],
+  ["approved", "true"],
+  ["note", "Built from source; tests pass."],
+  ["ms", "1720000000123"]
+]
+```
+
+Each profile field is a single scalar. `approved` is exactly `true` or `false`;
+`false` revokes that signer's approval. The note describes the signer's claim, not
+proof the work happened. A release hash must not be replaced by a package name or
+mutable version alias. Different versions or platforms have separate subjects.
+
+Consumers select the latest snapshot per signer and subject and apply their own
+trust policy. Duplicate snapshots do not create extra votes. Claims about an
+identity, product ratings, and generic fact operations are not release approval.
+Operation-level disputes remain separate claims and cannot revoke another
+signer's snapshot.
 
 ### Nostr Identity
 

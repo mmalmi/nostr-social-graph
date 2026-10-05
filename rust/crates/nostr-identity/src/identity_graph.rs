@@ -910,7 +910,7 @@ fn roster_op_content_from_facts(op: &FactOp) -> Result<IdentityRosterOpContent> 
     }
     Ok(IdentityRosterOpContent {
         schema,
-        identity: op.subject,
+        identity: parse_identity_id(&op.subject)?,
         actor_pubkey: required_pubkey(op, "actor_pubkey")?,
         actor_seq: optional_integer(op, "actor_seq")?,
         parents: op.prev.clone(),
@@ -962,7 +962,7 @@ fn key_acceptance_content_from_facts(op: &FactOp) -> Result<IdentityKeyAcceptanc
     }
     let content = IdentityKeyAcceptanceContent {
         schema,
-        identity: op.subject,
+        identity: parse_identity_id(&op.subject)?,
         key_pubkey: required_pubkey(op, "key_pubkey")?,
         purposes: normalize_tokens(scalar_values(op, "purpose")?, "purpose")?,
         roster_op_id: optional_scalar(op, "roster_op_id")?
@@ -1673,6 +1673,18 @@ mod tests {
             20,
         )
         .unwrap();
+        let mut tags: Vec<_> = event.tags.iter().map(|t| t.as_slice().to_vec()).collect();
+        for tag in &mut tags {
+            if tag.first().is_some_and(|s| s == "i") && tag.get(2).is_some_and(|s| s == "subject") {
+                tag[1] = "ab".repeat(32);
+            }
+        }
+        let non_uuid = EventBuilder::new(event.kind, "")
+            .tags(tags.into_iter().map(|t| Tag::parse(t).unwrap()))
+            .custom_created_at(event.created_at)
+            .sign_with_keys(&keys)
+            .unwrap();
+        assert!(parse_identity_key_acceptance_event(&non_uuid).is_err());
         let signed = parse_identity_key_acceptance_event(&event).unwrap();
         let projection = project_identity_key_acceptances(subject(), [signed.clone()]);
 

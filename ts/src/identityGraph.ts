@@ -704,7 +704,7 @@ function rosterOpContentFromFacts(op: FactOp): IdentityRosterOpContent {
   const actorSeq = optionalInteger(op, 'actor_seq');
   return {
     schema,
-    identity: op.subject,
+    identity: requireIdentityId(op.subject),
     actorPubkey: requiredPubkey(op, 'actor_pubkey'),
     ...(actorSeq !== undefined ? { actorSeq } : {}),
     ...(op.prev.length ? { parents: op.prev } : {}),
@@ -761,7 +761,7 @@ function keyAcceptanceContentFromFacts(op: FactOp): IdentityKeyAcceptanceContent
   }
   const content: IdentityKeyAcceptanceContent = {
     schema,
-    identity: op.subject,
+    identity: requireIdentityId(op.subject),
     keyPubkey: requiredPubkey(op, 'key_pubkey'),
     purposes: normalizeTokens(scalarValues(op, 'purpose'), 'purpose'),
     ...(optionalScalar(op, 'roster_op_id') !== undefined ? { rosterOpId: optionalScalar(op, 'roster_op_id') } : {}),

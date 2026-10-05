@@ -1,0 +1,39 @@
+{
+  "kind": 37368,
+  "content": "",
+  "tags": [
+    [
+      "approved",
+      "true"
+    ],
+    [
+      "d",
+      "abababababababababababababababababababababababababababababababab"
+    ],
+    [
+      "i",
+      "abababababababababababababababababababababababababababababababab",
+      "subject"
+    ],
+    [
+      "ms",
+      "1720000000123"
+    ],
+    [
+      "note",
+      "Built from source; tests pass."
+    ],
+    [
+      "schema",
+      "1"
+    ],
+    [
+      "type",
+      "haps_release_attestation"
+    ]
+  ],
+  "created_at": 1720000000,
+  "pubkey": "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+  "id": "28cb40d3e52457eb2ae23bffc8f694f330387ab088cde51640232435bca2047f",
+  "sig": "d095fdd4ef9389e2abec615d18f29af4fb627c1e82d530c1e828153456d9fe8fa07d602803ca65bd4a5fa9a066b6c4490d87587d7ce3c719391af0f67ecf945e"
+}

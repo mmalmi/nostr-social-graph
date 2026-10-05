@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { getEventHash, verifyEvent } from 'nostr-tools';
 import { describe, expect, it } from 'vitest';
 import {
   FACT_OP_KIND,
@@ -37,6 +39,29 @@ function eventFromDraft(
 }
 
 describe('fact events', () => {
+  it('verifies and rebuilds the Rust/TypeScript release attestation fixture', () => {
+    const event = JSON.parse(readFileSync(new URL('../../testdata/fact-release-attestation.json', import.meta.url), 'utf8'));
+    expect(verifyEvent(event)).toBe(true);
+    const parsed = parseFactSnapshotEvent(event);
+    expect(parsed.subject).toBe('ab'.repeat(32));
+    const rebuilt = buildFactSnapshotDraft(parsed.subject, parsed.facts, [], {}, { createdAtMs: parsed.createdAtMs });
+    expect(rebuilt.tags).toEqual(event.tags);
+    expect(getEventHash({ ...rebuilt, pubkey: event.pubkey, created_at: event.created_at })).toBe(event.id);
+  });
+
+  it('round-trips release hashes and case-sensitive identifiers', () => {
+    for (const subject of ['ab'.repeat(32), 'https://example.com/Package/V1']) {
+      const op = parseFactOpEvent(eventFromDraft(buildFactOpDraft(subject, [fact('checked', ['tests'])]), eventId('1')));
+      expect(op.subject).toBe(subject);
+      expect(projectFactOps(subject, [op]).subject).toBe(subject);
+      const snapshot = parseFactSnapshotEvent(eventFromDraft(buildFactSnapshotDraft(subject, [], []), eventId('2')));
+      expect(snapshot.subject).toBe(subject);
+    }
+    for (const invalid of ['', '   ', 'release\nother']) {
+      expect(() => buildFactOpDraft(invalid, [])).toThrow();
+    }
+  });
+
   it('builds and parses tag-only op drafts', () => {
     const draft = buildFactOpDraft(
       subject,

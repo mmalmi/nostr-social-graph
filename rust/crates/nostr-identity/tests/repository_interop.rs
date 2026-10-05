@@ -255,3 +255,25 @@ fn shared_ts_rust_device_approval_vectors_reject_tampering() {
         );
     }
 }
+
+#[test]
+fn parses_and_rebuilds_shared_release_hash_snapshot() {
+    let event = Event::from_json(include_str!(
+        "../../../../testdata/fact-release-attestation.json"
+    ))
+    .unwrap();
+    let parsed = parse_fact_snapshot_event(&event).unwrap();
+    assert_eq!(parsed.subject, "ab".repeat(32));
+    assert_eq!(parsed.created_at_ms, Some(1_720_000_000_123));
+    let rebuilt = build_fact_snapshot_event_with_created_at_ms(
+        &fixed_keys(1),
+        &parsed.subject,
+        parsed.facts,
+        [],
+        parsed.created_at,
+        1_720_000_000_123,
+    )
+    .unwrap();
+    assert_eq!(rebuilt.id, event.id);
+    assert_eq!(rebuilt.tags, event.tags);
+}

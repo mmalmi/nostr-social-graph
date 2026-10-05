@@ -2905,14 +2905,13 @@ fn starts_with_ignore_ascii_case(value: &str, prefix: &str) -> bool {
 fn base64_url_encode(bytes: &[u8]) -> String {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
     let mut out = String::with_capacity((bytes.len() * 4).div_ceil(3));
-    let mut chunks = bytes.chunks_exact(3);
-    for chunk in &mut chunks {
+    let (chunks, remainder) = bytes.as_chunks::<3>();
+    for chunk in chunks {
         out.push(TABLE[(chunk[0] >> 2) as usize] as char);
         out.push(TABLE[(((chunk[0] & 0x03) << 4) | (chunk[1] >> 4)) as usize] as char);
         out.push(TABLE[(((chunk[1] & 0x0f) << 2) | (chunk[2] >> 6)) as usize] as char);
         out.push(TABLE[(chunk[2] & 0x3f) as usize] as char);
     }
-    let remainder = chunks.remainder();
     if let [first] = remainder {
         out.push(TABLE[(first >> 2) as usize] as char);
         out.push(TABLE[((first & 0x03) << 4) as usize] as char);

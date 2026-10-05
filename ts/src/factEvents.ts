@@ -149,7 +149,7 @@ export function buildFactOpTags(
   links: FactOpLinks = {},
   indexes: FactEventIndexes = {},
 ): string[][] {
-  const normalizedSubject = normalizeUuid(subject);
+  const normalizedSubject = normalizeSubject(subject);
   const normalizedFacts = normalizeFacts(facts);
   const normalizedLinks = normalizeLinks(links);
   const externalIdentifiers = normalizeExternalIdentifiers(indexes.externalIdentifiers ?? []);
@@ -169,7 +169,7 @@ export function buildFactSnapshotTags(
   indexes: FactEventIndexes = {},
   metadata: FactSnapshotMetadata = {},
 ): string[][] {
-  const normalizedSubject = normalizeUuid(subject);
+  const normalizedSubject = normalizeSubject(subject);
   const normalizedFacts = normalizeFacts(facts);
   const externalIdentifiers = normalizeExternalIdentifiers(indexes.externalIdentifiers ?? []);
   const normalizedHeads = normalizeEventIds(heads, HEAD_MARKER);
@@ -269,7 +269,7 @@ export function compareFactSnapshots(left: FactSnapshot, right: FactSnapshot): n
 }
 
 export function projectFactOps(subject: string, ops: FactOp[]): FactProjection {
-  const normalizedSubject = normalizeUuid(subject);
+  const normalizedSubject = normalizeSubject(subject);
   const matching = ops
     .filter((op) => op.subject === normalizedSubject)
     .slice()
@@ -348,9 +348,9 @@ function parseCommonTags(event: Pick<FactEventDraft, 'content' | 'tags'>, snapsh
       const value = tag[1];
       if (!value) throw new Error('fact i tag is missing value');
       if (tag[2] === SUBJECT_MARKER) {
-        const uuid = normalizeUuid(value);
+        const identifier = normalizeSubject(value);
         if (subject) throw new Error('fact event has multiple subject i tags');
-        subject = uuid;
+        subject = identifier;
       } else if (isUuid(value)) {
         mentionedSubjects.add(normalizeUuid(value));
       } else {
@@ -395,7 +395,7 @@ function parseCommonTags(event: Pick<FactEventDraft, 'content' | 'tags'>, snapsh
   if (snapshot) {
     const d = event.tags.find((tag) => tag[0] === 'd')?.[1];
     if (!d) throw new Error('fact snapshot is missing d tag');
-    const dSubject = normalizeUuid(d);
+    const dSubject = normalizeSubject(d);
     if (dSubject !== subject) {
       throw new Error(`fact snapshot d tag ${dSubject} does not match subject ${subject}`);
     }
@@ -479,6 +479,14 @@ function normalizeValue(value: string): string {
   if (isUuid(trimmed)) return normalizeUuid(trimmed);
   if (isPubkey(trimmed)) return normalizePubkey(trimmed);
   return trimmed;
+}
+
+// Subjects are opaque identifiers; identity profiles validate UUIDs separately.
+function normalizeSubject(value: string): string {
+  if (!value.trim() || /[\u0000-\u001f\u007f-\u009f]/u.test(value)) {
+    throw new Error('fact subject must be a non-empty identifier without control characters');
+  }
+  return value;
 }
 
 function normalizeUuid(value: string): string {
