@@ -29,6 +29,7 @@ export default defineConfig({
     rollupOptions: { external: ['nostr-tools'] },
     lib: {
       entry: {
+        privateContactFacts: path.resolve(__dirname, "src/privateContactFacts.ts"),
         index: path.resolve(__dirname, "src/index.ts"),
         privateContactSyncV2: path.resolve(__dirname, "src/privateContactSyncV2.ts"),
         privateContactSyncV2Controller: path.resolve(__dirname, "src/privateContactSyncV2Controller.ts"),

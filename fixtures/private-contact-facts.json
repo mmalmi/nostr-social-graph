@@ -1,0 +1,182 @@
+{
+  "owner": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "contact": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "cases": [
+    {
+      "field": "nickname",
+      "register": {
+        "counter": 7,
+        "writer": "11111111111111111111111111111111",
+        "value": "Tea friend ☕"
+      },
+      "fact": {
+        "v": 1,
+        "owner": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "id": "24d742965708ee021d2047db219a5e9d888f13e5a4d25b5f712489eba68fda5f",
+        "draft": {
+          "kind": 7368,
+          "content": "",
+          "tags": [
+            [
+              "i",
+              "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "subject"
+            ],
+            [
+              "counter",
+              "7"
+            ],
+            [
+              "nickname",
+              "\"Tea friend ☕\""
+            ],
+            [
+              "schema",
+              "1"
+            ],
+            [
+              "type",
+              "private_contact"
+            ],
+            [
+              "writer",
+              "11111111111111111111111111111111"
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "field": "note",
+      "register": {
+        "counter": 9,
+        "writer": "11111111111111111111111111111111",
+        "value": null
+      },
+      "fact": {
+        "v": 1,
+        "owner": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "id": "678da4c36c619a65829a4573be024d7c9943835b1eeb0de0b8d38f1334548dab",
+        "draft": {
+          "kind": 7368,
+          "content": "",
+          "tags": [
+            [
+              "i",
+              "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "subject"
+            ],
+            [
+              "counter",
+              "9"
+            ],
+            [
+              "note",
+              "null"
+            ],
+            [
+              "schema",
+              "1"
+            ],
+            [
+              "type",
+              "private_contact"
+            ],
+            [
+              "writer",
+              "11111111111111111111111111111111"
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "field": "favorite",
+      "register": {
+        "counter": 10,
+        "writer": "11111111111111111111111111111111",
+        "value": false
+      },
+      "fact": {
+        "v": 1,
+        "owner": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "id": "562e4ff8e3cf3d611ed9c341fb653e898d49f6531b41ada91a7c716a710bbf5e",
+        "draft": {
+          "kind": 7368,
+          "content": "",
+          "tags": [
+            [
+              "i",
+              "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "subject"
+            ],
+            [
+              "counter",
+              "10"
+            ],
+            [
+              "favorite",
+              "false"
+            ],
+            [
+              "schema",
+              "1"
+            ],
+            [
+              "type",
+              "private_contact"
+            ],
+            [
+              "writer",
+              "11111111111111111111111111111111"
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "field": "muted",
+      "register": {
+        "counter": 11,
+        "writer": "11111111111111111111111111111111",
+        "value": true
+      },
+      "fact": {
+        "v": 1,
+        "owner": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "id": "cddaa087227686b7722c5a3226f449e8b2326b1ed5b8b150b61c8223deccf793",
+        "draft": {
+          "kind": 7368,
+          "content": "",
+          "tags": [
+            [
+              "i",
+              "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "subject"
+            ],
+            [
+              "counter",
+              "11"
+            ],
+            [
+              "muted",
+              "true"
+            ],
+            [
+              "schema",
+              "1"
+            ],
+            [
+              "type",
+              "private_contact"
+            ],
+            [
+              "writer",
+              "11111111111111111111111111111111"
+            ]
+          ]
+        }
+      }
+    }
+  ]
+}

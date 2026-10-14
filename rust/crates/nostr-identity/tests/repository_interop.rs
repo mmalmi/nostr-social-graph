@@ -277,3 +277,35 @@ fn parses_and_rebuilds_shared_release_hash_snapshot() {
     assert_eq!(rebuilt.id, event.id);
     assert_eq!(rebuilt.tags, event.tags);
 }
+
+mod private_contact_fact_conformance {
+    use nostr_identity::*;
+    use serde_json::Value;
+    #[test]
+    fn shared_unsigned_private_contact_facts() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../fixtures/private-contact-facts.json"
+        ))
+        .unwrap();
+        let owner = fixture["owner"].as_str().unwrap();
+        let contact = fixture["contact"].as_str().unwrap();
+        for case in fixture["cases"].as_array().unwrap() {
+            let register: PrivateFactRegister =
+                serde_json::from_value(case["register"].clone()).unwrap();
+            let field = case["field"].as_str().unwrap();
+            let value = build_private_contact_fact(owner, contact, field, &register).unwrap();
+            assert_eq!(serde_json::to_value(&value).unwrap(), case["fact"]);
+            assert_eq!(
+                parse_private_contact_fact(&value, owner).unwrap().register,
+                register
+            );
+            assert!(parse_private_contact_fact(&value, &"f".repeat(64)).is_err());
+            let mut changed = value.clone();
+            changed.draft.tags.push(vec!["p".into(), contact.into()]);
+            assert!(parse_private_contact_fact(&changed, owner).is_err());
+            let mut changed = case["fact"].clone();
+            changed["sig"] = Value::String("0".repeat(128));
+            assert!(serde_json::from_value::<PrivateContactFact>(changed).is_err());
+        }
+    }
+}

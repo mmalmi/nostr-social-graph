@@ -5,9 +5,37 @@ use uuid::Uuid;
 
 mod identity_graph;
 mod nostr_identity;
+mod private_contact_facts;
 
 pub use identity_graph::*;
 pub use nostr_identity::*;
+pub use private_contact_facts::*;
+
+/// An unsigned fact payload. It has no author signature and is not a relay event.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FactEventDraft {
+    pub kind: u16,
+    pub content: String,
+    pub tags: Vec<Vec<String>>,
+}
+
+pub fn build_fact_op_draft(
+    subject: &str,
+    facts: impl IntoIterator<Item = Fact>,
+) -> Result<FactEventDraft> {
+    let subject = normalize_subject(subject)?;
+    let facts = normalize_facts(facts)?;
+    let tags = fact_op_tags(&subject, &facts, &FactOpLinks::default(), &BTreeSet::new())?;
+    Ok(FactEventDraft {
+        kind: FACT_OP_KIND,
+        content: String::new(),
+        tags: tags
+            .into_iter()
+            .map(|tag| tag.as_slice().to_vec())
+            .collect(),
+    })
+}
 
 /// Regular, append-only fact op events.
 pub const FACT_OP_KIND: u16 = 7368;

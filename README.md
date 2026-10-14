@@ -93,6 +93,24 @@ versioned snapshot field (for example `privateContactsV2`) with the same strict
 V2 parser. Old apps safely ignore the new control instead of receiving private
 updates through the retired bridge.
 
+### Unsigned private contact facts
+
+`nostr-social-graph/privateContactFacts` and Rust `nostr_identity` provide matching
+kind-7368 drafts for private nicknames, notes, favorite and muted fields. Each
+record has one contact subject, a field value, and the original counter/writer
+stamp. Null and false are explicit clears. The canonical SHA-256 ID is shared by
+both implementations; these records have no Nostr pubkey, timestamp or signature.
+The authenticated, active sibling transport supplies account authority.
+
+Version-3 durable state stores these facts and pending facts atomically. The
+restore adapter preserves V1/V2 counters, writer, clock and queued edits; V2 is
+only the merge-engine and older-peer compatibility view. Reconcile current field
+facts in the account-private State inventory after negotiating `privateFacts:1`.
+Use the encrypted V2 controls/snapshots with older peers. Never send these drafts,
+IDs or tags to public relays or convert them into signed public events. Public
+name attestations require a separate, explicit action; personal nicknames do not
+approve or verify someone's name.
+
 ### Legacy encrypted preference sync (v1, compatibility only)
 
 This retired format lacks forward secrecy: compromise of the long-lived owner key
