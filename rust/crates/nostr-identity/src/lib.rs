@@ -6,6 +6,8 @@ use uuid::Uuid;
 mod identity_graph;
 mod nostr_identity;
 mod private_contact_facts;
+mod private_events;
+pub use private_events::*;
 
 pub use identity_graph::*;
 pub use nostr_identity::*;

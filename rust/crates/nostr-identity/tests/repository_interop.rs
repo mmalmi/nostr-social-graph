@@ -301,7 +301,7 @@ mod private_contact_fact_conformance {
             );
             assert!(parse_private_contact_fact(&value, &"f".repeat(64)).is_err());
             let mut changed = value.clone();
-            changed.draft.tags.push(vec!["p".into(), contact.into()]);
+            changed.tags.push(vec!["p".into(), contact.into()]);
             assert!(parse_private_contact_fact(&changed, owner).is_err());
             let mut changed = case["fact"].clone();
             changed["sig"] = Value::String("0".repeat(128));

@@ -1,6 +1,6 @@
 {
   "name": "nostr-social-graph",
-  "version": "2.1.1",
+  "version": "3.0.0",
   "type": "module",
   "packageManager": "pnpm@10.28.2",
   "description": "Nostr social graph library",
@@ -40,6 +40,11 @@
       "types": "./dist/privateContactFacts.d.ts",
       "import": "./dist/privateContactFacts.js",
       "require": "./dist/privateContactFacts.cjs"
+    },
+    "./privateEvents": {
+      "types": "./dist/privateEvents.d.ts",
+      "import": "./dist/privateEvents.js",
+      "require": "./dist/privateEvents.cjs"
     }
   },
   "scripts": {

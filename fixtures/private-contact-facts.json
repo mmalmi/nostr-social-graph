@@ -10,40 +10,38 @@
         "value": "Tea friend ☕"
       },
       "fact": {
-        "v": 1,
-        "owner": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        "id": "24d742965708ee021d2047db219a5e9d888f13e5a4d25b5f712489eba68fda5f",
-        "draft": {
-          "kind": 7368,
-          "content": "",
-          "tags": [
-            [
-              "i",
-              "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-              "subject"
-            ],
-            [
-              "counter",
-              "7"
-            ],
-            [
-              "nickname",
-              "\"Tea friend ☕\""
-            ],
-            [
-              "schema",
-              "1"
-            ],
-            [
-              "type",
-              "private_contact"
-            ],
-            [
-              "writer",
-              "11111111111111111111111111111111"
-            ]
+        "kind": 7368,
+        "content": "",
+        "tags": [
+          [
+            "i",
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "subject"
+          ],
+          [
+            "counter",
+            "7"
+          ],
+          [
+            "nickname",
+            "\"Tea friend ☕\""
+          ],
+          [
+            "schema",
+            "1"
+          ],
+          [
+            "type",
+            "private_contact"
+          ],
+          [
+            "writer",
+            "11111111111111111111111111111111"
           ]
-        }
+        ],
+        "pubkey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "created_at": 0,
+        "id": "1539a757183edcf841672281f0d3741af8eadc5267e1d1d4fdde0a46e0b3ce12"
       }
     },
     {
@@ -54,40 +52,38 @@
         "value": null
       },
       "fact": {
-        "v": 1,
-        "owner": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        "id": "678da4c36c619a65829a4573be024d7c9943835b1eeb0de0b8d38f1334548dab",
-        "draft": {
-          "kind": 7368,
-          "content": "",
-          "tags": [
-            [
-              "i",
-              "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-              "subject"
-            ],
-            [
-              "counter",
-              "9"
-            ],
-            [
-              "note",
-              "null"
-            ],
-            [
-              "schema",
-              "1"
-            ],
-            [
-              "type",
-              "private_contact"
-            ],
-            [
-              "writer",
-              "11111111111111111111111111111111"
-            ]
+        "kind": 7368,
+        "content": "",
+        "tags": [
+          [
+            "i",
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "subject"
+          ],
+          [
+            "counter",
+            "9"
+          ],
+          [
+            "note",
+            "null"
+          ],
+          [
+            "schema",
+            "1"
+          ],
+          [
+            "type",
+            "private_contact"
+          ],
+          [
+            "writer",
+            "11111111111111111111111111111111"
           ]
-        }
+        ],
+        "pubkey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "created_at": 0,
+        "id": "6dceb525795c974bcc668e65a10b0f1345bef02367707155b89af6443f7112d7"
       }
     },
     {
@@ -98,40 +94,38 @@
         "value": false
       },
       "fact": {
-        "v": 1,
-        "owner": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        "id": "562e4ff8e3cf3d611ed9c341fb653e898d49f6531b41ada91a7c716a710bbf5e",
-        "draft": {
-          "kind": 7368,
-          "content": "",
-          "tags": [
-            [
-              "i",
-              "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-              "subject"
-            ],
-            [
-              "counter",
-              "10"
-            ],
-            [
-              "favorite",
-              "false"
-            ],
-            [
-              "schema",
-              "1"
-            ],
-            [
-              "type",
-              "private_contact"
-            ],
-            [
-              "writer",
-              "11111111111111111111111111111111"
-            ]
+        "kind": 7368,
+        "content": "",
+        "tags": [
+          [
+            "i",
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "subject"
+          ],
+          [
+            "counter",
+            "10"
+          ],
+          [
+            "favorite",
+            "false"
+          ],
+          [
+            "schema",
+            "1"
+          ],
+          [
+            "type",
+            "private_contact"
+          ],
+          [
+            "writer",
+            "11111111111111111111111111111111"
           ]
-        }
+        ],
+        "pubkey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "created_at": 0,
+        "id": "a42fdde9f4effc65c461696e0b3d0b6a6beb37d539e65b44a60a48de5727af63"
       }
     },
     {
@@ -142,40 +136,38 @@
         "value": true
       },
       "fact": {
-        "v": 1,
-        "owner": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        "id": "cddaa087227686b7722c5a3226f449e8b2326b1ed5b8b150b61c8223deccf793",
-        "draft": {
-          "kind": 7368,
-          "content": "",
-          "tags": [
-            [
-              "i",
-              "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-              "subject"
-            ],
-            [
-              "counter",
-              "11"
-            ],
-            [
-              "muted",
-              "true"
-            ],
-            [
-              "schema",
-              "1"
-            ],
-            [
-              "type",
-              "private_contact"
-            ],
-            [
-              "writer",
-              "11111111111111111111111111111111"
-            ]
+        "kind": 7368,
+        "content": "",
+        "tags": [
+          [
+            "i",
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "subject"
+          ],
+          [
+            "counter",
+            "11"
+          ],
+          [
+            "muted",
+            "true"
+          ],
+          [
+            "schema",
+            "1"
+          ],
+          [
+            "type",
+            "private_contact"
+          ],
+          [
+            "writer",
+            "11111111111111111111111111111111"
           ]
-        }
+        ],
+        "pubkey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "created_at": 0,
+        "id": "06fd68551590590659e8ef3a7e0aa1cd831e32f6038d785aba3d0578013e6021"
       }
     }
   ]

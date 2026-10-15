@@ -7,17 +7,19 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 pub const PRIVATE_CONTACT_FACT_CONTROL_KIND: u16 = 10456;
-pub const PRIVATE_CONTACT_FACTS_VERSION: u8 = 1;
+pub const PRIVATE_CONTACT_FACTS_VERSION: u8 = 2;
 const FIELDS: [&str; 4] = ["favorite", "muted", "nickname", "note"];
 const MAX_COUNTER: u64 = 9_007_199_254_740_991;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PrivateContactFact {
-    pub v: u8,
-    pub owner: String,
     pub id: String,
-    pub draft: FactEventDraft,
+    pub pubkey: String,
+    pub created_at: u64,
+    pub kind: u16,
+    pub content: String,
+    pub tags: Vec<Vec<String>>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -75,19 +77,21 @@ pub fn build_private_contact_fact(
         ],
     )?;
     let canonical = serde_json::to_vec(&serde_json::json!([
-        "iris-private-contact-fact",
-        1,
+        0,
         owner,
+        0,
         draft.kind,
         draft.tags,
         draft.content
     ]))?;
     let id = format!("{:x}", Sha256::digest(canonical));
     Ok(PrivateContactFact {
-        v: 1,
-        owner: owner.into(),
         id,
-        draft,
+        pubkey: owner.into(),
+        created_at: 0,
+        kind: draft.kind,
+        tags: draft.tags,
+        content: draft.content,
     })
 }
 pub fn parse_private_contact_fact(
@@ -95,16 +99,15 @@ pub fn parse_private_contact_fact(
     owner: &str,
 ) -> Result<PrivateContactFactValue> {
     ensure!(
-        value.v == 1
-            && value.owner == owner
-            && value.draft.kind == 7368
-            && value.draft.content.is_empty()
-            && value.draft.tags.len() == 6,
+        value.created_at == 0
+            && value.pubkey == owner
+            && value.kind == 7368
+            && value.content.is_empty()
+            && value.tags.len() == 6,
         "Invalid private fact envelope"
     );
     let tag = |name: &str| {
         value
-            .draft
             .tags
             .iter()
             .find(|tag| tag.first().is_some_and(|key| key == name))
@@ -165,7 +168,7 @@ pub fn store_private_contact_facts(state: &Value) -> Result<Value> {
         Ok(facts)
     };
     Ok(
-        serde_json::json!({"version":3,"owner":owner,"writer":state["writer"],"clock":state["clock"],
+        serde_json::json!({"version":4,"owner":owner,"writer":state["writer"],"clock":state["clock"],
         "facts":convert(&state["contacts"],false)?,"pending":convert(&state["pending"],true)?}),
     )
 }
@@ -173,7 +176,7 @@ pub fn store_private_contact_facts(state: &Value) -> Result<Value> {
 /// Restore the compatibility view without minting new timestamps or field clocks.
 /// Older state is passed through for the caller's V1/V2 migration and validation.
 pub fn restore_private_contact_facts(state: Value, owner: &str) -> Result<Value> {
-    if state["version"] != 3 {
+    if state["version"] != 3 && state["version"] != 4 {
         return Ok(state);
     }
     ensure!(
@@ -186,7 +189,51 @@ pub fn restore_private_contact_facts(state: Value, owner: &str) -> Result<Value>
             .as_array()
             .ok_or_else(|| anyhow::anyhow!("Missing facts"))?
         {
-            let fact: PrivateContactFact = serde_json::from_value(value.clone())?;
+            let fact: PrivateContactFact = if value.get("draft").is_some() {
+                #[derive(Deserialize)]
+                #[serde(deny_unknown_fields)]
+                struct LegacyFact {
+                    v: u8,
+                    owner: String,
+                    id: String,
+                    draft: FactEventDraft,
+                }
+                let legacy: LegacyFact = serde_json::from_value(value.clone())?;
+                ensure!(
+                    legacy.v == 1 && legacy.owner == owner,
+                    "Invalid legacy private fact"
+                );
+                let bytes = serde_json::to_vec(&serde_json::json!([
+                    "iris-private-contact-fact",
+                    1,
+                    owner,
+                    legacy.draft.kind,
+                    legacy.draft.tags,
+                    legacy.draft.content
+                ]))?;
+                ensure!(
+                    legacy.id == format!("{:x}", Sha256::digest(bytes)),
+                    "Invalid legacy private fact ID"
+                );
+                let bytes = serde_json::to_vec(&serde_json::json!([
+                    0,
+                    owner,
+                    0,
+                    legacy.draft.kind,
+                    legacy.draft.tags,
+                    legacy.draft.content
+                ]))?;
+                PrivateContactFact {
+                    id: format!("{:x}", Sha256::digest(bytes)),
+                    pubkey: owner.into(),
+                    created_at: 0,
+                    kind: legacy.draft.kind,
+                    tags: legacy.draft.tags,
+                    content: legacy.draft.content,
+                }
+            } else {
+                serde_json::from_value(value.clone())?
+            };
             let parsed = parse_private_contact_fact(&fact, owner)?;
             let fields = contacts
                 .entry(parsed.contact)
