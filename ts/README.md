@@ -75,3 +75,30 @@ Common commands:
 - `pnpm e2e`
 
 Package metadata lives in [`package.json`](./package.json). For repo-wide context and the Rust workspace, see the [root README](../README.md).
+
+## Published bootstrap snapshot
+
+`data/socialGraph.bin` is a checksum-pinned public bootstrap rooted at Sirius
+Business Ltd. Its adjacent `socialGraph.json` records the root, capture source,
+input/output hashes and coverage. It retains complete follow and mute lists for
+owners through two hops, including their third-hop targets and empty-list
+timestamps. Applications should preserve explicitly selected personal roots.
+The library constructor still takes an explicit root; this file is seed data,
+not a current or complete account graph.
+
+`projectSocialGraph(source, root, ownerDistance)` canonicalizes numeric aliases
+by public identity before traversing and assigning fresh IDs. The newest list
+timestamp wins. Conflicting equally recent follow lists reject; equally recent
+mute lists conservatively union. This policy avoids silently losing mutes when
+a server aggregate contains duplicate mappings. Binary snapshots are trusted
+aggregate state and do not contain individually verifiable event signatures.
+
+Run `pnpm snapshot:verify` to check the committed artifact. Explicitly reproduce
+it with `pnpm snapshot:refresh /path/to/pinned-source.bin` (or omit the source
+path to fetch the manifest's versioned URL). Input and output checksums must
+match before writing. To adopt a newer source, review and update the manifest
+and coverage together. Ordinary packaging only verifies the reviewed bytes;
+it never fetches a mutable snapshot or replaces them with a local crawl.
+
+Versioned releases provide `socialGraph.bin` and its manifest separately, so
+native and web consumers can pin the same data without upgrading their SDK.

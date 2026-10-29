@@ -288,3 +288,9 @@ The Rust workspace now has two interchangeable backends:
 - [`rust/crates/nostr-social-memory`](./rust/crates/nostr-social-memory): entity memory, attestations, counter-attestations, and trust scoring
 
 Both Rust backends implement the shared `SocialGraphBackend` runtime trait from the core crate.
+
+## Shared public bootstrap
+
+The published package and versioned release include a pinned Sirius Business
+Ltd bootstrap snapshot. See [snapshot coverage and regeneration](ts/README.md#published-bootstrap-snapshot)
+for checksums, normalization rules and offline reuse across web and native apps.

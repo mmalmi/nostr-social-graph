@@ -32,3 +32,6 @@ data/profileIndex.json
 data/profileSearchIndex
 data/profileSearchIndex.root.json
 test-results
+
+# Local release evidence; never package or publish.
+/verification/

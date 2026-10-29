@@ -1,6 +1,6 @@
 {
   "name": "nostr-social-graph",
-  "version": "3.0.0",
+  "version": "3.0.1",
   "type": "module",
   "packageManager": "pnpm@10.28.2",
   "description": "Nostr social graph library",
@@ -45,7 +45,8 @@
       "types": "./dist/privateEvents.d.ts",
       "import": "./dist/privateEvents.js",
       "require": "./dist/privateEvents.cjs"
-    }
+    },
+    "./data/socialGraph.json": "./data/socialGraph.json"
   },
   "scripts": {
     "test": "vitest",
@@ -59,9 +60,11 @@
     "examples": "cd examples && vite build && tsc",
     "examples-dev": "cd examples && vite && tsc",
     "e2e": "playwright test",
-    "prepare-npm-release": "tsx ./scripts/reduceGraphSize.ts",
+    "prepare-npm-release": "pnpm run snapshot:verify",
     "prepack": "pnpm run prepare-npm-release",
-    "docs": "typedoc"
+    "docs": "typedoc",
+    "snapshot:verify": "tsx ./scripts/updateSocialGraph.ts --verify",
+    "snapshot:refresh": "tsx ./scripts/updateSocialGraph.ts --refresh"
   },
   "repository": {
     "type": "git",
@@ -78,7 +81,8 @@
     "src",
     "dist",
     "data/socialGraph.bin",
-    "data/profileData.json"
+    "data/profileData.json",
+    "data/socialGraph.json"
   ],
   "devDependencies": {
     "@cashu/cashu-ts": "^4.7.1",

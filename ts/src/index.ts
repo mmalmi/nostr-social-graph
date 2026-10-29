@@ -17,3 +17,5 @@ export * from './nostrIdentityEvents';
 export * from './nostrIdentityNormalize';
 export * from './nostrIdentityProjection';
 export * from './nostrIdentityValidation';
+
+export { projectSocialGraph } from "./projectSocialGraph";
