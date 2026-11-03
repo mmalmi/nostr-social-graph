@@ -1,19 +1,5 @@
-import fs from "fs";
 import path from "path";
 import { defineConfig } from "vitest/config";
-
-// Tests that depend on the external hashtree repo (../../hashtree/) are
-// excluded when that repo isn't checked out alongside this one.
-const hashtreeAvailable = fs.existsSync(
-  path.resolve(__dirname, "../../hashtree/ts/packages/hashtree/src/types.ts"),
-);
-const hashtreeTestExcludes = hashtreeAvailable
-  ? []
-  : [
-      "tests/ProfileSearchIndex.test.ts",
-      "tests/profileSearchIndexNhash.test.ts",
-      "tests/publishProfileSearchIndex.test.ts",
-    ];
 
 export default defineConfig({
   root: __dirname,
@@ -52,7 +38,6 @@ export default defineConfig({
       "**/docs/**",
       "**/e2e/**",
       "**/.{idea,git,cache,output,temp}/**",
-      ...hashtreeTestExcludes,
     ],
   },
 });

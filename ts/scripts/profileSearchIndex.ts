@@ -1,5 +1,5 @@
 import { SearchIndex, type SearchOptions, type SearchResult } from '@hashtree/index';
-import { fromHex, nhashEncode, toHex, type CID, type Store } from './hashtreeAdapter';
+import { fromHex, nhashEncode, objectKeyFromHex, toHex, type CID, type Store } from './hashtreeAdapter';
 
 export type ProfileSearchRecord = {
   pubKey: string;
@@ -30,7 +30,7 @@ export function serializeCid(cid: CID): SerializedCid {
 export function deserializeCid(serialized: SerializedCid): CID {
   return {
     hash: fromHex(serialized.hash),
-    key: serialized.key ? fromHex(serialized.key) : undefined,
+    key: serialized.key === undefined ? undefined : objectKeyFromHex(serialized.key),
   };
 }
 

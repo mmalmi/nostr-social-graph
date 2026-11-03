@@ -5,6 +5,7 @@ export {
   fromHex,
   nhashDecode,
   nhashEncode,
+  objectKeyFromHex,
   toHex,
   type BlossomServer,
   type BlossomSigner,
