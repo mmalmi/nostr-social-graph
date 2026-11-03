@@ -39,7 +39,13 @@ jobs:
       - name: Install Dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Setup Pages
+        id: pages
+        uses: actions/configure-pages@v5
+
       - name: Build Examples
+        env:
+          VITE_BASE_PATH: ${{ steps.pages.outputs.base_path }}/
         run: pnpm run examples
 
       - name: Build Documentation
@@ -51,9 +57,6 @@ jobs:
           cp -r ts/examples/dist/* deploy/
           mkdir -p deploy/docs
           cp -r ts/docs/* deploy/docs/
-
-      - name: Setup Pages
-        uses: actions/configure-pages@v5
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3

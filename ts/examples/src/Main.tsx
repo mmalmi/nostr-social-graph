@@ -61,7 +61,7 @@ const Main = () => {
 };
 
 export const App = () => (
-    <Router>
+    <Router basename={import.meta.env.BASE_URL}>
         <Routes>
             <Route path="/:selectedUser?" element={<Main />} />
         </Routes>
