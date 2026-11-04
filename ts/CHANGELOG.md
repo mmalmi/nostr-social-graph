@@ -1,5 +1,15 @@
 # Changelog
 
+## 3.1.0 - 2026-11-04
+
+- Add an optional `nostr-social-graph/ranking` entry point for personalized
+  PageRank and an experimental GrapeRank-style weighted average. The main entry
+  point does not import or execute it. No added dependencies or persistent data.
+- Bound graph preparation, iterations and total work; expose convergence and
+  typed-array memory use. Ranking snapshots preserve the source graph, honor
+  root mutes, and remain stable across later source edits.
+
+
 ## 2.1.0 - 2026-10-06
 
 - Allow release hashes and other case-sensitive identifiers as fact-event subjects; keep UUID validation in identity profiles.

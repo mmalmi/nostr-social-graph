@@ -1,6 +1,6 @@
 {
   "name": "nostr-social-graph",
-  "version": "3.0.1",
+  "version": "3.1.0",
   "type": "module",
   "packageManager": "pnpm@10.28.2",
   "description": "Nostr social graph library",
@@ -8,6 +8,11 @@
   "module": "dist/nostr-social-graph.es.js",
   "types": "dist/index.d.ts",
   "exports": {
+    "./ranking": {
+      "types": "./dist/ranking.d.ts",
+      "import": "./dist/ranking.js",
+      "require": "./dist/ranking.cjs"
+    },
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/nostr-social-graph.es.js",

@@ -15,6 +15,7 @@ export default defineConfig({
     rollupOptions: { external: ['nostr-tools'] },
     lib: {
       entry: {
+        ranking: path.resolve(__dirname, "src/ranking.ts"),
         privateEvents: path.resolve(__dirname, "src/privateEvents.ts"),
         privateContactFacts: path.resolve(__dirname, "src/privateContactFacts.ts"),
         index: path.resolve(__dirname, "src/index.ts"),

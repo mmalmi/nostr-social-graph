@@ -60,6 +60,55 @@ electorate; signatures alone do not establish completeness or election finality.
 The production graph tests cover 1000 and 10000 admitted Sybils, repeated signals,
 reordered input, trust revocation, and the expected compromised-root boundary.
 
+## Optional ranking
+
+Scoring is a separate import. Loading `SocialGraph`, updating follows, and
+reading distances never computes ranks or loads the ranking module.
+
+```ts
+import { createRankingSnapshot, calculateRanking } from "nostr-social-graph/ranking";
+
+// Run explicitly in an application worker after selecting the graph root.
+const snapshot = createRankingSnapshot(graph);
+const ranks = calculateRanking(snapshot, { algorithm: "pagerank", damping: 0.5 });
+const score = ranks.get(authorPubkey); // unknown or excluded: 0
+console.log(ranks.converged, ranks.iterations, ranks.workingArrayBytes);
+```
+
+PageRank splits each profile's influence among its followed profiles. A walk
+restarts at the selected root; dangling mass also returns there. Root-muted
+profiles cannot receive or pass influence. Another author's mute overrides
+their follow edge. These are recommendation scores, not identities, voting
+rights, group authority, or replacements for application visibility filters.
+`directSeed` describes the root's direct contribution to one follow, so an app
+can choose a reference scale without assigning each additional key a full vote.
+
+`algorithm: "graperank"` provides an experimental capped weighted average using
+positive follows and zero-valued mutes, with `attenuation` and `rigor` controls.
+It uses the equations credited in [ranking-NOTICE.md](src/ranking-NOTICE.md),
+with simultaneous updates and global convergence. It is not a bit-for-bit port
+of the upstream service. A cap per profile does **not** conserve a cluster's
+combined influence; the adversarial tests demonstrate that limitation.
+
+Preparation defaults to at most 250,000 reachable profiles and 2,000,000
+inspected edges, rejecting oversized inputs rather than silently truncating.
+Calculation defaults to at most 64 iterations and 64 million node/edge visits.
+Reaching the calculation limit returns `converged: false`; applications decide
+whether to use that approximation. Parameters are validated. Preparation is
+O(V + E), calculation O(iterations × (V + E)), and memory O(V + E).
+
+The module has no networking, timers, storage, graph mutation, or runtime
+dependencies. Cache results by graph root and application graph revision;
+recompute on follow/mute changes, not on each displayed event. Retain neither
+old roots nor old revisions indefinitely. `workingArrayBytes` counts numeric
+buffers only; string lookup Maps and the caller's graph use additional memory.
+Snapshot fields are read-only by contract. Scores reflect the supplied snapshot,
+which may omit followers or complete follow lists; do not silently mix scores
+from different graph coverage. Existing distance and mute APIs are unchanged.
+
+Benchmark a local snapshot with
+`node --expose-gc --import tsx scripts/benchmarkRanking.ts SNAPSHOT ROOT`.
+
 ## Package paths and commands
 
 - [`src/`](./src/): library source
