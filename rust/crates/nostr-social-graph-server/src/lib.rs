@@ -334,7 +334,7 @@ pub struct AppState {
     profiles: Arc<RwLock<ProfileStore>>,
     profile_index_path: Arc<PathBuf>,
     freshness: Arc<RwLock<GraphFreshness>>,
-    mobile_snapshot: Arc<Mutex<Option<MobileSnapshot>>>,
+    mobile_snapshot: Arc<Mutex<BTreeMap<String, MobileSnapshot>>>,
 }
 
 impl AppState {
@@ -348,7 +348,7 @@ impl AppState {
             profiles,
             profile_index_path: Arc::new(profile_index_path.as_ref().to_path_buf()),
             freshness: Arc::new(RwLock::new(GraphFreshness::default())),
-            mobile_snapshot: Arc::new(Mutex::new(None)),
+            mobile_snapshot: Arc::new(Mutex::new(BTreeMap::new())),
         }
     }
 
@@ -398,7 +398,10 @@ pub fn build_router_with_cors(state: AppState, allow_origin: Option<&str>) -> Ro
         },
     };
 
-    build_router(state).layer(cors)
+    build_router(state).layer(cors.expose_headers([
+        axum::http::header::ETAG,
+        axum::http::HeaderName::from_static("x-graph-root"),
+    ]))
 }
 
 #[derive(Debug, Clone)]
@@ -822,14 +825,23 @@ struct MobileSnapshot {
 
 /// Mobile bootstrap is intentionally a projection, never a replacement for a
 /// client's own graph. Binary revision completeness flags survive projection.
-async fn mobile_graph_binary(State(state): State<AppState>, headers: HeaderMap) -> Response {
+#[derive(Default, Deserialize)]
+struct MobileGraphQuery {
+    root: Option<String>,
+}
+
+async fn mobile_graph_binary(
+    State(state): State<AppState>,
+    Query(query): Query<MobileGraphQuery>,
+    headers: HeaderMap,
+) -> Response {
     let now = unix_timestamp();
     let mut cached = state
         .mobile_snapshot
         .lock()
         .expect("snapshot lock poisoned");
     if cached
-        .as_ref()
+        .get(&root)
         .is_none_or(|snapshot| now.saturating_sub(snapshot.generated_at) >= 60)
     {
         let graph = state.graph.read().expect("graph lock poisoned");
@@ -839,15 +851,19 @@ async fn mobile_graph_binary(State(state): State<AppState>, headers: HeaderMap) 
             max_distance: Some(4),
             max_edges_per_node: Some(500),
         };
-        match graph.to_binary_with_budget(budget) {
+        match graph.to_binary_for_root_with_budget(&root, budget) {
             Ok(binary) if binary.len() <= 4 * 1024 * 1024 => {
-                let etag = HeaderValue::from_str(&format!("\"{}\"", sha256::Hash::hash(&binary)))
-                    .expect("hash header");
-                *cached = Some(MobileSnapshot {
-                    generated_at: now,
-                    bytes: binary.into(),
-                    etag,
-                });
+                let etag =
+                    HeaderValue::from_str(&format!("\"{}:{}\"", root, sha256::Hash::hash(&binary)))
+                        .expect("hash header");
+                cached.insert(
+                    root.clone(),
+                    MobileSnapshot {
+                        generated_at: now,
+                        bytes: binary.into(),
+                        etag,
+                    },
+                );
             }
             _ => {
                 return (
@@ -858,7 +874,7 @@ async fn mobile_graph_binary(State(state): State<AppState>, headers: HeaderMap) 
             }
         }
     }
-    let snapshot = cached.as_ref().expect("snapshot generated");
+    let snapshot = cached.get(&root).expect("snapshot generated");
     let mut response = if headers.get(axum::http::header::IF_NONE_MATCH) == Some(&snapshot.etag) {
         StatusCode::NOT_MODIFIED.into_response()
     } else {
@@ -867,6 +883,10 @@ async fn mobile_graph_binary(State(state): State<AppState>, headers: HeaderMap) 
     response
         .headers_mut()
         .insert(axum::http::header::ETAG, snapshot.etag.clone());
+    response.headers_mut().insert(
+        "x-graph-root",
+        HeaderValue::from_str(&root).expect("root header"),
+    );
     response.headers_mut().insert(
         CONTENT_TYPE,
         HeaderValue::from_static("application/octet-stream"),

@@ -338,3 +338,48 @@ async fn mobile_snapshot_is_bounded_conditional_and_preserves_partial_revision()
             .is_empty()
     );
 }
+
+#[tokio::test]
+async fn mobile_roots_are_bound_and_cache_is_limited_to_supported_discovery_roots() {
+    const COMPANY: &str = "336f319763657d6b0e65a5b5876719e8c8dcdcf9396852be71ee26b73368b29b";
+    let tempdir = TempDir::new().unwrap();
+    let mut graph = SocialGraph::new(ADAM);
+    graph.handle_event(&event(ADAM, 3, 1000, vec![COMPANY]), true, 1.0);
+    let mut follows = event(COMPANY, 3, 1001, vec![FIATJAF]);
+    follows.id = "cc".repeat(32);
+    graph.handle_event(&follows, true, 1.0);
+    let profiles = ProfileStore::load_or_default(tempdir.path().join("profiles.json")).unwrap();
+    let state = AppState::for_tests(graph, profiles, tempdir.path().join("index.json"));
+    let shared_graph = state.graph();
+    let app = build_router(state);
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/social-graph/mobile?root={COMPANY}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers().get("x-graph-root").unwrap(), COMPANY);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let projected = SocialGraph::from_binary(COMPANY, &bytes).unwrap();
+    assert_eq!(projected.get_follow_distance(FIATJAF), 1);
+    assert_eq!(
+        projected.get_list_revision(COMPANY, 3).unwrap().id,
+        follows.id
+    );
+    assert_eq!(shared_graph.read().unwrap().get_root(), ADAM);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/social-graph/mobile?root={FIATJAF}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}

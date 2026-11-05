@@ -83,7 +83,10 @@ freshness because an unchanged follow list can legitimately be old.
 `GET /social-graph/mobile` is a discovery bootstrap capped at 30,000 identities,
 180,000 edges, four hops, and 500 edges per author, with a hard four-MiB decoded
 response limit. It includes the binary format's list revision IDs and completeness
-flags. It is cached for 60 seconds with a SHA-256 ETag and supports `If-None-Match`.
+flags. It is cached for 60 seconds with a root-bound SHA-256 ETag and supports
+`If-None-Match`. The optional `root` query accepts the configured server root or
+the Iris company discovery root; other roots are rejected to bound work/cache
+size. `X-Graph-Root` identifies the projection root (exposed through CORS).
 The existing `/social-graph` endpoint remains available for custom projections.
 Clients must retain their own graph and merge only appropriate newer records;
 loading this discovery projection is not authority to replace a user's crawl.
