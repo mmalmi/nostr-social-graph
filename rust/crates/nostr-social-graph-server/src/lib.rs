@@ -1361,7 +1361,7 @@ async fn sync_graph_once(
 // The SDK convenience fetch returns Ok(empty) even if every relay is offline.
 // A crawl watermark requires an actual EOSE, not merely a completed timeout.
 async fn fetch_graph_batch(client: &NostrClient, filter: Filter) -> Result<Vec<nostr_sdk::Event>> {
-    use nostr_sdk::{MatchEventOptions, RelayMessage, SubscriptionId};
+    use nostr_sdk::{RelayMessage, SubscriptionId};
     let id = SubscriptionId::generate();
     let mut notifications = client.notifications();
     let subscribed = client
@@ -1385,7 +1385,7 @@ async fn fetch_graph_batch(client: &NostrClient, filter: Filter) -> Result<Vec<n
                         subscription_id,
                         event,
                     } if subscription_id.as_ref() == &id => {
-                        if filter.match_event(&event, MatchEventOptions::default())
+                        if filter.match_event(&event, Default::default())
                             && event.verify().is_ok()
                         {
                             let key = (event.pubkey.to_hex(), event.kind.as_u16());
