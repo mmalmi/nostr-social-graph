@@ -836,6 +836,21 @@ async fn mobile_graph_binary(
     headers: HeaderMap,
 ) -> Response {
     let now = unix_timestamp();
+    let default_root = state
+        .graph
+        .read()
+        .expect("graph lock")
+        .get_root()
+        .to_string();
+    let root = query.root.unwrap_or_else(|| default_root.clone());
+    // Only maintained public discovery roots: arbitrary roots would permit
+    // unbounded traversal/cache work controlled by unauthenticated requests.
+    if root != default_root
+        && root != "336f319763657d6b0e65a5b5876719e8c8dcdcf9396852be71ee26b73368b29b"
+    {
+        return (StatusCode::BAD_REQUEST, "Unsupported discovery root").into_response();
+    }
+
     let mut cached = state
         .mobile_snapshot
         .lock()
