@@ -97,7 +97,18 @@ impl Forwarder {
                             .map(|bytes| bytes.len() as u64 * 4 + 4096)
                             .unwrap_or(u64::MAX);
                         if !disk_check.is_some_and(|(_, available)| available >= cost) {
-                            state.write().expect("freshness lock").forwarding_failures += 1;
+                            // The debit is only a conservative estimate. Replaceable
+                            // heads often reuse LMDB pages: measure again before
+                            // declaring an actual capacity failure and skipping data.
+                            disk_check = Some((
+                                Instant::now(),
+                                free_bytes(&path).unwrap_or(0).saturating_sub(reserve),
+                            ));
+                        }
+                        if !disk_check.is_some_and(|(_, available)| available >= cost) {
+                            let mut status = state.write().expect("freshness lock");
+                            status.forwarding_failures += 1;
+                            status.forwarding_last_failure = Some("disk reserve".into());
                             continue;
                         }
                         if let Some((_, available)) = disk_check.as_mut() {
@@ -120,6 +131,14 @@ impl Forwarder {
                             status.last_forwarded_at = Some(crate::unix_timestamp());
                         } else {
                             status.forwarding_failures += 1;
+                            status.forwarding_last_failure = Some(
+                                if transport_failure {
+                                    "transport"
+                                } else {
+                                    "relay rejection"
+                                }
+                                .into(),
+                            );
                             if transport_failure {
                                 retry_after = Some(Instant::now() + Duration::from_secs(30));
                             }
@@ -168,6 +187,10 @@ impl Forwarder {
                         .write()
                         .expect("freshness lock")
                         .forwarding_failures += 1;
+                    self.freshness
+                        .write()
+                        .expect("freshness lock")
+                        .forwarding_last_failure = Some("live backlog overflow".into());
                     tracing::warn!("graph forwarding overflow exceeded bounded pending heads");
                 }
             }

@@ -311,6 +311,7 @@ pub struct GraphFreshness {
     pub last_forwarded_at: Option<u64>,
     pub last_forward_reconciliation_at: Option<u64>,
     pub forwarding_failures: u64,
+    pub forwarding_last_failure: Option<String>,
 }
 
 impl GraphFreshness {
@@ -1169,6 +1170,7 @@ async fn sync_loop(
                 status.last_forward_reconciliation_at = None;
             }
             status.forwarding_failures = 0;
+            status.forwarding_last_failure = None;
         }
         let graph_success = match sync_graph_once(
             &client,
