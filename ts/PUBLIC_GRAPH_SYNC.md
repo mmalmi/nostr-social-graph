@@ -23,6 +23,9 @@ private-account or peer-scoped transports. `syncGraphLists` provides a one-shot
 variant, AbortSignal, byte/time budgets and transfer statistics. Partial failures
 are reported as `failedRelays`, budget exhaustion as `limited`; successful return
 does not mean every relay or every author was fully synchronized.
+An ID request completes only after every requested body passes verification and
+the relay sends EOSE. Missing/invalid bodies and CLOSED responses keep that
+author window incomplete for a later pass; already accepted lists remain intact.
 
 Defaults: 500 authors per pass in 256-author filters, 2 MiB total application
 traffic, 15-second batch deadlines, a 30-second total pass deadline, at most three configured relays, and a
@@ -51,6 +54,12 @@ projection, not a substitute for verified event signatures. Its byte cap is a
 hard response cap, not an assurance that every graph can be represented within
 that cap. `/healthz` measures crawler progress independently of whether users
 have recently changed their lists.
+
+`loadGraphBootstrap` works in production browser bundles and Vite's default
+IIFE workers. Version 4.0.1 fixes a downstream bundling failure in 4.0.0's
+dynamic class import. Run `pnpm --filter nostr-social-graph test:bootstrap` to
+build the published entry points and exercise both browser contexts against a
+local snapshot with follow/mute IDs and incomplete-list metadata.
 
 ## Overhead measurement
 

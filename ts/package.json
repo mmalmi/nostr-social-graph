@@ -1,6 +1,6 @@
 {
   "name": "nostr-social-graph",
-  "version": "4.0.0",
+  "version": "4.0.1",
   "type": "module",
   "packageManager": "pnpm@10.28.2",
   "description": "Nostr social graph library",
@@ -60,6 +60,7 @@
   },
   "scripts": {
     "test": "vitest",
+    "test:bootstrap": "pnpm build && playwright test e2e/publicGraphBootstrap.e2e.spec.ts",
     "build": "vite build && tsc",
     "prepare": "vite build && tsc",
     "crawl": "tsx ./scripts/crawler --once",

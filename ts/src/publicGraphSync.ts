@@ -1,5 +1,5 @@
 import { verifyEvent, type Event } from 'nostr-tools';
-import type { SocialGraph } from './SocialGraph';
+import { SocialGraph } from './SocialGraph';
 import { Negentropy, NegentropyStorageVector } from './vendor/negentropy.js';
 
 export interface GraphSyncStats {
@@ -112,16 +112,28 @@ export async function syncGraphLists(options:GraphSyncOptions):Promise<GraphSync
           stats.batches++;if(fallback)stats.fallbackBatches++;
           const requests=fallback ? [{...filter,limit:512}] : Array.from(needed).reduce<{ids:string[]}[]>((all,eventId,i)=>{if(i%128===0)all.push({ids:[]});all[all.length-1].ids.push(eventId);return all;},[]);
           for(const request of requests){
+            const pending='ids' in request?new Set(request.ids):undefined;
             const req=`g${++serial}`;send(['REQ',req,request]);const until=Date.now()+timeout;
             for(;;){const frame=await next(until);if(frame[1]!==req)continue;
-              if(frame[0]==='EOSE'||frame[0]==='CLOSED')break;
+              if(frame[0]==='CLOSED')throw new Error('Graph event request rejected');
+              if(frame[0]==='EOSE'){
+                if(pending?.size)throw new Error('Graph relay omitted requested revisions');
+                break;
+              }
               if(frame[0]!=='EVENT')continue;
               stats.receivedEvents++;
               const event=frame[2] as Event;
               if(!event||!allowed.has(event.pubkey)||![3,10000].includes(event.kind)||!Array.isArray(event.tags)||event.tags.length>20000||(!fallback&&!needed.has(event.id)))continue;
               // Verification can reject malformed fields by throwing.
               let applied=false;
-              try{applied=verifyEvent(event)&&options.graph.handleEvent(event,true);}catch{/* invalid event */}
+              try{
+                if(verifyEvent(event)){
+                  // A verified stale revision satisfies the fetch even when a
+                  // newer local list wins. Invalid or missing bodies do not.
+                  pending?.delete(event.id);
+                  applied=options.graph.handleEvent(event,true);
+                }
+              }catch{/* invalid event */}
               if(applied){stats.appliedEvents++;options.onEvent?.(event);}
             }
             send(['CLOSE',req]);
@@ -181,7 +193,6 @@ export async function loadGraphBootstrap(options:{root:string;url?:string;signal
   try{for(;;){const {value,done}=await reader.read();if(done)break;length+=value.length;if(length>maxBytes)throw new Error('Graph bootstrap byte limit');chunks.push(value);}}
   catch(error){await reader.cancel().catch(()=>{});throw error;}finally{reader.releaseLock();}
   const data=new Uint8Array(length);let offset=0;for(const chunk of chunks){data.set(chunk,offset);offset+=chunk.length;}
-  const {SocialGraph}=await import('./SocialGraph');
   const graph=await SocialGraph.fromBinary(options.root,data);
   const size=graph.size();
   if(!graph.getListRevision(options.root,3)&&!graph.getFollowedByUser(options.root).size)throw new Error('Graph bootstrap has no discovery root list');
