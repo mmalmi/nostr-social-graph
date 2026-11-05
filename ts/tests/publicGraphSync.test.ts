@@ -61,7 +61,7 @@ describe('sync lifecycle and import bounds',()=>{
   try{const before=Date.now();const stats=await syncGraphLists({graph:new SocialGraph(pubkey),authors:[pubkey],relays:[`ws://127.0.0.1:${(server.address() as {port:number}).port}`],webSocket:WebSocket as any,maxDurationMs:100,timeoutMs:5000});expect(Date.now()-before).toBeLessThan(1500);expect(stats.limited).toBe(true);expect(stats.completedAuthors).toBe(0);}finally{for(const socket of server.clients)socket.terminate();await new Promise<void>(r=>server.close(()=>r()));}
  });
  it('rejects an oversized streamed bootstrap before decoding',async()=>{
-  vi.stubGlobal('fetch',async()=>new Response(new Uint8Array(2048)));
+  vi.stubGlobal('fetch',async()=>new Response(new Uint8Array(2048),{headers:{'x-graph-root':pubkey}}));
   try{await expect(loadGraphBootstrap({root:pubkey,maxBytes:1024})).rejects.toThrow('byte limit');}finally{vi.unstubAllGlobals();}
  });
 });

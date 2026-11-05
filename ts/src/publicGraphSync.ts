@@ -172,8 +172,11 @@ export async function loadGraphBootstrap(options:{root:string;url?:string;signal
   const maxBytes=bounded(options.maxBytes??4*1024*1024,1024,4*1024*1024);
   const timeout=AbortSignal.timeout(8000);
   const signal=options.signal?AbortSignal.any([options.signal,timeout]):timeout;
-  const response=await fetch(options.url??'https://graph-api.iris.to/social-graph/mobile',{credentials:'omit',signal});
+  const url=new URL(options.url??'https://graph-api.iris.to/social-graph/mobile');
+  url.searchParams.set('root',options.root);
+  const response=await fetch(url,{credentials:'omit',signal});
   if(!response.ok||!response.body)throw new Error('Graph bootstrap unavailable');
+  if(response.headers.get('x-graph-root')!==options.root)throw new Error('Graph bootstrap root mismatch');
   const reader=response.body.getReader(),chunks:Uint8Array[]=[];let length=0;
   try{for(;;){const {value,done}=await reader.read();if(done)break;length+=value.length;if(length>maxBytes)throw new Error('Graph bootstrap byte limit');chunks.push(value);}}
   catch(error){await reader.cancel().catch(()=>{});throw error;}finally{reader.releaseLock();}
@@ -181,6 +184,7 @@ export async function loadGraphBootstrap(options:{root:string;url?:string;signal
   const {SocialGraph}=await import('./SocialGraph');
   const graph=await SocialGraph.fromBinary(options.root,data);
   const size=graph.size();
+  if(!graph.getListRevision(options.root,3)&&!graph.getFollowedByUser(options.root).size)throw new Error('Graph bootstrap has no discovery root list');
   if(Array.from(graph.getInternalData().ids).length>30000||size.users>30000||size.follows+size.mutes>180000)throw new Error('Graph bootstrap node limit');
   return graph;
 }
