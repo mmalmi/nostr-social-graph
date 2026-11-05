@@ -48,12 +48,19 @@ impl Forwarder {
             .forwarding_enabled = true;
         tokio::spawn(async move {
             let mut disk_check: Option<(Instant, u64)> = None;
+            let mut retry_after: Option<Instant> = None;
             while let Some(message) = receiver.recv().await {
                 match message {
                     Message::Barrier(done) => {
                         let _ = done.send(());
                     }
                     Message::Event(event) => {
+                        // A failed relay must not stall crawling for five seconds
+                        // per event. Record the missed delivery for full repair.
+                        if retry_after.is_some_and(|until| Instant::now() < until) {
+                            state.write().expect("freshness lock").forwarding_failures += 1;
+                            continue;
+                        }
                         if disk_check
                             .is_none_or(|(checked, _)| checked.elapsed() >= Duration::from_secs(30))
                         {
@@ -81,6 +88,7 @@ impl Forwarder {
                             status.last_forwarded_at = Some(crate::unix_timestamp());
                         } else {
                             status.forwarding_failures += 1;
+                            retry_after = Some(Instant::now() + Duration::from_secs(30));
                         }
                     }
                 }
@@ -176,6 +184,32 @@ pub(crate) fn refresh_allowlist(graph: &nostr_social_graph::SocialGraph) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn forwarding_only_admits_verified_public_graph_lists() {
+        use nostr_sdk::{EventBuilder, Kind, Tag};
+        let keys = Keys::generate();
+        let follow = EventBuilder::new(Kind::from(3), "")
+            .sign_with_keys(&keys)
+            .unwrap();
+        let mute = EventBuilder::new(Kind::from(10000), "")
+            .sign_with_keys(&keys)
+            .unwrap();
+        let note = EventBuilder::new(Kind::from(1), "")
+            .sign_with_keys(&keys)
+            .unwrap();
+        let protected = EventBuilder::new(Kind::from(3), "")
+            .tags([Tag::parse(["-"]).unwrap()])
+            .sign_with_keys(&keys)
+            .unwrap();
+        let mut invalid = follow.clone();
+        invalid.content = "changed after signing".to_string();
+        assert!(forwardable(&follow));
+        assert!(forwardable(&mute));
+        assert!(!forwardable(&note));
+        assert!(!forwardable(&protected));
+        assert!(!forwardable(&invalid));
+    }
+
     #[test]
     fn disk_reserve_parser_fails_closed() {
         assert_eq!(
