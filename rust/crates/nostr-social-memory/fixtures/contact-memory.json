@@ -1,0 +1,9 @@
+{
+  "first_seen_name": "Alice",
+  "accepted_name": "Alice",
+  "favorite": false,
+  "name_changes": [
+    { "previous_name": "Alice", "accepted_name": "Bob", "accepted_at_secs": 100 },
+    { "previous_name": "Bob", "accepted_name": "Alice", "accepted_at_secs": 101 }
+  ]
+}

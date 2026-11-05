@@ -6,8 +6,6 @@ license.workspace = true
 repository.workspace = true
 description = "Hashtree-backed persistence for the Nostr social graph"
 readme = "../../README.md"
-license.workspace = true
-repository.workspace = true
 
 [dependencies]
 futures = "0.3"

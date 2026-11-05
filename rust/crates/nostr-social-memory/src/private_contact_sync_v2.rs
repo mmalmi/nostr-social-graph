@@ -476,7 +476,7 @@ pub fn parse_private_contact_control_v2(
 #[cfg(test)]
 mod tests {
     use super::*;
-    const FIXTURE: &str = include_str!("../../../../fixtures/private-contact-sync-v2.json");
+    const FIXTURE: &str = include_str!("../fixtures/private-contact-sync-v2.json");
     fn fixture() -> Value {
         serde_json::from_str(FIXTURE).expect("fixture")
     }

@@ -1,0 +1,151 @@
+{
+  "test_secret_key": "0101010101010101010101010101010101010101010101010101010101010101",
+  "owner": "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+  "contact": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "documents": [
+    {
+      "version": 1,
+      "owner": "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+      "contact": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "writer": "11111111111111111111111111111111",
+      "record_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "fields": {
+        "favorite": {
+          "value": true,
+          "counter": 1,
+          "writer": "11111111111111111111111111111111"
+        }
+      }
+    },
+    {
+      "version": 1,
+      "owner": "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+      "contact": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "writer": "22222222222222222222222222222222",
+      "record_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "fields": {
+        "nickname": {
+          "value": "Sam",
+          "counter": 1,
+          "writer": "22222222222222222222222222222222"
+        },
+        "note": {
+          "value": "Met at the park",
+          "counter": 1,
+          "writer": "22222222222222222222222222222222"
+        }
+      }
+    },
+    {
+      "version": 1,
+      "owner": "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+      "contact": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "writer": "11111111111111111111111111111111",
+      "record_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "fields": {
+        "favorite": {
+          "value": false,
+          "counter": 2,
+          "writer": "11111111111111111111111111111111"
+        },
+        "note": {
+          "value": null,
+          "counter": 2,
+          "writer": "11111111111111111111111111111111"
+        }
+      }
+    }
+  ],
+  "expected": {
+    "favorite": false,
+    "nickname": "Sam",
+    "note": null
+  },
+  "state": {
+    "version": 1,
+    "owner": "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+    "writer": "11111111111111111111111111111111",
+    "clock": 2,
+    "contacts": {
+      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb": {
+        "favorite": {
+          "value": false,
+          "counter": 2,
+          "writer": "11111111111111111111111111111111"
+        },
+        "nickname": {
+          "value": "Sam",
+          "counter": 1,
+          "writer": "22222222222222222222222222222222"
+        },
+        "note": {
+          "value": null,
+          "counter": 2,
+          "writer": "11111111111111111111111111111111"
+        }
+      }
+    },
+    "records": {
+      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb": {
+        "document": {
+          "version": 1,
+          "owner": "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+          "contact": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "writer": "11111111111111111111111111111111",
+          "record_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "fields": {
+            "favorite": {
+              "value": false,
+              "counter": 2,
+              "writer": "11111111111111111111111111111111"
+            },
+            "note": {
+              "value": null,
+              "counter": 2,
+              "writer": "11111111111111111111111111111111"
+            }
+          }
+        },
+        "pending": true,
+        "event": {
+          "kind": 30078,
+          "created_at": 100,
+          "tags": [
+            [
+              "d",
+              "nostr-social-memory/v1:11111111111111111111111111111111:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            ],
+            [
+              "t",
+              "nostr-social-memory/v1"
+            ]
+          ],
+          "content": "AgpW90CGYzjmWgkA8MXrxg+R/fNQV24qXpeMG2sSlDoB91srxjkzwFlxxMYpgQ8THEHu0xqS8zgKZgP/o1zCzJnrE98/3g7QHMbPtPxAFW9alTVsi7ox7GZ4uU2Hq35pU3NeAxwW0Nc/aZ8ldYOvifaoOyj9oXvNLR4ZLOZijnCVTtvoI8BYKVJqpgqyn43A9QG4tgbjmqFHzGlg+4Ikz1W1XEDm1Ut21YBznyo3Mm9+/N63XG+Ovh7QAfphci8Zl+u6Urrwyko+QhJtRz89JAACWJkSydzdKtmcfE5Q+1/JECV9rwRPsPynm+DCesc460pfqsDKkeP7OqEisLz2Z4xUQI9VfhIuzF8Uk+Fig0ZAc0GWre6K6/LSv/+SL7+76LESZciHG9LrUg2JtyQDTvAkR5+eqrum4I89/rUUCgfDgeGpPa0mgTj35mZvMFOtlikTjA6MRfK2gbgDY7EUqKKSp6g8KXSJQ8bEYx6RG956MWYIxgpZy2jN1rdObmk8qQW30N7kiguWOcqcGiQGhMhPZ3cfAMimUOVDiNvAtaCDOOiIrd/oXGq+nbK2KzExQ7YLyRBttPIJXvQNlG82JuIcijVrM4K9IeqemZ+JkdetqZ7ryqoxYdo4PIeTZYrqw8BpvU4M588QsHleixsCSDZWFzIGLFiAKOBO6mgLTXPH1fA=",
+          "pubkey": "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+          "id": "e12a9007b17955abfbe2056f4c05bfa8b9becbd017301a42fc5996e856233f58",
+          "sig": "d6a92d7d473e1fd46a0b33424db059db4c89da09996b2316591e7ee1624380c21ce0f73d90c32cc8d94692fe64c3b3730480020bae6afa0fd0d7d8301f942726"
+        },
+        "last_created_at": 100
+      }
+    },
+    "received_event_ids": []
+  },
+  "event": {
+    "kind": 30078,
+    "created_at": 100,
+    "tags": [
+      [
+        "d",
+        "nostr-social-memory/v1:11111111111111111111111111111111:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ],
+      [
+        "t",
+        "nostr-social-memory/v1"
+      ]
+    ],
+    "content": "AgpW90CGYzjmWgkA8MXrxg+R/fNQV24qXpeMG2sSlDoB91srxjkzwFlxxMYpgQ8THEHu0xqS8zgKZgP/o1zCzJnrE98/3g7QHMbPtPxAFW9alTVsi7ox7GZ4uU2Hq35pU3NeAxwW0Nc/aZ8ldYOvifaoOyj9oXvNLR4ZLOZijnCVTtvoI8BYKVJqpgqyn43A9QG4tgbjmqFHzGlg+4Ikz1W1XEDm1Ut21YBznyo3Mm9+/N63XG+Ovh7QAfphci8Zl+u6Urrwyko+QhJtRz89JAACWJkSydzdKtmcfE5Q+1/JECV9rwRPsPynm+DCesc460pfqsDKkeP7OqEisLz2Z4xUQI9VfhIuzF8Uk+Fig0ZAc0GWre6K6/LSv/+SL7+76LESZciHG9LrUg2JtyQDTvAkR5+eqrum4I89/rUUCgfDgeGpPa0mgTj35mZvMFOtlikTjA6MRfK2gbgDY7EUqKKSp6g8KXSJQ8bEYx6RG956MWYIxgpZy2jN1rdObmk8qQW30N7kiguWOcqcGiQGhMhPZ3cfAMimUOVDiNvAtaCDOOiIrd/oXGq+nbK2KzExQ7YLyRBttPIJXvQNlG82JuIcijVrM4K9IeqemZ+JkdetqZ7ryqoxYdo4PIeTZYrqw8BpvU4M588QsHleixsCSDZWFzIGLFiAKOBO6mgLTXPH1fA=",
+    "pubkey": "1b84c5567b126440995d3ed5aaba0565d71e1834604819ff9c17f5e9d5dd078f",
+    "id": "e12a9007b17955abfbe2056f4c05bfa8b9becbd017301a42fc5996e856233f58",
+    "sig": "d6a92d7d473e1fd46a0b33424db059db4c89da09996b2316591e7ee1624380c21ce0f73d90c32cc8d94692fe64c3b3730480020bae6afa0fd0d7d8301f942726"
+  }
+}

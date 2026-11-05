@@ -103,7 +103,7 @@ mod tests {
         assert_eq!(memory.accepted_name.as_deref(), Some("Alice"));
         assert_eq!(memory.name_changes, vec![first, second]);
         let portable: ContactMemory =
-            serde_json::from_str(include_str!("../../../../fixtures/contact-memory.json")).unwrap();
+            serde_json::from_str(include_str!("../fixtures/contact-memory.json")).unwrap();
         assert_eq!(memory, portable);
         let json = serde_json::to_string(&memory).unwrap();
         assert_eq!(
