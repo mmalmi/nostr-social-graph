@@ -54,12 +54,52 @@ Hashtree dependencies and requires no sibling checkout.
 When upgrading a server that used `socialGraph.heed`, retain its data directory
 and image for rollback. Export a fresh, unrestricted `/social-graph` snapshot
 and `/profile-data` response from the running service into a separate data
-directory as `socialGraph.large.bin` and `profileData.large.json`. Preserve the
-capture start time as their modification time so the next incremental crawl
-covers changes made during capture. An old binary export beside the LMDB database
+directory as `socialGraph.large.bin` and `profileData.large.json`. The next startup performs a full graph reconciliation; file modification time
+is not treated as evidence that events have been fetched. An old binary export beside the LMDB database
 can be months behind the running graph and must not be used for this migration.
 
 On first startup, the new server imports the binary graph into Hashtree. Verify
 the imported follows, mutes, timestamps, and profiles against the captured data,
 then restart it and verify persistence before switching traffic. Take a final
 fresh export for the switch and keep the original LMDB data intact.
+
+
+### Live freshness and mobile bootstrap
+
+The server subscribes to live public kind-3 and kind-10000 events. It also
+reconciles known authors at startup and at least daily without a `since` bound,
+so delayed relay events and legacy snapshots without revision IDs can be repaired.
+Between full passes it uses successful crawl watermarks with a five-minute overlap;
+a failed pass never advances that watermark. Graph persistence completes before
+profile crawling, and `DATA_DIR/graph-freshness.json` records successful durable
+passes. The configured sync interval is a pause **after** a pass, not its duration.
+
+`GET /healthz` is uncached JSON. HTTP 200 requires a running live notification
+loop, no outstanding crawl failure, a durable graph pass within two hours, and a
+full reconciliation within 48 hours. Startup returns 503 until the first pass
+finishes. Monitor this endpoint externally; event timestamps alone cannot measure
+freshness because an unchanged follow list can legitimately be old.
+
+`GET /social-graph/mobile` is a discovery bootstrap capped at 30,000 identities,
+180,000 edges, four hops, and 500 edges per author, with a hard four-MiB decoded
+response limit. It includes the binary format's list revision IDs and completeness
+flags. It is cached for 60 seconds with a SHA-256 ETag and supports `If-None-Match`.
+The existing `/social-graph` endpoint remains available for custom projections.
+Clients must retain their own graph and merge only appropriate newer records;
+loading this discovery projection is not authority to replace a user's crawl.
+A partial list's ID must never be advertised as a fully synchronized event.
+
+
+To populate a NIP-77 relay without a duplicate mirror database, optionally set
+`GRAPH_FORWARD_RELAY_URL` to a trusted writable relay and
+`GRAPH_FORWARD_ALLOWLIST_PATH` to its allowlist file. The crawler refreshes the
+allowlist and forwards signature-verified winning public follow/mute events from
+both repair passes and live delivery. Its 256-event queue is bounded; live queue
+overflow and relay rejections appear in `/healthz`. The target relay must enforce
+Nostr replaceable-event retention (one winning event per author/kind).
+`GRAPH_FORWARD_MIN_FREE_BYTES` defaults to five GiB and guards the data filesystem
+(which must also contain the target relay database); forwarding stops before
+consuming that reserve. Protected events and events beyond the relay's 512-KiB /
+25,000-tag admission limits are intentionally not forwarded. Clients should retain
+other relay sources for these records. First complete forwarding reconciliation is
+reported separately from graph crawl freshness.

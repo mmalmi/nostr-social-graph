@@ -237,3 +237,104 @@ fn event(
         sig: "00".repeat(64),
     }
 }
+
+#[test]
+fn freshness_requires_successful_recent_repair_and_live_loop() {
+    use nostr_social_graph_server::GraphFreshness;
+    let mut status = GraphFreshness::default();
+    assert!(!status.healthy_at(200_000));
+    status.live_connected = true;
+    status.last_graph_success_at = Some(199_999);
+    status.last_full_reconciliation_at = Some(199_999);
+    assert!(status.healthy_at(200_000));
+    status.consecutive_graph_failures = 1;
+    assert!(!status.healthy_at(200_000));
+    status.consecutive_graph_failures = 0;
+    assert!(!status.healthy_at(210_000));
+    status.last_graph_success_at = Some(399_999);
+    assert!(!status.healthy_at(400_000));
+}
+
+#[tokio::test]
+async fn health_does_not_claim_an_uncrawled_graph_is_current() {
+    let tempdir = TempDir::new().unwrap();
+    let profiles = ProfileStore::load_or_default(tempdir.path().join("profiles.json")).unwrap();
+    let app = build_router(AppState::for_tests(
+        SocialGraph::new(ADAM),
+        profiles,
+        tempdir.path().join("index.json"),
+    ));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/healthz")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(response.headers().get("cache-control").unwrap(), "no-store");
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let status: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(status["healthy"], false);
+    assert!(status["freshness"]["last_graph_success_at"].is_null());
+}
+
+#[tokio::test]
+async fn mobile_snapshot_is_bounded_conditional_and_preserves_partial_revision() {
+    let tempdir = TempDir::new().unwrap();
+    let mut graph = SocialGraph::new(ADAM);
+    let targets: Vec<String> = (1..=600).map(|i| format!("{i:064x}")).collect();
+    let mut follows = event(ADAM, 3, 1_000, targets.iter().map(String::as_str).collect());
+    follows.id = "aa".repeat(32);
+    graph.handle_event(&follows, true, 1.0);
+    let mut mutes = event(FIATJAF, 10000, 1_001, vec![SNOWDEN]);
+    mutes.id = "bb".repeat(32);
+    graph.handle_event(&mutes, true, 1.0);
+    let profiles = ProfileStore::load_or_default(tempdir.path().join("profiles.json")).unwrap();
+    let app = build_router(AppState::for_tests(
+        graph,
+        profiles,
+        tempdir.path().join("index.json"),
+    ));
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/social-graph/mobile")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let etag = response.headers().get("etag").unwrap().clone();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    assert!(bytes.len() < 4 * 1024 * 1024);
+    let loaded = SocialGraph::from_binary(ADAM, &bytes).unwrap();
+    assert_eq!(loaded.size().follows, 500);
+    let revision = loaded.get_list_revision(ADAM, 3).unwrap();
+    assert_eq!(revision.id, follows.id);
+    assert!(!revision.complete);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/social-graph/mobile")
+                .header("if-none-match", etag)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_MODIFIED);
+    assert!(
+        response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .is_empty()
+    );
+}

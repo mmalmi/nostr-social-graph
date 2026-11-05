@@ -2,16 +2,17 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::extract::{Query, State};
 use axum::http::header::{CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_TYPE};
-use axum::http::{HeaderValue, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use indexmap::IndexMap;
+use nostr_sdk::hashes::{Hash, sha256};
 use nostr_sdk::{
     Client as NostrClient, Filter, Keys, Kind, PublicKey, RelayPoolNotification, Timestamp,
     ToBech32,
@@ -23,7 +24,9 @@ use serde_json::Value;
 use tower_http::cors::{Any, CorsLayer};
 use tracing::{error, info, warn};
 
+mod forwarding;
 mod relay_mirror;
+use forwarding::Forwarder;
 
 pub use relay_mirror::{
     RelayMirrorConfig, allowed_pubkeys_from_graph, event_is_allowed, render_allowlist,
@@ -290,11 +293,48 @@ fn fuse_norm(value: &str) -> FuseNorm {
     }
 }
 
+/// Crawl progress, distinct from event timestamps (a quiet graph can still be fresh).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct GraphFreshness {
+    pub started_at: u64,
+    pub last_graph_success_at: Option<u64>,
+    pub last_full_reconciliation_at: Option<u64>,
+    pub last_graph_progress_at: Option<u64>,
+    pub last_live_event_at: Option<u64>,
+    pub graph_since: Option<u64>,
+    pub consecutive_graph_failures: u64,
+    pub live_connected: bool,
+    pub forwarding_enabled: bool,
+    pub last_forwarded_at: Option<u64>,
+    pub last_forward_reconciliation_at: Option<u64>,
+    pub forwarding_failures: u64,
+}
+
+impl GraphFreshness {
+    pub fn healthy_at(&self, now: u64) -> bool {
+        self.live_connected
+            && (!self.forwarding_enabled
+                || (self.forwarding_failures == 0
+                    && self
+                        .last_forward_reconciliation_at
+                        .is_some_and(|at| now.saturating_sub(at) < 172800)))
+            && self.consecutive_graph_failures == 0
+            && self
+                .last_graph_success_at
+                .is_some_and(|at| now.saturating_sub(at) < 7200)
+            && self
+                .last_full_reconciliation_at
+                .is_some_and(|at| now.saturating_sub(at) < 172800)
+    }
+}
+
 #[derive(Clone)]
 pub struct AppState {
     graph: Arc<RwLock<SocialGraph>>,
     profiles: Arc<RwLock<ProfileStore>>,
     profile_index_path: Arc<PathBuf>,
+    freshness: Arc<RwLock<GraphFreshness>>,
+    mobile_snapshot: Arc<Mutex<Option<MobileSnapshot>>>,
 }
 
 impl AppState {
@@ -307,6 +347,8 @@ impl AppState {
             graph,
             profiles,
             profile_index_path: Arc::new(profile_index_path.as_ref().to_path_buf()),
+            freshness: Arc::new(RwLock::new(GraphFreshness::default())),
+            mobile_snapshot: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -339,6 +381,8 @@ pub fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/", get(root_page))
         .route("/social-graph", get(social_graph_binary))
+        .route("/social-graph/mobile", get(mobile_graph_binary))
+        .route("/healthz", get(health))
         .route("/allowlist", get(allowlist))
         .route("/profile-data", get(profile_data))
         .route("/profile-index", get(profile_index))
@@ -507,6 +551,7 @@ fn empty_graph_state(root: &str) -> SocialGraphState {
         muted_by_user: Vec::new(),
         user_muted_by: Vec::new(),
         mute_list_created_at: Vec::new(),
+        list_revisions: Vec::new(),
     }
 }
 
@@ -517,11 +562,9 @@ pub async fn run(config: ServerConfig) -> Result<()> {
         )));
     }
     fs::create_dir_all(&config.data_dir)?;
-    let initial_graph_since = initial_graph_since_hint(
-        &config.graph_db_dir,
-        config.legacy_graph_binary_path.as_deref(),
-    )
-    .map(|timestamp| timestamp.saturating_sub(1));
+    // Filesystem modification time is not a successful crawl watermark. Always
+    // repair all known lists on startup, also hydrating legacy revision IDs.
+    let initial_graph_since = None;
     let initial_profile_since = modified_unix_timestamp(&config.profile_data_path)
         .map(|timestamp| timestamp.saturating_sub(1));
 
@@ -539,6 +582,7 @@ pub async fn run(config: ServerConfig) -> Result<()> {
         profiles.profile_count()
     );
 
+    forwarding::refresh_allowlist(&graph)?;
     let graph = Arc::new(RwLock::new(graph));
     let profiles = Arc::new(RwLock::new(profiles));
     let state = AppState::new_shared(
@@ -547,13 +591,26 @@ pub async fn run(config: ServerConfig) -> Result<()> {
         &config.profile_index_path,
     );
 
+    state
+        .freshness
+        .write()
+        .expect("freshness lock poisoned")
+        .started_at = unix_timestamp();
+    let freshness = Arc::clone(&state.freshness);
     let client = connect_client(&config).await?;
     subscribe_live_notifications(&client).await?;
+    freshness
+        .write()
+        .expect("freshness lock poisoned")
+        .live_connected = true;
 
+    let forwarder = Forwarder::from_env(&config.data_dir, Arc::clone(&freshness)).await?;
+    let sync_forwarder = forwarder.clone();
     let sync_graph = Arc::clone(&graph);
     let sync_profiles = Arc::clone(&profiles);
     let sync_config = config.clone();
     let sync_client = client.clone();
+    let sync_freshness = Arc::clone(&freshness);
     tokio::spawn(async move {
         if let Err(error) = sync_loop(
             sync_client,
@@ -562,9 +619,15 @@ pub async fn run(config: ServerConfig) -> Result<()> {
             sync_profiles,
             initial_graph_since,
             initial_profile_since,
+            Arc::clone(&sync_freshness),
+            sync_forwarder,
         )
         .await
         {
+            sync_freshness
+                .write()
+                .expect("freshness lock poisoned")
+                .consecutive_graph_failures += 1;
             error!("background sync failed: {error}");
         }
     });
@@ -574,11 +637,22 @@ pub async fn run(config: ServerConfig) -> Result<()> {
     let live_config = config.clone();
     let live_client = client.clone();
     tokio::spawn(async move {
-        if let Err(error) =
-            notification_loop(live_client, live_config, live_graph, live_profiles).await
+        if let Err(error) = notification_loop(
+            live_client,
+            live_config,
+            live_graph,
+            live_profiles,
+            Arc::clone(&freshness),
+            forwarder,
+        )
+        .await
         {
             error!("notification loop failed: {error}");
         }
+        freshness
+            .write()
+            .expect("freshness lock poisoned")
+            .live_connected = false;
     });
 
     let app = build_router_with_cors(state, config.allow_origin.as_deref());
@@ -713,6 +787,97 @@ async fn root_page(State(state): State<AppState>) -> Html<String> {
     ))
 }
 
+async fn health(State(state): State<AppState>) -> Response {
+    let freshness = state
+        .freshness
+        .read()
+        .expect("freshness lock poisoned")
+        .clone();
+    let healthy = freshness.healthy_at(unix_timestamp());
+    let graph = state.graph.read().expect("graph lock poisoned");
+    let stats = graph.size();
+    let mut response = (
+        if healthy {
+            StatusCode::OK
+        } else {
+            StatusCode::SERVICE_UNAVAILABLE
+        },
+        Json(
+            serde_json::json!({"healthy": healthy, "freshness": freshness,
+            "users": stats.users, "follows": stats.follows, "mutes": stats.mutes}),
+        ),
+    )
+        .into_response();
+    response
+        .headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
+}
+
+struct MobileSnapshot {
+    generated_at: u64,
+    bytes: axum::body::Bytes,
+    etag: HeaderValue,
+}
+
+/// Mobile bootstrap is intentionally a projection, never a replacement for a
+/// client's own graph. Binary revision completeness flags survive projection.
+async fn mobile_graph_binary(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let now = unix_timestamp();
+    let mut cached = state
+        .mobile_snapshot
+        .lock()
+        .expect("snapshot lock poisoned");
+    if cached
+        .as_ref()
+        .is_none_or(|snapshot| now.saturating_sub(snapshot.generated_at) >= 60)
+    {
+        let graph = state.graph.read().expect("graph lock poisoned");
+        let budget = BinaryBudget {
+            max_nodes: Some(30_000),
+            max_edges: Some(180_000),
+            max_distance: Some(4),
+            max_edges_per_node: Some(500),
+        };
+        match graph.to_binary_with_budget(budget) {
+            Ok(binary) if binary.len() <= 4 * 1024 * 1024 => {
+                let etag = HeaderValue::from_str(&format!("\"{}\"", sha256::Hash::hash(&binary)))
+                    .expect("hash header");
+                *cached = Some(MobileSnapshot {
+                    generated_at: now,
+                    bytes: binary.into(),
+                    etag,
+                });
+            }
+            _ => {
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "Mobile graph exceeds its byte budget",
+                )
+                    .into_response();
+            }
+        }
+    }
+    let snapshot = cached.as_ref().expect("snapshot generated");
+    let mut response = if headers.get(axum::http::header::IF_NONE_MATCH) == Some(&snapshot.etag) {
+        StatusCode::NOT_MODIFIED.into_response()
+    } else {
+        snapshot.bytes.clone().into_response()
+    };
+    response
+        .headers_mut()
+        .insert(axum::http::header::ETAG, snapshot.etag.clone());
+    response.headers_mut().insert(
+        CONTENT_TYPE,
+        HeaderValue::from_static("application/octet-stream"),
+    );
+    response.headers_mut().insert(
+        CACHE_CONTROL,
+        HeaderValue::from_static("public, max-age=60, stale-while-revalidate=60"),
+    );
+    response
+}
+
 async fn social_graph_binary(
     State(state): State<AppState>,
     Query(query): Query<SocialGraphQuery>,
@@ -725,7 +890,7 @@ async fn social_graph_binary(
         max_edges_per_node: query.max_edges_per_node,
     };
 
-    match graph.to_binary_with_budget(budget) {
+    match graph.to_binary_with_budget_version(budget, 3) {
         Ok(binary) => {
             let mut response = Response::new(binary.into_response().into_body());
             let headers = response.headers_mut();
@@ -907,22 +1072,52 @@ async fn sync_loop(
     profiles: Arc<RwLock<ProfileStore>>,
     initial_graph_since: Option<u64>,
     initial_profile_since: Option<u64>,
+    freshness: Arc<RwLock<GraphFreshness>>,
+    forwarder: Option<Forwarder>,
 ) -> Result<()> {
     let mut graph_since = initial_graph_since;
     let mut profile_since = initial_profile_since;
+    let mut last_full_reconciliation_at = 0;
 
     loop {
         let cycle_started_at = unix_timestamp();
 
-        if let Err(error) = sync_graph_once(&client, &config, &graph, graph_since).await {
-            warn!("graph sync failed: {error}");
+        let full_reconciliation =
+            cycle_started_at.saturating_sub(last_full_reconciliation_at) >= 86400;
+        let requested_since = if full_reconciliation {
+            None
+        } else {
+            graph_since
+        };
+        if full_reconciliation {
+            freshness
+                .write()
+                .expect("freshness lock")
+                .forwarding_failures = 0;
         }
-        if let Err(error) =
-            sync_profiles_once(&client, &config, &graph, &profiles, profile_since).await
+        let graph_success = match sync_graph_once(
+            &client,
+            &config,
+            &graph,
+            requested_since,
+            &freshness,
+            forwarder.as_ref(),
+        )
+        .await
         {
-            warn!("profile sync failed: {error}");
+            Ok(()) => true,
+            Err(error) => {
+                freshness
+                    .write()
+                    .expect("freshness lock poisoned")
+                    .consecutive_graph_failures += 1;
+                warn!("graph sync failed: {error}");
+                false
+            }
+        };
+        if let Some(forwarder) = &forwarder {
+            forwarder.drain().await;
         }
-
         {
             let mut graph_guard = graph.write().expect("graph lock poisoned");
             let removed = graph_guard.remove_muted_not_followed_users();
@@ -934,6 +1129,31 @@ async fn sync_loop(
         {
             let graph_guard = graph.read().expect("graph lock poisoned");
             persist_graph_snapshot(&config.root, &config.graph_db_dir, &graph_guard)?;
+            forwarding::refresh_allowlist(&graph_guard)?;
+        }
+        if graph_success {
+            graph_since = Some(cycle_started_at.saturating_sub(300));
+            let now = unix_timestamp();
+            if full_reconciliation {
+                last_full_reconciliation_at = now;
+            }
+            let mut status = freshness.write().expect("freshness lock poisoned");
+            status.last_graph_success_at = Some(now);
+            status.last_full_reconciliation_at = Some(last_full_reconciliation_at);
+            status.graph_since = graph_since;
+            status.consecutive_graph_failures = 0;
+            if full_reconciliation && status.forwarding_failures == 0 && status.forwarding_enabled {
+                status.last_forward_reconciliation_at = Some(now);
+            }
+            let status_path = config.data_dir.join("graph-freshness.json");
+            let temporary = config.data_dir.join("graph-freshness.json.tmp");
+            fs::write(&temporary, serde_json::to_vec(&*status)?)?;
+            fs::rename(temporary, status_path)?;
+        }
+        // Profiles cannot delay persisting a successfully reconciled graph.
+        match sync_profiles_once(&client, &config, &graph, &profiles, profile_since).await {
+            Ok(()) => profile_since = Some(cycle_started_at.saturating_sub(300)),
+            Err(error) => warn!("profile sync failed: {error}"),
         }
         {
             let profiles_guard = profiles.read().expect("profile lock poisoned");
@@ -949,8 +1169,6 @@ async fn sync_loop(
                 .profile_count()
         );
 
-        graph_since = Some(cycle_started_at.saturating_sub(1));
-        profile_since = Some(cycle_started_at.saturating_sub(1));
         tokio::time::sleep(config.sync_interval).await;
     }
 }
@@ -991,13 +1209,31 @@ async fn notification_loop(
     config: ServerConfig,
     graph: Arc<RwLock<SocialGraph>>,
     profiles: Arc<RwLock<ProfileStore>>,
+    freshness: Arc<RwLock<GraphFreshness>>,
+    forwarder: Option<Forwarder>,
 ) -> Result<()> {
     let mut notifications = client.notifications();
 
     loop {
         match notifications.recv().await {
             Ok(RelayPoolNotification::Event { event, .. }) => {
+                if matches!(event.kind.as_u16(), 3 | 10000) {
+                    freshness
+                        .write()
+                        .expect("freshness lock poisoned")
+                        .last_live_event_at = Some(unix_timestamp());
+                }
                 handle_live_event(&config, &graph, &profiles, &event);
+                if let Some(forwarder) = &forwarder {
+                    let winner = graph
+                        .read()
+                        .expect("graph lock")
+                        .get_list_revision(&event.pubkey.to_hex(), event.kind.as_u16() as u32)
+                        .is_some_and(|revision| revision.id == event.id.to_hex());
+                    if winner {
+                        forwarder.try_enqueue(&event);
+                    }
+                }
             }
             Ok(RelayPoolNotification::Shutdown) => {
                 warn!("relay notification channel shutdown");
@@ -1020,6 +1256,8 @@ async fn sync_graph_once(
     config: &ServerConfig,
     graph: &Arc<RwLock<SocialGraph>>,
     since: Option<u64>,
+    freshness: &Arc<RwLock<GraphFreshness>>,
+    forwarder: Option<&Forwarder>,
 ) -> Result<()> {
     let mut current_distance = 0u32;
 
@@ -1031,6 +1269,7 @@ async fn sync_graph_once(
             break;
         }
 
+        forwarding::refresh_allowlist(&graph.read().expect("graph lock"))?;
         let authors = graph
             .read()
             .expect("graph lock poisoned")
@@ -1054,6 +1293,10 @@ async fn sync_graph_once(
         }
 
         for author_chunk in authors.chunks(config.crawl_batch_size.max(1)) {
+            freshness
+                .write()
+                .expect("freshness lock poisoned")
+                .last_graph_progress_at = Some(unix_timestamp());
             let (new_authors, known_authors) = {
                 let guard = graph.read().expect("graph lock poisoned");
                 author_chunk
@@ -1065,12 +1308,12 @@ async fn sync_graph_once(
             };
 
             if !new_authors.is_empty() {
-                fetch_graph_events(client, &new_authors, None, graph).await?;
+                fetch_graph_events(client, &new_authors, None, graph, forwarder).await?;
             }
             if !known_authors.is_empty() && since.is_some() {
-                fetch_graph_events(client, &known_authors, since, graph).await?;
+                fetch_graph_events(client, &known_authors, since, graph, forwarder).await?;
             } else if !known_authors.is_empty() && since.is_none() {
-                fetch_graph_events(client, &known_authors, None, graph).await?;
+                fetch_graph_events(client, &known_authors, None, graph, forwarder).await?;
             }
         }
 
@@ -1085,6 +1328,7 @@ async fn fetch_graph_events(
     authors: &[String],
     since: Option<u64>,
     graph: &Arc<RwLock<SocialGraph>>,
+    forwarder: Option<&Forwarder>,
 ) -> Result<()> {
     let pubkeys = parse_public_keys(authors);
     if pubkeys.is_empty() {
@@ -1097,12 +1341,26 @@ async fn fetch_graph_events(
         .await
         .map_err(|error| ServerError::Io(std::io::Error::other(error.to_string())))?;
 
-    let mut guard = graph.write().expect("graph lock poisoned");
+    let mut forward = Vec::new();
     let mut applied = 0usize;
-    for event in events.into_iter() {
-        if let Some(event) = sdk_event_to_social_graph_event(&event) {
-            guard.handle_event(&event, true, 1.0);
-            applied += 1;
+    {
+        let mut guard = graph.write().expect("graph lock poisoned");
+        for event in events.into_iter() {
+            if let Some(parsed) = sdk_event_to_social_graph_event(&event) {
+                guard.handle_event(&parsed, true, 1.0);
+                applied += 1;
+                if guard
+                    .get_list_revision(&parsed.pubkey, parsed.kind)
+                    .is_some_and(|revision| revision.id == parsed.id)
+                {
+                    forward.push(event);
+                }
+            }
+        }
+    }
+    if let Some(forwarder) = forwarder {
+        for event in forward {
+            forwarder.enqueue(&event).await;
         }
     }
     if applied > 0 {
@@ -1330,41 +1588,11 @@ fn parse_optional_distance(raw: Option<String>, default: Option<u32>) -> Option<
     }
 }
 
-fn initial_graph_since_hint(
-    graph_db_dir: &Path,
-    legacy_graph_binary_path: Option<&Path>,
-) -> Option<u64> {
-    if !path_has_entries(graph_db_dir) {
-        return legacy_graph_binary_path.and_then(modified_unix_timestamp);
-    }
-
-    latest_path_modified_unix(graph_db_dir)
-}
-
 fn path_has_entries(path: &Path) -> bool {
     fs::read_dir(path)
         .ok()
         .and_then(|mut entries| entries.next())
         .is_some()
-}
-
-fn latest_path_modified_unix(path: &Path) -> Option<u64> {
-    let mut latest = modified_unix_timestamp(path);
-
-    if path.is_dir() {
-        for entry in fs::read_dir(path).ok()? {
-            let entry = entry.ok()?;
-            let modified = modified_unix_timestamp(&entry.path());
-            latest = Some(match (latest, modified) {
-                (Some(current), Some(candidate)) => current.max(candidate),
-                (Some(current), None) => current,
-                (None, Some(candidate)) => candidate,
-                (None, None) => continue,
-            });
-        }
-    }
-
-    latest
 }
 
 fn modified_unix_timestamp(path: &Path) -> Option<u64> {
