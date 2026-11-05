@@ -75,7 +75,7 @@ export async function syncGraphLists(options:GraphSyncOptions):Promise<GraphSync
         stats.sentBytes+=size;socket.send(raw);
       };
       const next=async(deadline:number):Promise<unknown[]>=>{
-        for(;;){abort();if(terminal)throw terminal;if(queue.length)return queue.shift()!;
+        for(;;){abort();if(terminal)throw terminal;if(Date.now()>=overallDeadline)throw new Error('Graph pass timed out');if(queue.length)return queue.shift()!;
           const remaining=Math.min(deadline,overallDeadline)-Date.now();if(remaining<=0)throw new Error('Graph relay timed out');
           await new Promise<void>(resolve=>{const timer=setTimeout(()=>{waiting=undefined;resolve();},remaining);waiting=()=>{clearTimeout(timer);waiting=undefined;resolve();};});
         }

@@ -1,6 +1,6 @@
 {
   "name": "nostr-social-graph",
-  "version": "3.1.2",
+  "version": "4.0.0",
   "type": "module",
   "packageManager": "pnpm@10.28.2",
   "description": "Nostr social graph library",
@@ -93,7 +93,8 @@
     "data/socialGraph.bin",
     "data/profileData.json",
     "data/socialGraph.json",
-    "PUBLIC_GRAPH_SYNC.md"
+    "PUBLIC_GRAPH_SYNC.md",
+    "LIST_REVISIONS.md"
   ],
   "devDependencies": {
     "@cashu/cashu-ts": "^4.7.1",
