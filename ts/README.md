@@ -108,6 +108,12 @@ from different graph coverage. Existing distance and mute APIs are unchanged.
 
 Benchmark a local snapshot with
 `node --expose-gc --import tsx scripts/benchmarkRanking.ts SNAPSHOT ROOT`.
+An optional third argument names a previous ranking module to compare. The
+benchmark first checks exact snapshot and score parity, then alternates baseline
+and candidate measurements after warmup. Use a quiet machine and compare both
+preparation and calculation; improvements depend on the graph and JavaScript
+runtime. The calculation's work budget remains a conservative bound even when
+zero-mass sources can skip their edges.
 
 ## Package paths and commands
 

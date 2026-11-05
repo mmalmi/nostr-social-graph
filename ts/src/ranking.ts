@@ -22,7 +22,7 @@ export interface RankingOptions {
   rigor?: number;
   tolerance?: number;
   maxIterations?: number;
-  /** Total node + edge visits across iterations, including negative edges. */
+  /** Worst-case node + edge visits across iterations, including negative edges. */
   maxWork?: number;
 }
 export interface RankingSnapshot {
@@ -73,12 +73,14 @@ export function createRankingSnapshot(graph: RankingGraph, limits: RankingLimits
   if (!data.ids.has(root)) throw new Error('Ranking root is absent');
   const rootId = data.ids.id(root), blocked = data.mutedByUser.get(rootId);
   const ids = [rootId], positions = new Map([[rootId, 0]]);
-  let inspected = 0;
+  const followOffsets = [0];
+  let inspected = 0, follows = 0;
   for (let head = 0; head < ids.length; head++) {
     const owner = ids[head], muted = data.mutedByUser.get(owner);
     for (const target of data.followedByUser.get(owner) ?? []) {
       if (++inspected > maxEdges) throw new RangeError('maxEdges');
       if (target === owner || (target !== rootId && blocked?.has(target)) || muted?.has(target)) continue;
+      follows++;
       if (!positions.has(target)) {
         if (ids.length >= maxNodes) throw new RangeError('maxNodes');
         positions.set(target, ids.length); ids.push(target);
@@ -86,28 +88,30 @@ export function createRankingSnapshot(graph: RankingGraph, limits: RankingLimits
     }
     inspected += muted?.size ?? 0;
     if (inspected > maxEdges) throw new RangeError('maxEdges');
+    followOffsets.push(follows);
   }
-  const offsets = new Uint32Array(ids.length + 1), muteOffsets = new Uint32Array(ids.length + 1);
-  // Two passes avoid retaining nested arrays or growing typed-array buffers.
-  const visit = (i: number, follows: (target: number) => void, mutes: (target: number) => void) => {
-    const id = ids[i], muted = data.mutedByUser.get(id);
-    for (const target of data.followedByUser.get(id) ?? []) {
-      const position = positions.get(target);
-      if (target !== id && position !== undefined && !muted?.has(target)) follows(position);
-    }
-    for (const target of muted ?? []) {
-      const position = positions.get(target);
-      if (target !== id && position !== undefined) mutes(position);
-    }
-  };
+  // Accepted follows always reach another included node, so the traversal
+  // already counted them. Only mutes need a pass after reachability is known.
+  // Retain one offset per node, never a second growing copy of all edges.
+  const offsets = Uint32Array.from(followOffsets), muteOffsets = new Uint32Array(ids.length + 1);
   for (let i = 0; i < ids.length; i++) {
-    offsets[i + 1] = offsets[i]; muteOffsets[i + 1] = muteOffsets[i];
-    visit(i, () => offsets[i + 1]++, () => muteOffsets[i + 1]++);
+    muteOffsets[i + 1] = muteOffsets[i];
+    for (const target of data.mutedByUser.get(ids[i]) ?? []) {
+      if (target !== ids[i] && positions.has(target)) muteOffsets[i + 1]++;
+    }
   }
   const targets = new Uint32Array(offsets[ids.length]), muteTargets = new Uint32Array(muteOffsets[ids.length]);
   for (let i = 0; i < ids.length; i++) {
+    const id = ids[i], muted = data.mutedByUser.get(id);
     let f = offsets[i], m = muteOffsets[i];
-    visit(i, target => { targets[f++] = target; }, target => { muteTargets[m++] = target; });
+    for (const target of data.followedByUser.get(id) ?? []) {
+      const position = positions.get(target);
+      if (target !== id && position !== undefined && !muted?.has(target)) targets[f++] = position;
+    }
+    for (const target of muted ?? []) {
+      const position = positions.get(target);
+      if (target !== id && position !== undefined) muteTargets[m++] = position;
+    }
   }
   const keys = ids.map(id => data.str(id));
   return {root, keys, indices: new Map(keys.map((key, i) => [key, i])), offsets, targets, muteOffsets, muteTargets,
@@ -144,10 +148,12 @@ export function calculateRanking(snapshot: RankingSnapshot, options: RankingOpti
     if (algorithm === 'pagerank') {
       next[0] = 1 - damping;
       for (let i = 0; i < n; i++) {
-        const count = offsets[i + 1] - offsets[i], mass = damping * values[i];
+        const mass = damping * values[i];
+        if (!mass) continue;
+        const start = offsets[i], end = offsets[i + 1], count = end - start;
         if (!count) { next[0] += mass; continue; }
         const contribution = mass / count;
-        for (let j = offsets[i]; j < offsets[i + 1]; j++) next[targets[j]] += contribution;
+        for (let j = start; j < end; j++) next[targets[j]] += contribution;
       }
     } else {
       for (let i = 0; i < n; i++) {

@@ -7,7 +7,50 @@ function graph(edges: number[][]) {
   for (const [a, b] of edges) g.addFollower(key(a), key(b));
   return g;
 }
+
+// Deliberately dense, destination-first reference, independent of the compact
+// snapshot's reachability order and source-first propagation implementation.
+function referencePageRank(edges: number[][], mutes: Map<number, Set<number>>, size: number, damping: number, iterations: number) {
+  const transition = Array.from({length: size}, () => new Array<number>(size).fill(0));
+  for (let source = 0; source < size; source++) {
+    const targets = [...new Set(edges.filter(([a, b]) => a === source && b !== source &&
+      !(b !== 0 && mutes.get(0)?.has(b)) && !mutes.get(source)?.has(b)).map(([, b]) => b))];
+    if (!targets.length) transition[source][0] = 1;
+    else for (const target of targets) transition[source][target] = 1 / targets.length;
+  }
+  let values = new Array<number>(size).fill(0); values[0] = 1;
+  for (let iteration = 0; iteration < iterations; iteration++) {
+    values = values.map((_, target) => (target === 0 ? 1 - damping : 0) +
+      damping * transition.reduce((sum, row, source) => sum + row[target] * values[source], 0));
+  }
+  return values;
+}
+
 describe('optional ranking', () => {
+  it('matches a dense reference on branching, cyclic, dangling, and muted graphs', () => {
+    let state = 0x3150;
+    const random = () => { state = (Math.imul(state, 1664525) + 1013904223) >>> 0; return state; };
+    for (let fixture = 0; fixture < 8; fixture++) {
+      const size = 25, edges: number[][] = [[0, 1], [0, 2]], mutes = new Map<number, Set<number>>();
+      for (let source = 0; source < size; source++) {
+        for (let target = 0; target < size; target++) {
+          if (random() % 7 === 0) edges.push([source, target]);
+          if (random() % 31 === 0) {
+            if (!mutes.has(source)) mutes.set(source, new Set());
+            mutes.get(source)!.add(target);
+          }
+        }
+      }
+      const g = graph(edges), data = g.getInternalData();
+      for (const [source, targets] of mutes) data.mutedByUser.set(data.ids.id(key(source)), new Set([...targets].map(target => data.ids.id(key(target)))));
+      const snapshot = createRankingSnapshot(g);
+      for (const damping of [.1, .5, .85]) {
+        const result = calculateRanking(snapshot, {damping, maxIterations: 5, tolerance: 1e-15});
+        const expected = referencePageRank(edges, mutes, size, damping, result.iterations);
+        for (let i = 0; i < size; i++) expect(result.get(key(i))).toBeCloseTo(expected[i], 13);
+      }
+    }
+  });
   it('returns finite normalized PageRank, including dangling and isolated roots', () => {
     const snapshot = createRankingSnapshot(graph([[0,1],[0,2],[1,3]]));
     const result = calculateRanking(snapshot);
