@@ -5,10 +5,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use indexmap::{IndexMap, IndexSet};
 use uuid::Uuid;
 
+mod revision;
+pub use revision::*;
+
 mod rating;
 pub use rating::*;
 
-const BINARY_FORMAT_VERSION: u64 = 3;
+const BINARY_FORMAT_VERSION: u64 = 4;
 const BINARY_FORMAT_VERSION_V2: u64 = 2;
 const BINARY_CHUNK_SIZE: usize = 16 * 1024;
 const MAX_FUTURE_EVENT_SECONDS: u64 = 10 * 60;
@@ -49,6 +52,13 @@ pub type Result<T> = std::result::Result<T, SocialGraphError>;
 
 pub trait SocialGraphBackend {
     type Error: std::error::Error + Send + Sync + 'static;
+
+    /// Older backends may return no metadata; these lists require ordinary catch-up.
+    fn get_list_revisions(
+        &self,
+    ) -> std::result::Result<Vec<(String, u32, ListRevision)>, Self::Error> {
+        Ok(Vec::new())
+    }
 
     fn get_root(&self) -> std::result::Result<String, Self::Error>;
 
@@ -98,6 +108,7 @@ pub trait SocialGraphBackend {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SocialGraphState {
+    pub list_revisions: Vec<(u32, u32, ListRevision)>,
     pub root: String,
     pub unique_ids: Vec<(String, u32)>,
     pub follow_distance_by_user: Vec<(u32, u32)>,
@@ -200,6 +211,7 @@ impl UniqueIds {
 
 #[derive(Debug, Clone, Default)]
 pub struct SocialGraph {
+    list_revisions: IndexMap<(u32, u32), ListRevision>,
     root: u32,
     follow_distance_by_user: IndexMap<u32, u32>,
     users_by_follow_distance: IndexMap<u32, IndexSet<u32>>,
@@ -239,6 +251,7 @@ impl SocialGraph {
         bucket.insert(root_id);
         users_by_follow_distance.insert(0, bucket);
         Self {
+            list_revisions: IndexMap::new(),
             root: root_id,
             follow_distance_by_user,
             users_by_follow_distance,
@@ -249,6 +262,33 @@ impl SocialGraph {
             user_muted_by: IndexMap::new(),
             mute_list_created_at: IndexMap::new(),
             ids,
+        }
+    }
+
+    pub fn get_list_revision(&self, user: &str, kind: u32) -> Option<ListRevision> {
+        self.list_revisions
+            .get(&(self.ids.existing_id(user)?, kind))
+            .cloned()
+    }
+
+    pub fn get_list_revisions(&self) -> Vec<(String, u32, ListRevision)> {
+        self.list_revisions
+            .iter()
+            .filter_map(|((owner, kind), revision)| {
+                Some((
+                    self.ids.str(*owner).ok()?.to_string(),
+                    *kind,
+                    revision.clone(),
+                ))
+            })
+            .collect()
+    }
+
+    pub fn mark_list_incomplete(&mut self, user: &str, kind: u32) {
+        if let Some(owner) = self.ids.existing_id(user) {
+            if let Some(revision) = self.list_revisions.get_mut(&(owner, kind)) {
+                revision.complete = false;
+            }
         }
     }
 
@@ -306,8 +346,8 @@ impl SocialGraph {
         }
 
         match event.kind {
-            3 => self.handle_follow_list(author, event.created_at, &event.tags),
-            10_000 => self.handle_mute_list(author, event.created_at, &event.tags),
+            3 => self.handle_follow_list(author, event.created_at, &event.id, &event.tags),
+            10_000 => self.handle_mute_list(author, event.created_at, &event.id, &event.tags),
             _ => {}
         }
     }
@@ -318,6 +358,7 @@ impl SocialGraph {
         target: &str,
         created_at: u64,
     ) -> Result<bool> {
+        self.mark_list_incomplete(rater, 3);
         let rater_id = self.ids.id(rater)?;
         let target_id = self.ids.id(target)?;
         if rater_id == target_id {
@@ -342,6 +383,7 @@ impl SocialGraph {
         target: &str,
         created_at: u64,
     ) -> Result<bool> {
+        self.mark_list_incomplete(rater, 10_000);
         let rater_id = self.ids.id(rater)?;
         let target_id = self.ids.id(target)?;
         if rater_id == target_id {
@@ -549,7 +591,12 @@ impl SocialGraph {
             return 0;
         }
 
+        for revision in self.list_revisions.values_mut() {
+            revision.complete = false;
+        }
         for user in users_to_remove.iter().copied() {
+            self.list_revisions.shift_remove(&(user, 3));
+            self.list_revisions.shift_remove(&(user, 10_000));
             if let Some(distance) = self.follow_distance_by_user.shift_remove(&user)
                 && let Some(bucket) = self.users_by_follow_distance.get_mut(&distance)
             {
@@ -590,6 +637,11 @@ impl SocialGraph {
 
     pub fn export_state(&self) -> SocialGraphState {
         SocialGraphState {
+            list_revisions: self
+                .list_revisions
+                .iter()
+                .map(|((owner, kind), revision)| (*owner, *kind, revision.clone()))
+                .collect(),
             root: self.get_root().to_string(),
             unique_ids: self
                 .ids
@@ -652,6 +704,11 @@ impl SocialGraph {
         graph.user_muted_by.clear();
         graph.mute_list_created_at.clear();
 
+        graph.list_revisions = state
+            .list_revisions
+            .into_iter()
+            .map(|(owner, kind, revision)| ((owner, kind), revision))
+            .collect();
         for (value, id) in state.unique_ids {
             graph.ids.insert_with_id(value, id);
         }
@@ -701,8 +758,20 @@ impl SocialGraph {
     }
 
     pub fn to_binary_with_budget(&self, budget: BinaryBudget) -> Result<Vec<u8>> {
+        self.to_binary_with_budget_version(budget, BINARY_FORMAT_VERSION)
+    }
+
+    /// Explicit legacy v3 export for rolling upgrades; v3 omits revision metadata.
+    pub fn to_binary_with_budget_version(
+        &self,
+        budget: BinaryBudget,
+        version: u64,
+    ) -> Result<Vec<u8>> {
+        if !matches!(version, 3 | BINARY_FORMAT_VERSION) {
+            return Err(SocialGraphError::InvalidVersion(version));
+        }
         let plan = self.plan_binary(budget)?;
-        self.serialize_binary(&plan)
+        self.serialize_binary(&plan, version)
     }
 
     pub fn to_binary_chunks(&self) -> Result<Vec<Vec<u8>>> {
@@ -717,7 +786,28 @@ impl SocialGraph {
             .collect())
     }
 
-    fn serialize_binary(&self, plan: &BinaryPlan) -> Result<Vec<u8>> {
+    fn write_list_revision(
+        &self,
+        out: &mut Vec<u8>,
+        owner: u32,
+        kind: u32,
+        timestamp: u64,
+        complete: bool,
+    ) {
+        match self
+            .list_revisions
+            .get(&(owner, kind))
+            .filter(|r| r.created_at == timestamp && valid_event_id(&r.id))
+        {
+            Some(revision) => {
+                out.push(if revision.complete && complete { 2 } else { 1 });
+                out.extend(hex::decode(&revision.id).expect("validated event ID"));
+            }
+            None => out.push(0),
+        }
+    }
+
+    fn serialize_binary(&self, plan: &BinaryPlan, version: u64) -> Result<Vec<u8>> {
         let BinaryPlan {
             used_ids,
             follow_edge_count,
@@ -727,7 +817,7 @@ impl SocialGraph {
         } = plan;
 
         let mut out = Vec::new();
-        write_varint(&mut out, BINARY_FORMAT_VERSION);
+        write_varint(&mut out, version);
         write_varint(&mut out, used_ids.len() as u64);
         for id in used_ids.iter().copied() {
             write_varint(&mut out, id as u64);
@@ -748,6 +838,18 @@ impl SocialGraph {
                     .copied()
                     .unwrap_or(0),
             );
+            if version >= 4 {
+                self.write_list_revision(
+                    &mut out,
+                    owner,
+                    3,
+                    self.follow_list_created_at
+                        .get(&owner)
+                        .copied()
+                        .unwrap_or(0),
+                    limit == self.followed_by_user.get(&owner).map_or(0, IndexSet::len),
+                );
+            }
             write_varint(&mut out, limit as u64);
             if let Some(targets) = self.followed_by_user.get(&owner) {
                 for target in targets.iter().take(limit) {
@@ -767,6 +869,15 @@ impl SocialGraph {
                 &mut out,
                 self.mute_list_created_at.get(&owner).copied().unwrap_or(0),
             );
+            if version >= 4 {
+                self.write_list_revision(
+                    &mut out,
+                    owner,
+                    10_000,
+                    self.mute_list_created_at.get(&owner).copied().unwrap_or(0),
+                    limit == self.muted_by_user.get(&owner).map_or(0, IndexSet::len),
+                );
+            }
             write_varint(&mut out, limit as u64);
             if let Some(targets) = self.muted_by_user.get(&owner) {
                 for target in targets.iter().take(limit) {
@@ -963,7 +1074,10 @@ impl SocialGraph {
     pub fn from_binary(root: &str, data: &[u8]) -> Result<Self> {
         let mut offset = 0usize;
         let version = read_varint(data, &mut offset)?;
-        if !matches!(version, BINARY_FORMAT_VERSION | BINARY_FORMAT_VERSION_V2) {
+        if !matches!(
+            version,
+            BINARY_FORMAT_VERSION | 3 | BINARY_FORMAT_VERSION_V2
+        ) {
             return Err(SocialGraphError::InvalidVersion(version));
         }
 
@@ -977,11 +1091,17 @@ impl SocialGraph {
             unique_ids.push((value, id));
         }
 
+        let mut revisions = IndexMap::new();
         let follow_lists_count = read_varint(data, &mut offset)? as usize;
         let mut follow_lists = Vec::with_capacity(follow_lists_count);
         for _ in 0..follow_lists_count {
             let user = read_varint(data, &mut offset)? as u32;
             let timestamp = read_varint(data, &mut offset)?;
+            if version >= 4 {
+                if let Some(revision) = read_list_revision(data, &mut offset, timestamp)? {
+                    revisions.insert((user, 3), revision);
+                }
+            }
             let followed_count = read_varint(data, &mut offset)? as usize;
             let mut followed = Vec::with_capacity(followed_count);
             for _ in 0..followed_count {
@@ -995,6 +1115,11 @@ impl SocialGraph {
         for _ in 0..mute_lists_count {
             let user = read_varint(data, &mut offset)? as u32;
             let timestamp = read_varint(data, &mut offset)?;
+            if version >= 4 {
+                if let Some(revision) = read_list_revision(data, &mut offset, timestamp)? {
+                    revisions.insert((user, 10000), revision);
+                }
+            }
             let muted_count = read_varint(data, &mut offset)? as usize;
             let mut muted = Vec::with_capacity(muted_count);
             for _ in 0..muted_count {
@@ -1014,6 +1139,7 @@ impl SocialGraph {
         graph.user_muted_by.clear();
         graph.mute_list_created_at.clear();
 
+        graph.list_revisions = revisions;
         for (value, id) in unique_ids {
             graph.ids.insert_with_id(value, id);
         }
@@ -1097,13 +1223,26 @@ impl SocialGraph {
         false
     }
 
-    fn handle_follow_list(&mut self, author: u32, created_at: u64, tags: &[Vec<String>]) {
-        if self
-            .follow_list_created_at
-            .get(&author)
-            .is_some_and(|existing| created_at <= *existing)
-        {
+    fn handle_follow_list(&mut self, author: u32, created_at: u64, id: &str, tags: &[Vec<String>]) {
+        if !accepts_list_revision(
+            self.follow_list_created_at.get(&author).copied(),
+            self.list_revisions.get(&(author, 3)),
+            created_at,
+            id,
+        ) {
             return;
+        }
+        if valid_event_id(id) {
+            self.list_revisions.insert(
+                (author, 3),
+                ListRevision {
+                    id: id.to_owned(),
+                    created_at,
+                    complete: true,
+                },
+            );
+        } else {
+            self.list_revisions.shift_remove(&(author, 3));
         }
         self.follow_list_created_at.insert(author, created_at);
 
@@ -1136,13 +1275,26 @@ impl SocialGraph {
         }
     }
 
-    fn handle_mute_list(&mut self, author: u32, created_at: u64, tags: &[Vec<String>]) {
-        if self
-            .mute_list_created_at
-            .get(&author)
-            .is_some_and(|existing| created_at <= *existing)
-        {
+    fn handle_mute_list(&mut self, author: u32, created_at: u64, id: &str, tags: &[Vec<String>]) {
+        if !accepts_list_revision(
+            self.mute_list_created_at.get(&author).copied(),
+            self.list_revisions.get(&(author, 10000)),
+            created_at,
+            id,
+        ) {
             return;
+        }
+        if valid_event_id(id) {
+            self.list_revisions.insert(
+                (author, 10000),
+                ListRevision {
+                    id: id.to_owned(),
+                    created_at,
+                    complete: true,
+                },
+            );
+        } else {
+            self.list_revisions.shift_remove(&(author, 10000));
         }
         self.mute_list_created_at.insert(author, created_at);
 
@@ -1263,6 +1415,11 @@ impl SocialGraph {
 
 impl SocialGraphBackend for SocialGraph {
     type Error = SocialGraphError;
+    fn get_list_revisions(
+        &self,
+    ) -> std::result::Result<Vec<(String, u32, ListRevision)>, Self::Error> {
+        Ok(SocialGraph::get_list_revisions(self))
+    }
 
     fn get_root(&self) -> std::result::Result<String, Self::Error> {
         Ok(SocialGraph::get_root(self).to_string())
@@ -1387,6 +1544,25 @@ fn read_binary_node_id(version: u64, data: &[u8], offset: &mut usize) -> Result<
         other => return Err(SocialGraphError::InvalidBinaryNodeIdType(other)),
     };
     Ok((value, id))
+}
+
+fn read_list_revision(
+    data: &[u8],
+    offset: &mut usize,
+    created_at: u64,
+) -> Result<Option<ListRevision>> {
+    let flag = read_bytes(data, offset, 1)?[0];
+    if flag == 0 {
+        return Ok(None);
+    }
+    if flag > 2 {
+        return Err(SocialGraphError::InvalidBinaryNodeIdType(flag as u64));
+    }
+    Ok(Some(ListRevision {
+        id: hex::encode(read_bytes(data, offset, 32)?),
+        created_at,
+        complete: flag == 2,
+    }))
 }
 
 fn write_varint(out: &mut Vec<u8>, mut value: u64) {

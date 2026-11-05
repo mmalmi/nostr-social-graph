@@ -1,4 +1,5 @@
 export { SocialGraph } from './SocialGraph';
+export type { ListRevision, GraphListRevision } from './SocialGraph';
 
 export { UniqueIds } from './UniqueIds';
 export type { NostrEvent } from './utils';

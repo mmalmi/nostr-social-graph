@@ -3,7 +3,42 @@ import { isValidPubKey, NostrEvent } from './utils';
 import * as Binary from './SocialGraphBinary';
 import { SocialGraphUtils } from './SocialGraphUtils';
 
+export interface ListRevision { id: string; created_at: number; complete: boolean }
+export interface GraphListRevision extends ListRevision { pubkey: string; kind: 3 | 10000 }
+
 export class SocialGraph {
+  private listRevisions = new Map<string, ListRevision>();
+
+  /** Metadata is not a signature proof. Callers must verify events before ingestion. */
+  getListRevision(pubkey: string, kind: number): ListRevision | undefined {
+    const revision = this.listRevisions.get(`${kind}:${pubkey}`);
+    return revision && {...revision};
+  }
+
+  getListRevisions(): GraphListRevision[] {
+    return [...this.listRevisions].map(([key, revision]) => {
+      const split = key.indexOf(':');
+      return {pubkey: key.slice(split + 1), kind: Number(key.slice(0, split)) as 3 | 10000, ...revision};
+    });
+  }
+
+  private acceptRevision(event: NostrEvent, previousAt: number | undefined): boolean {
+    const key = `${event.kind}:${event.pubkey}`;
+    const previous = this.listRevisions.get(key);
+    const validId = /^[0-9a-f]{64}$/.test(event.id);
+    if (previousAt !== undefined && (event.created_at < previousAt ||
+      (event.created_at === previousAt && (!validId || (previous &&
+        (event.id > previous.id || (event.id === previous.id && previous.complete))))))) return false;
+    if (validId) this.listRevisions.set(key, {id:event.id, created_at:event.created_at, complete:true});
+    else this.listRevisions.delete(key);
+    return true;
+  }
+
+  markListIncomplete(pubkey: string, kind: number) {
+    const revision = this.listRevisions.get(`${kind}:${pubkey}`);
+    if (revision) revision.complete = false;
+  }
+
   private root: number;
   private recalculatingPromise = null as Promise<void> | null;
   private followDistanceByUser = new Map<number, number>();
@@ -37,6 +72,7 @@ export class SocialGraph {
 
   getInternalData() {
     return {
+      listRevisions: this.listRevisions,
       followedByUser: this.followedByUser,
       followersByUser: this.followersByUser,
       mutedByUser: this.mutedByUser,
@@ -150,7 +186,7 @@ export class SocialGraph {
 
   private handleFollowList(event: NostrEvent, author: number, createdAt: number): boolean {
     const existingCreatedAt = this.followListCreatedAt.get(author);
-    if (existingCreatedAt && createdAt <= existingCreatedAt) {
+    if (!this.acceptRevision(event, existingCreatedAt)) {
         return false;
     }
     this.followListCreatedAt.set(author, createdAt);
@@ -185,7 +221,7 @@ export class SocialGraph {
 
   private handleMuteList(event: NostrEvent, author: number, createdAt: number): boolean {
     const existingCreatedAt = this.muteListCreatedAt.get(author);
-    if (existingCreatedAt && createdAt <= existingCreatedAt) {
+    if (!this.acceptRevision(event, existingCreatedAt)) {
         return false;
     }
     this.muteListCreatedAt.set(author, createdAt);
@@ -292,10 +328,12 @@ export class SocialGraph {
   }
 
   addFollower(follower: string, followedUser: string) {
+    this.markListIncomplete(follower, 3);
     this.privateAddFollower(this.id(followedUser), this.id(follower))
   }
 
   removeFollower(follower: string, followedUser: string) {
+    this.markListIncomplete(follower, 3);
     this.privateRemoveFollower(this.id(followedUser), this.id(follower))
   }
 
@@ -513,8 +551,17 @@ export class SocialGraph {
 
     const userId = this.id(other.str(theirUserId));
     const ourCreatedAt = ourCreatedAtMap.get(userId);
-    if (ourCreatedAt !== undefined &&
-      (theirCreatedAt === undefined || theirCreatedAt <= ourCreatedAt)) return;
+    const kind = ourCreatedAtMap === this.followListCreatedAt ? 3 : 10000;
+    const key = `${kind}:${other.str(theirUserId)}`;
+    const incoming = other.listRevisions.get(key);
+    const current = this.listRevisions.get(key);
+    // A projection cannot erase a client's more complete crawl.
+    if (incoming?.complete === false && (ourCreatedAt !== undefined || ourUserMap.has(userId))) return;
+    if (ourCreatedAt !== undefined && (theirCreatedAt === undefined || theirCreatedAt < ourCreatedAt ||
+      (theirCreatedAt === ourCreatedAt && (!incoming || (current &&
+        (incoming.id > current.id || (incoming.id === current.id && (current.complete || !incoming.complete)))))))) return;
+    if (incoming) this.listRevisions.set(key, {...incoming});
+    else this.listRevisions.delete(key);
 
     // Numeric IDs are private to each graph, including IDs inside each list.
     const newUsers = new Set<number>();

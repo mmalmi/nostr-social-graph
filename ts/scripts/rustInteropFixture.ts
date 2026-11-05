@@ -20,6 +20,7 @@ const arbitraryIds = {
 
 type GraphSummary = {
   root: string;
+  revisions: Array<[string, number, string, number, boolean]>;
   binary_hex?: string;
   distances: Array<[string, number]>;
   follows: Array<[string, string[]]>;
@@ -52,7 +53,7 @@ function event(pubkey: string, kind: number, createdAt: number, tagged: string[]
     tags: tagged.map((pk) => ['p', pk]),
     kind,
     pubkey,
-    id: `${pubkey}:${kind}:${createdAt}`,
+    id: ((BigInt(kind) << 32n) | BigInt(createdAt)).toString(16).padStart(64, '0'),
     sig: '00'.repeat(64),
   };
 }
@@ -95,6 +96,7 @@ function emptyListsGraph() {
 function summary(graph: SocialGraph, binaryHex?: string): GraphSummary {
   return {
     root: graph.getRoot(),
+    revisions: graph.getListRevisions().sort((a,b) => a.pubkey.localeCompare(b.pubkey) || a.kind-b.kind).map(r => [r.pubkey, r.kind, r.id, r.created_at, r.complete]),
     binary_hex: binaryHex,
     distances: keyedUsers().map((user) => [user, graph.getFollowDistance(user)]),
     follows: owners().map((user) => [user, Array.from(graph.getFollowedByUser(user)).sort()]),

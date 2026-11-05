@@ -8,7 +8,8 @@ use heed::byteorder::BigEndian;
 use heed::types::{Bytes, SerdeBincode, Str, U32, U64};
 use heed::{Database, Env, EnvFlags, EnvOpenOptions, RoTxn};
 use nostr_social_graph::{
-    GraphStats, NostrEvent, SocialGraph, SocialGraphBackend, SocialGraphError, SocialGraphState,
+    GraphStats, ListRevision, NostrEvent, SocialGraph, SocialGraphBackend, SocialGraphError,
+    SocialGraphState, accepts_list_revision, valid_event_id,
 };
 
 #[cfg(target_pointer_width = "64")]
@@ -186,6 +187,28 @@ impl HeedSocialGraph {
         })
     }
 
+    pub fn get_list_revision(&self, user: &str, kind: u32) -> Result<Option<ListRevision>> {
+        let rtxn = self.env.read_txn()?;
+        let Some(owner) = self.str_to_unique_id.get(&rtxn, user)? else {
+            return Ok(None);
+        };
+        self.metadata
+            .get(&rtxn, &revision_key(owner, kind))?
+            .map(decode_revision)
+            .transpose()
+    }
+
+    pub fn get_list_revisions(&self) -> Result<Vec<(String, u32, ListRevision)>> {
+        let rtxn = self.env.read_txn()?;
+        let mut result = Vec::new();
+        for (owner, kind, revision) in read_revisions(&self.metadata, &rtxn)? {
+            if let Some(user) = self.unique_id_to_str.get(&rtxn, &owner)? {
+                result.push((user.to_owned(), kind, revision));
+            }
+        }
+        Ok(result)
+    }
+
     pub fn get_root(&self) -> Result<String> {
         let rtxn = self.env.read_txn()?;
         Ok(read_root_from_rtxn(&self.metadata, &rtxn)?.to_string())
@@ -250,6 +273,7 @@ impl HeedSocialGraph {
                 &self.follow_list_created_at,
                 author,
                 event.created_at,
+                &event.id,
                 &event.tags,
             )?,
             10_000 => {
@@ -263,6 +287,7 @@ impl HeedSocialGraph {
                     &self.mute_list_created_at,
                     author,
                     event.created_at,
+                    &event.id,
                     &event.tags,
                 )?;
                 false
@@ -582,6 +607,11 @@ impl HeedSocialGraph {
 
 impl SocialGraphBackend for HeedSocialGraph {
     type Error = HeedSocialGraphError;
+    fn get_list_revisions(
+        &self,
+    ) -> std::result::Result<Vec<(String, u32, ListRevision)>, Self::Error> {
+        HeedSocialGraph::get_list_revisions(self)
+    }
 
     fn get_root(&self) -> std::result::Result<String, Self::Error> {
         HeedSocialGraph::get_root(self)
@@ -725,6 +755,7 @@ fn export_state_from_databases(
         .collect::<std::result::Result<Vec<_>, heed::Error>>()?;
 
     Ok(SocialGraphState {
+        list_revisions: read_revisions(metadata, rtxn)?,
         root,
         unique_ids,
         follow_distance_by_user,
@@ -811,13 +842,31 @@ fn handle_follow_list(
     follow_list_created_at: &Database<U32<BigEndian>, U64<BigEndian>>,
     author: u32,
     created_at: u64,
+    id: &str,
     tags: &[Vec<String>],
 ) -> Result<bool> {
-    if follow_list_created_at
-        .get(wtxn, &author)?
-        .is_some_and(|existing| created_at <= existing)
-    {
+    let key = revision_key(author, 3);
+    let previous = metadata.get(wtxn, &key)?.map(decode_revision).transpose()?;
+    if !accepts_list_revision(
+        follow_list_created_at.get(wtxn, &author)?,
+        previous.as_ref(),
+        created_at,
+        id,
+    ) {
         return Ok(false);
+    }
+    if valid_event_id(id) {
+        metadata.put(
+            wtxn,
+            &key,
+            &encode_revision(&ListRevision {
+                id: id.to_owned(),
+                created_at,
+                complete: true,
+            }),
+        )?;
+    } else {
+        metadata.delete(wtxn, &key)?;
     }
     follow_list_created_at.put(wtxn, &author, &created_at)?;
 
@@ -882,13 +931,31 @@ fn handle_mute_list(
     mute_list_created_at: &Database<U32<BigEndian>, U64<BigEndian>>,
     author: u32,
     created_at: u64,
+    id: &str,
     tags: &[Vec<String>],
 ) -> Result<()> {
-    if mute_list_created_at
-        .get(wtxn, &author)?
-        .is_some_and(|existing| created_at <= existing)
-    {
+    let key = revision_key(author, 10000);
+    let previous = metadata.get(wtxn, &key)?.map(decode_revision).transpose()?;
+    if !accepts_list_revision(
+        mute_list_created_at.get(wtxn, &author)?,
+        previous.as_ref(),
+        created_at,
+        id,
+    ) {
         return Ok(());
+    }
+    if valid_event_id(id) {
+        metadata.put(
+            wtxn,
+            &key,
+            &encode_revision(&ListRevision {
+                id: id.to_owned(),
+                created_at,
+                complete: true,
+            }),
+        )?;
+    } else {
+        metadata.delete(wtxn, &key)?;
     }
     mute_list_created_at.put(wtxn, &author, &created_at)?;
 
@@ -1167,6 +1234,13 @@ fn persist_state(
     users_by_follow_distance.clear(wtxn)?;
 
     metadata.put(wtxn, ROOT_KEY, state.root.as_bytes())?;
+    for (owner, kind, revision) in &state.list_revisions {
+        metadata.put(
+            wtxn,
+            &revision_key(*owner, *kind),
+            &encode_revision(revision),
+        )?;
+    }
     let next = state
         .unique_ids
         .iter()
@@ -1223,4 +1297,49 @@ mod tests {
         let flags = store.env.flags().unwrap().unwrap_or(EnvFlags::empty());
         assert!(flags.contains(EnvFlags::NO_LOCK));
     }
+}
+
+fn revision_key(owner: u32, kind: u32) -> String {
+    format!("revision:{kind}:{owner}")
+}
+fn encode_revision(revision: &ListRevision) -> Vec<u8> {
+    let mut bytes = vec![u8::from(revision.complete)];
+    bytes.extend(revision.created_at.to_be_bytes());
+    bytes.extend(revision.id.as_bytes());
+    bytes
+}
+fn decode_revision(bytes: &[u8]) -> Result<ListRevision> {
+    if bytes.len() != 73 || bytes[0] > 1 {
+        return Err(SocialGraphError::UnexpectedEof.into());
+    }
+    let id = std::str::from_utf8(&bytes[9..])?.to_string();
+    if !valid_event_id(&id) {
+        return Err(SocialGraphError::UnexpectedEof.into());
+    }
+    Ok(ListRevision {
+        id,
+        created_at: u64::from_be_bytes(bytes[1..9].try_into().expect("checked length")),
+        complete: bytes[0] == 1,
+    })
+}
+fn read_revisions(
+    metadata: &Database<Str, Bytes>,
+    rtxn: &RoTxn,
+) -> Result<Vec<(u32, u32, ListRevision)>> {
+    let mut result = Vec::new();
+    for entry in metadata.prefix_iter(rtxn, "revision:")? {
+        let (key, value) = entry?;
+        let mut parts = key.split(':');
+        parts.next();
+        let kind = parts
+            .next()
+            .and_then(|s| s.parse::<u32>().ok())
+            .ok_or(SocialGraphError::UnexpectedEof)?;
+        let owner = parts
+            .next()
+            .and_then(|s| s.parse::<u32>().ok())
+            .ok_or(SocialGraphError::UnexpectedEof)?;
+        result.push((owner, kind, decode_revision(value)?));
+    }
+    Ok(result)
 }

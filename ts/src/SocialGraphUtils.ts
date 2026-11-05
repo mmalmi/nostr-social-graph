@@ -138,11 +138,14 @@ export class SocialGraphUtils {
       });
     }
 
+    if (usersToRemove.length) for (const revision of graph.getInternalData().listRevisions.values()) revision.complete = false;
     // Phase 2: Remove from all primary data structures
     for (const user of usersToRemove) {
       const relationships = userRelationships.get(user)!;
       
       // Remove from UniqueIds
+      graph.getInternalData().listRevisions.delete(`3:${ids.str(user)}`);
+      graph.getInternalData().listRevisions.delete(`10000:${ids.str(user)}`);
       ids.remove(user);
 
       // Remove from distance tracking

@@ -18,6 +18,7 @@ pub const DIANA: &str = "1234567890abcdef1234567890abcdef1234567890abcdef1234567
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GraphSummary {
     pub root: String,
+    pub revisions: Vec<(String, u32, String, u64, bool)>,
     pub binary_hex: Option<String>,
     pub distances: Vec<(String, u32)>,
     pub follows: Vec<(String, Vec<String>)>,
@@ -29,8 +30,14 @@ pub struct GraphSummary {
 }
 
 pub fn summary(graph: &mut SocialGraph) -> GraphSummary {
+    let mut revisions = graph.get_list_revisions();
+    revisions.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
     GraphSummary {
         root: graph.get_root().to_string(),
+        revisions: revisions
+            .into_iter()
+            .map(|(owner, kind, r)| (owner, kind, r.id, r.created_at, r.complete))
+            .collect(),
         binary_hex: None,
         distances: keyed_users()
             .into_iter()
@@ -112,7 +119,7 @@ pub fn event(pubkey: &str, kind: u32, created_at: u64, tagged: Vec<&str>) -> Nos
             .collect(),
         kind,
         pubkey: pubkey.to_string(),
-        id: format!("{pubkey}:{kind}:{created_at}"),
+        id: format!("{:064x}", ((kind as u64) << 32) | created_at),
         sig: "00".repeat(64),
     }
 }

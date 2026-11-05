@@ -1,6 +1,6 @@
 import { SocialGraph } from './SocialGraph';
 
-export const BINARY_FORMAT_VERSION = 3;
+export const BINARY_FORMAT_VERSION = 4;
 const BINARY_FORMAT_VERSION_V2 = 2;
 const BINARY_NODE_ID_PUBKEY = 0;
 const BINARY_NODE_ID_UUID = 1;
@@ -290,6 +290,13 @@ export async function* toBinaryChunks(graph: SocialGraph, maxNodes?: number, max
         writeBinaryNodeId(data.ids.str(id), writeVar, writeBytes);
     }
 
+    const writeRevision = (owner: number, kind: number, timestamp: number, complete: boolean) => {
+        const revision = graph.getListRevision(data.str(owner), kind);
+        if (!revision || revision.created_at !== timestamp) { writeVar(0); return; }
+        writeVar(revision.complete && complete ? 2 : 1);
+        writeBytes(hexToBytes(revision.id));
+    };
+
     // --- follow lists ---
     writeVar(followOwners.length);
     for (const owner of followOwners) {
@@ -297,6 +304,7 @@ export async function* toBinaryChunks(graph: SocialGraph, maxNodes?: number, max
         const limit = followEdgeCount.get(owner)!;
         writeVar(owner);
         writeVar(ts);
+        writeRevision(owner, 3, ts, limit === (data.followedByUser.get(owner)?.size ?? 0));
         writeVar(limit);
 
         let emitted = 0;
@@ -315,6 +323,7 @@ export async function* toBinaryChunks(graph: SocialGraph, maxNodes?: number, max
         const limit = muteEdgeCount.get(owner)!;
         writeVar(owner);
         writeVar(ts);
+        writeRevision(owner, 10000, ts, limit === (data.mutedByUser.get(owner)?.size ?? 0));
         writeVar(limit);
 
         let emitted = 0;
@@ -359,7 +368,7 @@ export async function fromBinary(root: string, data: Uint8Array): Promise<Social
     const version = decodeVarint(data, offset);
     offset += version.bytesRead;
     
-    if (version.value !== BINARY_FORMAT_VERSION && version.value !== BINARY_FORMAT_VERSION_V2) {
+    if (version.value !== BINARY_FORMAT_VERSION && version.value !== 3 && version.value !== BINARY_FORMAT_VERSION_V2) {
         throw new Error(`Invalid binary version: ${version.value}`);
     }
 
@@ -413,6 +422,14 @@ export async function fromBinary(root: string, data: Uint8Array): Promise<Social
         uniqueIds.push([value, id.value]);
     }
     
+    const revisions: [number, number, string, number, boolean][] = [];
+    const readRevision = (user: number, kind: number, timestamp: number) => {
+        if (version.value < 4) return;
+        const flag = readBytes(1)[0];
+        if (flag > 2) throw new Error('Invalid list revision flag');
+        if (flag) revisions.push([user, kind, bytesToHex(readBytes(32)), timestamp, flag === 2]);
+    };
+
     // Read follow lists
     const followListsCount = decodeVarint(data, offset);
     offset += followListsCount.bytesRead;
@@ -426,6 +443,7 @@ export async function fromBinary(root: string, data: Uint8Array): Promise<Social
         const timestamp = decodeVarint(data, offset);
         offset += timestamp.bytesRead;
         
+        readRevision(user.value, 3, timestamp.value);
         const followedCount = decodeVarint(data, offset);
         offset += followedCount.bytesRead;
         
@@ -453,6 +471,7 @@ export async function fromBinary(root: string, data: Uint8Array): Promise<Social
         const timestamp = decodeVarint(data, offset);
         offset += timestamp.bytesRead;
         
+        readRevision(user.value, 10000, timestamp.value);
         const mutedCount = decodeVarint(data, offset);
         offset += mutedCount.bytesRead;
         
@@ -483,6 +502,10 @@ export async function fromBinary(root: string, data: Uint8Array): Promise<Social
         graphAny.ids.currentUniqueId = Math.max(graphAny.ids.currentUniqueId, id + 1);
     }
     
+    for (const [user, kind, id, created_at, complete] of revisions) {
+        graph.getInternalData().listRevisions.set(`${kind}:${graphAny.ids.str(user)}`, {id, created_at, complete});
+    }
+
     // Ensure the new root is properly mapped in the UniqueIds
     if (!graphAny.ids.strToUniqueId.has(root)) {
         // If the new root wasn't in the original data, add it with a new ID

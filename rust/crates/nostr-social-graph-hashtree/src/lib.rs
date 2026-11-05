@@ -13,7 +13,7 @@ use hashtree_core::{
 };
 use hashtree_fs::FsBlobStore;
 use nostr_social_graph::{
-    NostrEvent, SocialGraph, SocialGraphBackend, SocialGraphError, SocialGraphState,
+    ListRevision, NostrEvent, SocialGraph, SocialGraphBackend, SocialGraphError, SocialGraphState,
 };
 use serde::{Deserialize, Serialize};
 
@@ -155,6 +155,14 @@ impl HashtreeSocialGraph {
         Ok(block_on(self.store.has(&cid.hash))?)
     }
 
+    pub fn get_list_revision(&self, user: &str, kind: u32) -> Option<ListRevision> {
+        self.graph.get_list_revision(user, kind)
+    }
+
+    pub fn get_list_revisions(&self) -> Vec<(String, u32, ListRevision)> {
+        self.graph.get_list_revisions()
+    }
+
     pub fn export_state(&self) -> SocialGraphState {
         self.graph.export_state()
     }
@@ -246,6 +254,11 @@ impl HashtreeSocialGraph {
 
 impl SocialGraphBackend for HashtreeSocialGraph {
     type Error = HashtreeSocialGraphError;
+    fn get_list_revisions(
+        &self,
+    ) -> std::result::Result<Vec<(String, u32, ListRevision)>, Self::Error> {
+        Ok(self.graph.get_list_revisions())
+    }
 
     fn get_root(&self) -> std::result::Result<String, Self::Error> {
         Ok(self.graph.get_root().to_string())

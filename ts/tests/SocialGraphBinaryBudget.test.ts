@@ -33,9 +33,9 @@ describe('binary export budgets', () => {
   });
 
   it.each([
-    {limits: [undefined, 3], hex: '0304000204726f6f7401020566697273740202067365636f6e640402056d7574656401007b0201020100c8030104'},
-    {limits: [undefined, undefined, 0], hex: '0304000204726f6f7401020566697273740202067365636f6e640402056d7574656401007b0201020100c8030104'},
-    {limits: [undefined, undefined, undefined, 1], hex: '0303000204726f6f740102056669727374030205746869726402007b01010100010300'},
+    {limits: [undefined, 3], hex: '0404000204726f6f7401020566697273740202067365636f6e640402056d7574656401007b000201020100c803000104'},
+    {limits: [undefined, undefined, 0], hex: '0404000204726f6f7401020566697273740202067365636f6e640402056d7574656401007b000201020100c803000104'},
+    {limits: [undefined, undefined, undefined, 1], hex: '0403000204726f6f740102056669727374030205746869726402007b000101010000010300'},
   ])('preserves existing binary order and timestamps with limits $limits', async ({limits, hex}) => {
     const graph = mixedGraph();
     expect(await graph.toBinary(...limits)).toEqual(new Uint8Array(Buffer.from(hex, 'hex')));

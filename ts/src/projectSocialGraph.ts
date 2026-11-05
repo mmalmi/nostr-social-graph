@@ -57,6 +57,13 @@ export async function projectSocialGraph(
     if (!list) return
     const ownerId = data.ids.id(owner)
     const targets = new Set(list.targets.map((target) => data.ids.id(target)))
+    const kind = forward === data.followedByUser ? 3 : 10000
+    const revision = source.getListRevision(owner, kind)
+    if (revision && revision.created_at === list.timestamp) {
+      const sourceTargets = kind === 3 ? source.getFollowedByUser(owner) : source.getMutedByUser(owner)
+      const complete = revision.complete && sourceTargets.size === list.targets.length && list.targets.every(target => sourceTargets.has(target))
+      data.listRevisions.set(`${kind}:${owner}`, {...revision, complete})
+    }
     forward.set(ownerId, targets)
     timestamps.set(ownerId, list.timestamp)
     for (const target of targets) {
