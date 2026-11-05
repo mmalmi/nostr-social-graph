@@ -591,9 +591,6 @@ impl SocialGraph {
             return 0;
         }
 
-        for revision in self.list_revisions.values_mut() {
-            revision.complete = false;
-        }
         for user in users_to_remove.iter().copied() {
             self.list_revisions.shift_remove(&(user, 3));
             self.list_revisions.shift_remove(&(user, 10_000));
@@ -611,9 +608,13 @@ impl SocialGraph {
             self.ids.remove(user);
         }
 
-        for followed_users in self.followed_by_user.values_mut() {
+        for (owner, followed_users) in &mut self.followed_by_user {
+            let mut changed = false;
             for user in &users_to_remove {
-                followed_users.shift_remove(user);
+                changed |= followed_users.shift_remove(user);
+            }
+            if changed && let Some(revision) = self.list_revisions.get_mut(&(*owner, 3)) {
+                revision.complete = false;
             }
         }
         for followers in self.followers_by_user.values_mut() {
@@ -621,9 +622,13 @@ impl SocialGraph {
                 followers.shift_remove(user);
             }
         }
-        for muted_users in self.muted_by_user.values_mut() {
+        for (owner, muted_users) in &mut self.muted_by_user {
+            let mut changed = false;
             for user in &users_to_remove {
-                muted_users.shift_remove(user);
+                changed |= muted_users.shift_remove(user);
+            }
+            if changed && let Some(revision) = self.list_revisions.get_mut(&(*owner, 10_000)) {
+                revision.complete = false;
             }
         }
         for muters in self.user_muted_by.values_mut() {

@@ -100,3 +100,40 @@ fn alternate_root_projection_preserves_source_and_caps_working_graph() {
     assert_eq!(graph.get_followed_by_user(&key(7)).len(), 3);
     assert!(graph.get_list_revision(&key(7), 3).unwrap().complete);
 }
+
+#[test]
+fn pruning_only_invalidates_lists_with_removed_targets() {
+    let mut graph = SocialGraph::new(&key(0));
+    graph.handle_event(&event(3, 10, 100, &[1, 2]), true, f64::INFINITY);
+    graph.handle_event(&event(10_000, 11, 100, &[3]), true, f64::INFINITY);
+    let mut retained_mute = event(10_000, 12, 100, &[2]);
+    retained_mute.pubkey = key(1);
+    graph.handle_event(&retained_mute, true, f64::INFINITY);
+    let mut empty_follows = event(3, 13, 100, &[]);
+    empty_follows.pubkey = key(1);
+    graph.handle_event(&empty_follows, true, f64::INFINITY);
+
+    assert_eq!(graph.remove_muted_not_followed_users(), 1);
+    assert!(graph.get_list_revision(&key(0), 3).unwrap().complete);
+    assert!(!graph.get_list_revision(&key(0), 10_000).unwrap().complete);
+    assert!(graph.get_list_revision(&key(1), 3).unwrap().complete);
+    assert!(graph.get_list_revision(&key(1), 10_000).unwrap().complete);
+    assert_eq!(graph.get_followed_by_user(&key(0)), vec![key(1), key(2)]);
+    assert_eq!(graph.get_muted_by_user(&key(1)), vec![key(2)]);
+    assert!(graph.get_muted_by_user(&key(0)).is_empty());
+
+    let restored = SocialGraph::from_binary(&key(0), &graph.to_binary().unwrap()).unwrap();
+    assert!(restored.get_list_revision(&key(0), 3).unwrap().complete);
+    assert!(
+        !restored
+            .get_list_revision(&key(0), 10_000)
+            .unwrap()
+            .complete
+    );
+    assert!(
+        restored
+            .get_list_revision(&key(1), 10_000)
+            .unwrap()
+            .complete
+    );
+}
