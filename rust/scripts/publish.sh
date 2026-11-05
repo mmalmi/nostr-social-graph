@@ -36,6 +36,7 @@ CRATES=(
     "nostr-identity"
     "nostr-social-graph"
     "nostr-social-graph-heed"
+    "nostr-social-graph-hashtree"
     "nostr-social-memory"
 )
 
