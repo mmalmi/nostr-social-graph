@@ -30,7 +30,7 @@ struct AllowedAuthors {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum LocalRelayRejectReason {
+pub(crate) enum LocalRelayRejectReason {
     ProtectedEvent,
     TooManyTags { count: usize },
     TagValueTooLarge { kind: String, size: usize },
@@ -574,7 +574,7 @@ fn allowed_kinds() -> Vec<Kind> {
         .collect()
 }
 
-fn local_relay_reject_reason(event: &Event) -> Option<LocalRelayRejectReason> {
+pub(crate) fn local_relay_reject_reason(event: &Event) -> Option<LocalRelayRejectReason> {
     if event.is_protected() {
         return Some(LocalRelayRejectReason::ProtectedEvent);
     }

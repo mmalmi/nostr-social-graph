@@ -2,16 +2,20 @@
 use crate::{GraphFreshness, Result, ServerError};
 use nostr_sdk::{Client, Event, Keys};
 use std::{
+    collections::BTreeMap,
     path::{Path, PathBuf},
-    sync::{Arc, RwLock},
+    sync::{Arc, Mutex, RwLock},
     time::{Duration, Instant},
 };
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{Notify, mpsc, oneshot};
+type PendingHeads = BTreeMap<(String, u16), Box<Event>>;
 
 #[derive(Clone)]
 pub(crate) struct Forwarder {
     sender: mpsc::Sender<Message>,
     freshness: Arc<RwLock<GraphFreshness>>,
+    pending: Arc<Mutex<PendingHeads>>,
+    wake: Arc<Notify>,
 }
 enum Message {
     Event(Box<Event>),
@@ -41,6 +45,10 @@ impl Forwarder {
         client.connect().await;
         client.wait_for_connection(Duration::from_secs(5)).await;
         let (sender, mut receiver) = mpsc::channel(256);
+        let pending = Arc::new(Mutex::new(PendingHeads::new()));
+        let pending_worker = Arc::clone(&pending);
+        let wake = Arc::new(Notify::new());
+        let wake_worker = Arc::clone(&wake);
         let state = Arc::clone(&freshness);
         let path = data_dir.to_path_buf();
         freshness
@@ -50,7 +58,20 @@ impl Forwarder {
         tokio::spawn(async move {
             let mut disk_check: Option<(Instant, u64)> = None;
             let mut retry_after: Option<Instant> = None;
-            while let Some(message) = receiver.recv().await {
+            loop {
+                let pending_event = pending_worker
+                    .lock()
+                    .expect("pending heads lock")
+                    .pop_first()
+                    .map(|(_, event)| event);
+                let message = if let Some(event) = pending_event {
+                    Message::Event(event)
+                } else {
+                    tokio::select! {
+                        message = receiver.recv() => match message { Some(message) => message, None => break },
+                        _ = wake_worker.notified() => continue,
+                    }
+                };
                 match message {
                     Message::Barrier(done) => {
                         let _ = done.send(());
@@ -107,7 +128,12 @@ impl Forwarder {
                 }
             }
         });
-        Ok(Some(Self { sender, freshness }))
+        Ok(Some(Self {
+            sender,
+            freshness,
+            pending,
+            wake,
+        }))
     }
 
     pub async fn enqueue(&self, event: &Event) {
@@ -126,16 +152,31 @@ impl Forwarder {
     }
 
     pub fn try_enqueue(&self, event: &Event) {
-        if forwardable(event)
-            && self
-                .sender
-                .try_send(Message::Event(Box::new(event.clone())))
-                .is_err()
+        if !forwardable(event) {
+            return;
+        }
+        match self
+            .sender
+            .try_send(Message::Event(Box::new(event.clone())))
         {
-            self.freshness
-                .write()
-                .expect("freshness lock")
-                .forwarding_failures += 1;
+            Ok(()) => {}
+            Err(mpsc::error::TrySendError::Full(Message::Event(event))) => {
+                if coalesce_head(&mut self.pending.lock().expect("pending heads lock"), event) {
+                    self.wake.notify_one();
+                } else {
+                    self.freshness
+                        .write()
+                        .expect("freshness lock")
+                        .forwarding_failures += 1;
+                    tracing::warn!("graph forwarding overflow exceeded bounded pending heads");
+                }
+            }
+            Err(_) => {
+                self.freshness
+                    .write()
+                    .expect("freshness lock")
+                    .forwarding_failures += 1;
+            }
         }
     }
 
@@ -148,6 +189,23 @@ impl Forwarder {
                 .forwarding_failures += 1;
         }
     }
+}
+
+// Coalesce latest live heads while the crawl uses channel backpressure. Keep
+// ingestion nonblocking even across a checkpoint pause, without unbounded tasks.
+fn coalesce_head(pending: &mut PendingHeads, event: Box<Event>) -> bool {
+    let key = (event.pubkey.to_hex(), event.kind.as_u16());
+    if let Some(previous) = pending.get(&key) {
+        if event.created_at < previous.created_at
+            || (event.created_at == previous.created_at && event.id >= previous.id)
+        {
+            return true;
+        }
+    } else if pending.len() >= 256 {
+        return false;
+    }
+    pending.insert(key, event);
+    true
 }
 
 // A relay that already holds a newer replaceable head is synchronized. A
@@ -176,9 +234,7 @@ fn classify_delivery<'a>(accepted: bool, failures: impl Iterator<Item = &'a str>
 fn forwardable(event: &Event) -> bool {
     matches!(event.kind.as_u16(), 3 | 10000)
         && event.verify().is_ok()
-        && !event.is_protected()
-        && event.tags.len() <= 25_000
-        && serde_json::to_vec(event).is_ok_and(|bytes| bytes.len() <= 524_288)
+        && crate::relay_mirror::local_relay_reject_reason(event).is_none()
 }
 
 // POSIX df is present in supported server images. Fail closed if its output is
@@ -220,6 +276,36 @@ pub(crate) fn refresh_allowlist(graph: &nostr_social_graph::SocialGraph) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn live_overflow_coalesces_latest_heads_with_a_fixed_memory_bound() {
+        use nostr_sdk::{EventBuilder, Kind, Timestamp};
+        let keys = Keys::generate();
+        let old = EventBuilder::new(Kind::from(3), "")
+            .custom_created_at(Timestamp::from(10))
+            .sign_with_keys(&keys)
+            .unwrap();
+        let new = EventBuilder::new(Kind::from(3), "")
+            .custom_created_at(Timestamp::from(20))
+            .sign_with_keys(&keys)
+            .unwrap();
+        let mut pending = PendingHeads::new();
+        assert!(coalesce_head(&mut pending, Box::new(new.clone())));
+        assert!(coalesce_head(&mut pending, Box::new(old)));
+        assert_eq!(pending.values().next().unwrap().id, new.id);
+        for _ in 1..256 {
+            let event = EventBuilder::new(Kind::from(3), "")
+                .sign_with_keys(&Keys::generate())
+                .unwrap();
+            assert!(coalesce_head(&mut pending, Box::new(event)));
+        }
+        let overflow = EventBuilder::new(Kind::from(3), "")
+            .sign_with_keys(&Keys::generate())
+            .unwrap();
+        assert!(!coalesce_head(&mut pending, Box::new(overflow)));
+        assert_eq!(pending.len(), 256);
+        assert!(coalesce_head(&mut pending, Box::new(new)));
+    }
+
     #[test]
     fn newer_heads_and_individual_rejections_do_not_pause_other_authors() {
         assert_eq!(
