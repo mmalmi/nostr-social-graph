@@ -867,6 +867,41 @@ impl SocialGraph {
             *edge_counts.entry(edge.owner).or_insert(0) += 1;
         }
 
+        // Retain explicit empty facts for selected, in-range owners and an
+        // isolated root. A nonempty list truncated by a budget is not empty.
+        let mut empty_candidates = used_ids.clone();
+        empty_candidates.insert(self.root);
+        for owner in empty_candidates {
+            let Some(distance) = self.follow_distance_by_user.get(&owner) else {
+                continue;
+            };
+            if budget.max_distance.is_some_and(|limit| *distance > limit)
+                || (!used_ids.contains(&owner)
+                    && max_nodes.is_some_and(|limit| used_ids.len() >= limit))
+            {
+                continue;
+            }
+            for (lists, timestamps, counts) in [
+                (
+                    &self.followed_by_user,
+                    &self.follow_list_created_at,
+                    &mut follow_edge_count,
+                ),
+                (
+                    &self.muted_by_user,
+                    &self.mute_list_created_at,
+                    &mut mute_edge_count,
+                ),
+            ] {
+                if lists.get(&owner).is_none_or(|targets| targets.is_empty())
+                    && (lists.contains_key(&owner) || timestamps.contains_key(&owner))
+                {
+                    used_ids.insert(owner);
+                    counts.insert(owner, 0);
+                }
+            }
+        }
+
         let follow_owners = follow_edge_count.keys().copied().collect();
         let mute_owners = mute_edge_count.keys().copied().collect();
         Ok(BinaryPlan {
@@ -891,11 +926,25 @@ impl SocialGraph {
             }
         }
 
+        // First-empty events may have a timestamp without an adjacency row.
+        for user in self.follow_list_created_at.keys() {
+            if !follow_edge_count.contains_key(user) {
+                used_ids.insert(*user);
+                follow_edge_count.insert(*user, 0);
+            }
+        }
+
         for (user, muted_users) in &self.muted_by_user {
             used_ids.insert(*user);
             mute_edge_count.insert(*user, muted_users.len());
             for muted in muted_users {
                 used_ids.insert(*muted);
+            }
+        }
+        for user in self.mute_list_created_at.keys() {
+            if !mute_edge_count.contains_key(user) {
+                used_ids.insert(*user);
+                mute_edge_count.insert(*user, 0);
             }
         }
 

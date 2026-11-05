@@ -27,6 +27,7 @@ Notes:
 
 - `allow_unknown_authors` defaults to your call site, not the library. Pass `true` during initial ingest if you are not filtering to already-reachable authors.
 - If you switch roots or connect a new root into preloaded graph data, recompute distances before reading them.
+- Binary snapshots retain observed empty follow/mute lists and their timestamps, preventing stale lists from returning after reload. Budgeted snapshots keep these facts for retained, in-range owners; truncated nonempty lists are not labeled empty.
 
 Crates:
 

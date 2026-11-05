@@ -4,6 +4,32 @@ use nostr_social_graph::SocialGraph;
 use support::*;
 
 #[test]
+fn first_empty_lists_survive_binary_roundtrip_and_reject_stale_events() {
+    for kind in [3, 10_000] {
+        let mut graph = SocialGraph::new(ADAM);
+        graph.handle_event(&event(ADAM, kind, 2000, vec![]), true, 1.0);
+        let mut restored = SocialGraph::from_binary(ADAM, &graph.to_binary().unwrap()).unwrap();
+        restored.handle_event(&event(ADAM, kind, 1999, vec![FIATJAF]), true, 1.0);
+        restored.handle_event(&event(ADAM, kind, 2000, vec![FIATJAF]), true, 1.0);
+        if kind == 3 {
+            assert_eq!(restored.get_follow_list_created_at(ADAM), Some(2000));
+            assert!(restored.get_followed_by_user(ADAM).is_empty());
+        } else {
+            assert_eq!(restored.get_mute_list_created_at(ADAM), Some(2000));
+            assert!(restored.get_muted_by_user(ADAM).is_empty());
+        }
+        restored.handle_event(&event(ADAM, kind, 2001, vec![FIATJAF]), true, 1.0);
+        assert!(if kind == 3 {
+            restored.is_following(ADAM, FIATJAF)
+        } else {
+            restored
+                .get_muted_by_user(ADAM)
+                .contains(&FIATJAF.to_string())
+        });
+    }
+}
+
+#[test]
 fn follow_lists_are_replaceable_and_ignore_stale_updates() {
     let mut graph = SocialGraph::new(ADAM);
 

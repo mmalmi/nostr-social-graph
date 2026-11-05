@@ -20,6 +20,59 @@ fn empty_graph_binary_matches_typescript() {
 }
 
 #[test]
+fn explicit_empty_lists_match_typescript_and_reject_stale_events_after_roundtrip() {
+    let mut graph = SocialGraph::new(ADAM);
+    for ev in [
+        event(ADAM, 3, 1000, vec![BOB]),
+        event(BOB, 3, 1100, vec![]),
+        event(ADAM, 10000, 1200, vec![]),
+        event(BOB, 10000, 1300, vec![]),
+        event(FIATJAF, 3, 1400, vec![]),
+    ] {
+        graph.handle_event(&ev, true, 1.0);
+    }
+    for budget in [
+        BinaryBudget::default(),
+        BinaryBudget {
+            max_nodes: Some(2),
+            max_edges: Some(1),
+            ..BinaryBudget::default()
+        },
+        BinaryBudget {
+            max_distance: Some(0),
+            ..BinaryBudget::default()
+        },
+        BinaryBudget {
+            max_nodes: Some(1),
+            ..BinaryBudget::default()
+        },
+    ] {
+        let bytes = graph.to_binary_with_budget(budget).unwrap();
+        let ts = if budget == BinaryBudget::default() {
+            ts_fixture_emit("empty-lists")
+        } else {
+            ts_fixture_emit_budgeted("empty-lists", budget)
+        };
+        assert_eq!(hex::encode(&bytes), ts.binary_hex.clone().unwrap());
+        let mut restored = SocialGraph::from_binary(ADAM, &bytes).unwrap();
+        assert_eq!(restored.get_mute_list_created_at(ADAM), Some(1200));
+        restored.handle_event(&event(ADAM, 10000, 1199, vec![SNOWDEN]), true, 1.0);
+        assert!(restored.get_muted_by_user(ADAM).is_empty());
+        if budget.max_distance != Some(0) && budget.max_nodes != Some(1) {
+            assert_eq!(restored.get_follow_list_created_at(BOB), Some(1100));
+            restored.handle_event(&event(BOB, 3, 1099, vec![SNOWDEN]), true, 1.0);
+            assert!(restored.get_followed_by_user(BOB).is_empty());
+        }
+        let temp = NamedTempFile::new().unwrap();
+        fs::write(temp.path(), &bytes).unwrap();
+        assert_eq!(
+            summary(&mut restored),
+            without_binary(ts_fixture_load(ADAM, temp.path()))
+        );
+    }
+}
+
+#[test]
 fn complex_graph_round_trips_with_typescript() {
     let ts_fixture = ts_fixture_emit("default");
 

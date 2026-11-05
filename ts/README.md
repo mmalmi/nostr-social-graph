@@ -14,6 +14,11 @@ const binary = await graph.toBinary();
 const restored = await SocialGraph.fromBinary(rootPubkey, binary);
 ```
 
+Binary snapshots preserve observed empty follow and mute lists with their event
+timestamps, so older lists cannot reappear after restoring a snapshot. Budgeted
+exports retain these empty facts for included owners within the distance limit;
+an omitted or truncated nonempty list is never recorded as an empty list.
+
 Notes:
 
 - `handleEvent` only uses kind `3` and `10000` events.

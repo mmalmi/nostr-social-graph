@@ -80,6 +80,18 @@ function arbitraryIdsGraph() {
   return graph;
 }
 
+function emptyListsGraph() {
+  const graph = new SocialGraph(pubKeys.adam);
+  for (const ev of [
+    event(pubKeys.adam, 3, 1000, [pubKeys.bob]),
+    event(pubKeys.bob, 3, 1100, []),
+    event(pubKeys.adam, 10000, 1200, []),
+    event(pubKeys.bob, 10000, 1300, []),
+    event(pubKeys.fiatjaf, 3, 1400, []),
+  ]) graph.handleEvent(ev, true);
+  return graph;
+}
+
 function summary(graph: SocialGraph, binaryHex?: string): GraphSummary {
   return {
     root: graph.getRoot(),
@@ -95,6 +107,12 @@ function summary(graph: SocialGraph, binaryHex?: string): GraphSummary {
 }
 
 async function emitScenario(name: string) {
+  if (name === 'empty-lists') {
+    const graph = emptyListsGraph();
+    const binary = await graph.toBinary();
+    process.stdout.write(JSON.stringify(summary(graph, Buffer.from(binary).toString('hex'))));
+    return;
+  }
   if (name === 'empty') {
     const graph = new SocialGraph(pubKeys.adam);
     const binary = await graph.toBinary();
@@ -133,6 +151,8 @@ async function emitBudgetedScenario(
     graph = defaultGraph();
   } else if (name === 'arbitrary-ids') {
     graph = arbitraryIdsGraph();
+  } else if (name === 'empty-lists') {
+    graph = emptyListsGraph();
   } else {
     throw new Error(`unknown scenario ${name}`);
   }

@@ -21,12 +21,13 @@ function planBudget(
   const usedIds = new Set<number>();
   const followEdgeCount = new Map<number, number>();
   const muteEdgeCount = new Map<number, number>();
-  const { followedByUser, mutedByUser, str } = graph.getInternalData();
+  const { followedByUser, mutedByUser, followListCreatedAt, muteListCreatedAt, ids, str } = graph.getInternalData();
   const edgeTypes = [
     [followedByUser, followEdgeCount],
     [mutedByUser, muteEdgeCount],
   ] as const;
   const usersByFollowDistance = (graph as any).usersByFollowDistance as Map<number, Set<number>>;
+  const followDistances = (graph as any).followDistanceByUser as Map<number, number>;
   const distances = Array.from(usersByFollowDistance.keys()).sort((a, b) => a - b);
   let edgeCount = 0;
 
@@ -62,6 +63,24 @@ function planBudget(
           edgeCount++;
           counts.set(owner, (counts.get(owner) ?? 0) + 1);
         }
+      }
+    }
+  }
+
+  // Empty lists are facts too. Keep them for retained, in-range owners (and
+  // an isolated root), without calling a truncated nonempty list empty.
+  const rootId = ids.id(graph.getRoot());
+  for (const owner of new Set([...usedIds, rootId])) {
+    const distance = followDistances.get(owner);
+    if (distance === undefined || (maxDistance !== undefined && distance > maxDistance)) continue;
+    if (!usedIds.has(owner) && maxNodes && usedIds.size >= maxNodes) continue;
+    for (const [lists, timestamps, counts] of [
+      [followedByUser, followListCreatedAt, followEdgeCount],
+      [mutedByUser, muteListCreatedAt, muteEdgeCount],
+    ] as const) {
+      if (!lists.get(owner)?.size && (lists.has(owner) || timestamps.has(owner))) {
+        usedIds.add(owner);
+        counts.set(owner, 0);
       }
     }
   }
@@ -193,11 +212,24 @@ export async function* toBinaryChunks(graph: SocialGraph, maxNodes?: number, max
                 usedIds.add(followed);
             }
         }
+        // A first empty event can have a timestamp without an adjacency row.
+        for (const user of data.followListCreatedAt.keys()) {
+            if (!followEdgeCount.has(user)) {
+                usedIds.add(user);
+                followEdgeCount.set(user, 0);
+            }
+        }
         for (const [user, mutedUsers] of data.mutedByUser.entries()) {
             usedIds.add(user);
             muteEdgeCount.set(user, mutedUsers.size);
             for (const muted of mutedUsers) {
                 usedIds.add(muted);
+            }
+        }
+        for (const user of data.muteListCreatedAt.keys()) {
+            if (!muteEdgeCount.has(user)) {
+                usedIds.add(user);
+                muteEdgeCount.set(user, 0);
             }
         }
 
