@@ -564,7 +564,7 @@ mod tests {
     use super::*;
     fn fixture() -> Value {
         serde_json::from_str(include_str!(
-            "../../../../fixtures/private-contact-sync.json"
+            "../fixtures/private-contact-sync.json"
         ))
         .unwrap()
     }
