@@ -4,7 +4,9 @@ import { Negentropy, NegentropyStorageVector } from './vendor/negentropy.js';
 
 export interface GraphSyncStats {
   sentBytes: number; receivedBytes: number; receivedEvents: number;
-  appliedEvents: number; batches: number; fallbackBatches: number;
+  appliedEvents: number; batches: number;
+  /** Always zero: public graph catch-up requires NIP-77. Kept for compatibility. */
+  fallbackBatches: number;
   elapsedMs: number; limited: boolean; failedRelays: number; completedAuthors: number;
 }
 export interface GraphSyncOptions {
@@ -34,6 +36,7 @@ export function graphSyncAuthors(graph:SocialGraph):string[] {
 }
 
 /** Optional NIP-77 catch-up. Only verified winning public lists alter this graph.
+ * Failed reconciliation skips the relay; ordinary queries fetch exact missing IDs only.
  * No snapshots are downloaded and no local records are uploaded or deleted.
  * A fulfilled call can be budget-limited; inspect stats and schedule later work.
  */
@@ -90,47 +93,45 @@ export async function syncGraphLists(options:GraphSyncOptions):Promise<GraphSync
             if(revision?.complete && hex.test(revision.id))storage.insert(revision.created_at,revision.id);
           }
           storage.seal();const ne=new Negentropy(storage,16384), id=`g${++serial}`;
-          const needed=new Set<string>();let fallback=false;
+          const needed=new Set<string>();
           send(['NEG-OPEN',id,filter,await ne.initiate()]);
           const deadline=Date.now()+timeout;
-          try{
-            let rounds=0;
-            for(;;){
-              const frame=await next(deadline);if(frame[1]!==id)continue;
-              if(frame[0]==='NEG-ERR'){fallback=true;break;}
-              if(frame[0]!=='NEG-MSG' || typeof frame[2]!=='string')continue;
-              if(++rounds>64)throw new Error('Graph reconciliation round limit');
-              if(!/^(?:[0-9a-f]{2})+$/.test(frame[2]) || frame[2].length>65536)throw new Error('Invalid reconciliation message');
-              const [reply,,need]=await ne.reconcile(frame[2]);
-              for(const eventId of need){if(hex.test(eventId))needed.add(eventId);}
-              if(needed.size>2048){stats.limited=true;throw new Error('Too many graph revisions');}
-              if(reply===null)break;
-                            send(['NEG-MSG',id,reply]);
-            }
-          }catch(error){if(terminal||stats.limited||options.signal?.aborted)throw error;fallback=true;}
+          let rounds=0;
+          for(;;){
+            const frame=await next(deadline);if(frame[1]!==id)continue;
+            if(frame[0]==='NEG-ERR')throw new Error('Graph reconciliation rejected');
+            if(frame[0]!=='NEG-MSG' || typeof frame[2]!=='string')continue;
+            if(++rounds>64)throw new Error('Graph reconciliation round limit');
+            if(!/^(?:[0-9a-f]{2})+$/.test(frame[2]) || frame[2].length>65536)throw new Error('Invalid reconciliation message');
+            const [reply,,need]=await ne.reconcile(frame[2]);
+            for(const eventId of need){if(hex.test(eventId))needed.add(eventId);}
+            if(needed.size>2048){stats.limited=true;throw new Error('Too many graph revisions');}
+            if(reply===null)break;
+            send(['NEG-MSG',id,reply]);
+          }
           send(['NEG-CLOSE',id]);
-          stats.batches++;if(fallback)stats.fallbackBatches++;
-          const requests=fallback ? [{...filter,limit:512}] : Array.from(needed).reduce<{ids:string[]}[]>((all,eventId,i)=>{if(i%128===0)all.push({ids:[]});all[all.length-1].ids.push(eventId);return all;},[]);
+          stats.batches++;
+          const requests=Array.from(needed).reduce<{ids:string[]}[]>((all,eventId,i)=>{if(i%128===0)all.push({ids:[]});all[all.length-1].ids.push(eventId);return all;},[]);
           for(const request of requests){
-            const pending='ids' in request?new Set(request.ids):undefined;
+            const pending=new Set(request.ids);
             const req=`g${++serial}`;send(['REQ',req,request]);const until=Date.now()+timeout;
             for(;;){const frame=await next(until);if(frame[1]!==req)continue;
               if(frame[0]==='CLOSED')throw new Error('Graph event request rejected');
               if(frame[0]==='EOSE'){
-                if(pending?.size)throw new Error('Graph relay omitted requested revisions');
+                if(pending.size)throw new Error('Graph relay omitted requested revisions');
                 break;
               }
               if(frame[0]!=='EVENT')continue;
               stats.receivedEvents++;
               const event=frame[2] as Event;
-              if(!event||!allowed.has(event.pubkey)||![3,10000].includes(event.kind)||!Array.isArray(event.tags)||event.tags.length>20000||(!fallback&&!needed.has(event.id)))continue;
+              if(!event||!allowed.has(event.pubkey)||![3,10000].includes(event.kind)||!Array.isArray(event.tags)||event.tags.length>20000||!needed.has(event.id))continue;
               // Verification can reject malformed fields by throwing.
               let applied=false;
               try{
                 if(verifyEvent(event)){
                   // A verified stale revision satisfies the fetch even when a
                   // newer local list wins. Invalid or missing bodies do not.
-                  pending?.delete(event.id);
+                  pending.delete(event.id);
                   applied=options.graph.handleEvent(event,true);
                 }
               }catch{/* invalid event */}

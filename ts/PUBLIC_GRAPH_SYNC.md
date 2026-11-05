@@ -31,8 +31,12 @@ Defaults: 500 authors per pass in 256-author filters, 2 MiB total application
 traffic, 15-second batch deadlines, a 30-second total pass deadline, at most three configured relays, and a
 15-minute rotating catch-up interval while visible and online. A single arriving
 WebSocket frame can cross the transfer budget before the socket is closed.
-Relays without NIP-77 fall back to bounded ordinary list requests. Keep existing
-live list subscriptions for immediate updates; reconciliation repairs missed or
+Negentropy is required for catch-up. Unsupported or rejected negotiation, malformed
+responses, connection failures and timeouts end that relay attempt without an ordinary
+author/list query. The helper tries the next configured relay within the same budgets
+and preserves retained lists. After successful reconciliation it requests only exact
+missing event IDs; `fallbackBatches` remains zero for statistics compatibility.
+Keep existing live list subscriptions for immediate updates; reconciliation repairs missed or
 late-arriving events. A fresh server bootstrap reduces missing events, but does
 not remove the author-filter overhead.
 
@@ -59,7 +63,10 @@ have recently changed their lists.
 IIFE workers. Version 4.0.1 fixes a downstream bundling failure in 4.0.0's
 dynamic class import. Run `pnpm --filter nostr-social-graph test:bootstrap` to
 build the published entry points and exercise both browser contexts against a
-local snapshot with follow/mute IDs and incomplete-list metadata.
+local snapshot with follow/mute IDs and incomplete-list metadata. Version 4.0.2
+requires successful Negentropy before any catch-up event request; the same browser
+and default-IIFE tests verify rejection preserves the graph and healthy relays
+fetch only exact missing IDs.
 
 ## Overhead measurement
 
@@ -76,6 +83,8 @@ actual event payloads. At 30,000 authors (60,000 follow/mute heads):
 | 3,000 | 6,000 | 3,393,809 |
 
 This is why clients should not reconcile the whole network on every page load.
+Removing the author filter against a much larger relay would repeatedly enumerate
+revisions the bounded client graph does not retain; catch-up keeps author filtering.
 A 500-author unchanged pass is roughly 35 KB per relay, before transport overhead.
 With a fresh persisted graph, only changed lists require event downloads. An
 initial import lacking revision IDs is more expensive; keep the same budgets
