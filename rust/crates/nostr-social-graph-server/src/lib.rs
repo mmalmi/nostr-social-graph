@@ -1327,7 +1327,7 @@ async fn sync_graph_once(
             continue;
         }
 
-        for author_chunk in authors.chunks(config.crawl_batch_size.max(1)) {
+        for author_chunk in authors.chunks(config.crawl_batch_size.clamp(1, 128)) {
             freshness
                 .write()
                 .expect("freshness lock poisoned")
@@ -1358,6 +1358,76 @@ async fn sync_graph_once(
     Ok(())
 }
 
+// The SDK convenience fetch returns Ok(empty) even if every relay is offline.
+// A crawl watermark requires an actual EOSE, not merely a completed timeout.
+async fn fetch_graph_batch(client: &NostrClient, filter: Filter) -> Result<Vec<nostr_sdk::Event>> {
+    use nostr_sdk::{MatchEventOptions, RelayMessage, SubscriptionId};
+    let id = SubscriptionId::generate();
+    let mut notifications = client.notifications();
+    let subscribed = client
+        .subscribe_with_id(id.clone(), filter.clone(), None)
+        .await
+        .map_err(|error| ServerError::Io(std::io::Error::other(error.to_string())))?;
+    if subscribed.success.is_empty() {
+        client.unsubscribe(&id).await;
+        return Err(ServerError::Io(std::io::Error::other(
+            "No graph relay accepted the crawl subscription",
+        )));
+    }
+    let mut pending = subscribed.success;
+    let mut completed = false;
+    let mut winners = BTreeMap::<(String, u16), nostr_sdk::Event>::new();
+    let result = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            match notifications.recv().await {
+                Ok(RelayPoolNotification::Message { relay_url, message }) => match message {
+                    RelayMessage::Event {
+                        subscription_id,
+                        event,
+                    } if subscription_id.as_ref() == &id => {
+                        if filter.match_event(&event, MatchEventOptions::default())
+                            && event.verify().is_ok()
+                        {
+                            let key = (event.pubkey.to_hex(), event.kind.as_u16());
+                            let replace = winners.get(&key).is_none_or(|old| {
+                                event.created_at > old.created_at
+                                    || (event.created_at == old.created_at && event.id < old.id)
+                            });
+                            if replace {
+                                winners.insert(key, event.into_owned());
+                            }
+                        }
+                    }
+                    RelayMessage::EndOfStoredEvents(subscription_id)
+                        if subscription_id.as_ref() == &id =>
+                    {
+                        completed = true;
+                        pending.remove(&relay_url);
+                        if pending.is_empty() {
+                            return Ok(());
+                        }
+                    }
+                    _ => {}
+                },
+                Ok(RelayPoolNotification::Shutdown) => return Err("Graph relay pool shut down"),
+                Err(_) => return Err("Graph crawl notification stream lost messages"),
+                _ => {}
+            }
+        }
+    })
+    .await;
+    client.unsubscribe(&id).await;
+    if let Ok(Err(error)) = result {
+        return Err(ServerError::Io(std::io::Error::other(error)));
+    }
+    if !completed {
+        return Err(ServerError::Io(std::io::Error::other(
+            "Graph crawl timed out without EOSE",
+        )));
+    }
+    Ok(winners.into_values().collect())
+}
+
 async fn fetch_graph_events(
     client: &NostrClient,
     authors: &[String],
@@ -1371,10 +1441,7 @@ async fn fetch_graph_events(
     }
 
     let filter = graph_filter(pubkeys, since);
-    let events = client
-        .fetch_events(filter, Duration::from_secs(10))
-        .await
-        .map_err(|error| ServerError::Io(std::io::Error::other(error.to_string())))?;
+    let events = fetch_graph_batch(client, filter).await?;
 
     let mut forward = Vec::new();
     let mut applied = 0usize;
@@ -1677,5 +1744,19 @@ mod tests {
                 "wss://relay-b.example".to_string()
             ]
         );
+    }
+}
+
+#[cfg(test)]
+mod graph_crawl_tests {
+    use super::*;
+    #[tokio::test]
+    async fn disconnected_relays_cannot_mark_an_empty_crawl_successful() {
+        let client = NostrClient::new(Keys::generate());
+        let filter = graph_filter(
+            vec![PublicKey::from_hex(DEFAULT_SOCIAL_GRAPH_ROOT).unwrap()],
+            None,
+        );
+        assert!(fetch_graph_batch(&client, filter).await.is_err());
     }
 }

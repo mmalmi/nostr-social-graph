@@ -69,6 +69,9 @@ fresh export for the switch and keep the original LMDB data intact.
 The server subscribes to live public kind-3 and kind-10000 events. It also
 reconciles known authors at startup and at least daily without a `since` bound,
 so delayed relay events and legacy snapshots without revision IDs can be repaired.
+Each author batch is capped at 128 authors and requires EOSE from at least one
+upstream relay; disconnected relays cannot turn an empty response into a successful
+crawl. Coverage is relative to responding relays, not a claim of Nostr-wide completeness.
 Between full passes it uses successful crawl watermarks with a five-minute overlap;
 a failed pass never advances that watermark. Graph persistence completes before
 profile crawling, and `DATA_DIR/graph-freshness.json` records successful durable
