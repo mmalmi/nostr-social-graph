@@ -162,3 +162,9 @@ it never fetches a mutable snapshot or replaces them with a local crawl.
 
 Versioned releases provide `socialGraph.bin` and its manifest separately, so
 native and web consumers can pin the same data without upgrading their SDK.
+
+## Optional public graph updates
+
+See [public graph sync](./PUBLIC_GRAPH_SYNC.md) for optional NIP-77 follow/mute
+catch-up, bounded mobile bootstraps, local snapshot preservation and measured
+wire overhead. The default library import does not open network connections.

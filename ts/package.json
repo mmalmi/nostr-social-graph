@@ -51,7 +51,12 @@
       "import": "./dist/privateEvents.js",
       "require": "./dist/privateEvents.cjs"
     },
-    "./data/socialGraph.json": "./data/socialGraph.json"
+    "./data/socialGraph.json": "./data/socialGraph.json",
+    "./publicGraphSync": {
+      "types": "./dist/publicGraphSync.d.ts",
+      "import": "./dist/publicGraphSync.js",
+      "require": "./dist/publicGraphSync.cjs"
+    }
   },
   "scripts": {
     "test": "vitest",
@@ -87,7 +92,8 @@
     "dist",
     "data/socialGraph.bin",
     "data/profileData.json",
-    "data/socialGraph.json"
+    "data/socialGraph.json",
+    "PUBLIC_GRAPH_SYNC.md"
   ],
   "devDependencies": {
     "@cashu/cashu-ts": "^4.7.1",
