@@ -1164,10 +1164,11 @@ async fn sync_loop(
             graph_since
         };
         if full_reconciliation {
-            freshness
-                .write()
-                .expect("freshness lock")
-                .forwarding_failures = 0;
+            let mut status = freshness.write().expect("freshness lock");
+            if status.forwarding_failures > 0 {
+                status.last_forward_reconciliation_at = None;
+            }
+            status.forwarding_failures = 0;
         }
         let graph_success = match sync_graph_once(
             &client,
