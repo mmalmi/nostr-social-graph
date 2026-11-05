@@ -1179,7 +1179,6 @@ async fn sync_loop(
 
     loop {
         let cycle_started_at = unix_timestamp();
-
         let full_reconciliation =
             cycle_started_at.saturating_sub(last_full_reconciliation_at) >= 86400;
         let requested_since = if full_reconciliation {
@@ -1187,15 +1186,12 @@ async fn sync_loop(
         } else {
             graph_since
         };
-        if full_reconciliation {
-            let mut status = freshness.write().expect("freshness lock");
-            if status.forwarding_failures > 0 {
-                status.last_forward_reconciliation_at = None;
-            }
-            status.forwarding_failures = 0;
-            status.forwarding_last_failure = None;
-        }
-        let graph_success = match sync_graph_once(
+        // Retain failure evidence until a complete, durable repair succeeds.
+        let forwarding_failures_before = freshness
+            .read()
+            .expect("freshness lock")
+            .forwarding_failures;
+        let graph_error = sync_graph_once(
             &client,
             &config,
             &graph,
@@ -1204,17 +1200,10 @@ async fn sync_loop(
             forwarder.as_ref(),
         )
         .await
-        {
-            Ok(()) => true,
-            Err(error) => {
-                freshness
-                    .write()
-                    .expect("freshness lock poisoned")
-                    .consecutive_graph_failures += 1;
-                warn!("graph sync failed: {error}");
-                false
-            }
-        };
+        .err();
+        if let Some(error) = &graph_error {
+            warn!("graph crawl failed: {error}");
+        }
         if let Some(forwarder) = &forwarder {
             forwarder.drain().await;
         }
@@ -1226,41 +1215,82 @@ async fn sync_loop(
             }
         }
 
-        {
-            let graph_guard = graph.read().expect("graph lock poisoned");
-            persist_graph_checkpoint(&config, &graph_guard)?;
-            forwarding::refresh_allowlist(&graph_guard)?;
-        }
-        if graph_success {
-            graph_since = Some(cycle_started_at.saturating_sub(300));
+        // A failed write ends only this cycle. Keep the last committed cursors,
+        // in-memory graph and single worker alive for the normal interval retry.
+        let graph_result: Result<()> = (|| {
+            {
+                let graph_guard = graph.read().expect("graph lock poisoned");
+                persist_graph_checkpoint(&config, &graph_guard)?;
+                forwarding::refresh_allowlist(&graph_guard)?;
+            }
+            if let Some(error) = graph_error {
+                return Err(error);
+            }
             let now = unix_timestamp();
-            if full_reconciliation {
-                last_full_reconciliation_at = now;
-            }
+            let next_since = Some(cycle_started_at.saturating_sub(300));
+            let next_full = if full_reconciliation {
+                now
+            } else {
+                last_full_reconciliation_at
+            };
             let mut status = freshness.write().expect("freshness lock poisoned");
-            status.last_graph_success_at = Some(now);
-            status.last_graph_checkpoint_at = Some(now);
-            status.checkpoint_is_partial = false;
-            status.last_full_reconciliation_at = Some(last_full_reconciliation_at);
-            status.graph_since = graph_since;
-            status.consecutive_graph_failures = 0;
-            if full_reconciliation && status.forwarding_failures == 0 && status.forwarding_enabled {
-                status.last_forward_reconciliation_at = Some(now);
+            let mut committed = status.clone();
+            committed.last_graph_success_at = Some(now);
+            committed.last_graph_checkpoint_at = Some(now);
+            committed.checkpoint_is_partial = false;
+            committed.last_full_reconciliation_at = Some(next_full);
+            committed.graph_since = next_since;
+            committed.consecutive_graph_failures = 0;
+            if full_reconciliation && committed.forwarding_failures == forwarding_failures_before {
+                committed.forwarding_failures = 0;
+                committed.forwarding_last_failure = None;
+                if committed.forwarding_enabled {
+                    committed.last_forward_reconciliation_at = Some(now);
+                }
             }
-            write_graph_freshness(&config, &status)?;
+            write_graph_freshness(&config, &committed)?;
+            *status = committed;
+            graph_since = next_since;
+            last_full_reconciliation_at = next_full;
+            Ok(())
+        })();
+        let graph_committed = graph_result.is_ok();
+        if let Err(error) = graph_result {
+            let mut status = freshness.write().expect("freshness lock poisoned");
+            status.consecutive_graph_failures = status.consecutive_graph_failures.saturating_add(1);
+            // The HTTP status remains honest even if this small diagnostic write
+            // fails on the same filesystem. Neither error stops the sync worker.
+            if let Err(status_error) = write_graph_freshness(&config, &status) {
+                warn!("could not persist failed graph cycle status: {status_error}");
+            }
+            warn!("graph cycle remains incomplete; retrying after sync interval: {error}");
         }
+
         // Profiles cannot delay persisting a successfully reconciled graph.
-        match sync_profiles_once(&client, &config, &graph, &profiles, profile_since).await {
-            Ok(()) => profile_since = Some(cycle_started_at.saturating_sub(300)),
-            Err(error) => warn!("profile sync failed: {error}"),
+        let profile_error = sync_profiles_once(&client, &config, &graph, &profiles, profile_since)
+            .await
+            .err();
+        if let Some(error) = &profile_error {
+            warn!("profile sync failed: {error}");
         }
-        {
+        let profile_result: Result<()> = (|| {
             let profiles_guard = profiles.read().expect("profile lock poisoned");
             profiles_guard.save()?;
             profiles_guard.write_profile_index(&config.profile_index_path)?;
+            if let Some(error) = profile_error {
+                return Err(error);
+            }
+            Ok(())
+        })();
+        let profiles_committed = profile_result.is_ok();
+        match profile_result {
+            Ok(()) => profile_since = Some(cycle_started_at.saturating_sub(300)),
+            Err(error) => {
+                warn!("profile cycle remains incomplete; retrying after sync interval: {error}")
+            }
         }
         info!(
-            "sync complete: users={} profiles={}",
+            "sync cycle finished: graph_committed={graph_committed} profiles_committed={profiles_committed} users={} profiles={}",
             graph.read().expect("graph lock poisoned").size().users,
             profiles
                 .read()
@@ -1431,10 +1461,12 @@ async fn sync_graph_once(
         }
         {
             let mut status = freshness.write().expect("freshness lock");
-            status.last_graph_checkpoint_at = Some(unix_timestamp());
-            status.checkpoint_distance = Some(current_distance);
-            status.checkpoint_is_partial = true;
-            write_graph_freshness(config, &status)?;
+            let mut committed = status.clone();
+            committed.last_graph_checkpoint_at = Some(unix_timestamp());
+            committed.checkpoint_distance = Some(current_distance);
+            committed.checkpoint_is_partial = true;
+            write_graph_freshness(config, &committed)?;
+            *status = committed;
         }
         info!(
             "persisted PARTIAL graph crawl through distance {current_distance}; full repair is not complete"
