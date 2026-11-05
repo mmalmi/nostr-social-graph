@@ -298,6 +298,9 @@ fn fuse_norm(value: &str) -> FuseNorm {
 pub struct GraphFreshness {
     pub started_at: u64,
     pub last_graph_success_at: Option<u64>,
+    pub last_graph_checkpoint_at: Option<u64>,
+    pub checkpoint_distance: Option<u32>,
+    pub checkpoint_is_partial: bool,
     pub last_full_reconciliation_at: Option<u64>,
     pub last_graph_progress_at: Option<u64>,
     pub last_live_event_at: Option<u64>,
@@ -539,6 +542,42 @@ pub fn persist_graph_snapshot(
         .replace_state(&graph.export_state())
         .map_err(|error| ServerError::Io(std::io::Error::other(error.to_string())))?;
     info!("persisted graph snapshot to {}", graph_db_dir.display());
+    Ok(())
+}
+
+fn persist_graph_checkpoint(config: &ServerConfig, graph: &SocialGraph) -> Result<()> {
+    // Account for worst-case filesystem block amplification plus tree nodes.
+    // Check before the checkpoint writer allocates any new blobs; preserve the
+    // host reserve even while the old and rollback generations coexist.
+    let bytes = graph
+        .to_binary()
+        .map_err(|error| ServerError::Io(std::io::Error::other(error.to_string())))?;
+    let peak_growth = (bytes.len() as u64)
+        .saturating_mul(5)
+        .saturating_add(32 * 1024 * 1024);
+    drop(bytes);
+    let reserve = std::env::var("GRAPH_CHECKPOINT_MIN_FREE_BYTES")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(5 * 1024 * 1024 * 1024);
+    let free = forwarding::free_bytes(&config.data_dir).ok_or_else(|| {
+        ServerError::Io(std::io::Error::other(
+            "Cannot verify graph checkpoint filesystem capacity",
+        ))
+    })?;
+    if free.saturating_sub(reserve) < peak_growth {
+        return Err(ServerError::Io(std::io::Error::other(format!(
+            "Graph checkpoint would consume host reserve: free={free}, reserve={reserve}, peak_growth={peak_growth}"
+        ))));
+    }
+    persist_graph_snapshot(&config.root, &config.graph_db_dir, graph)
+}
+
+fn write_graph_freshness(config: &ServerConfig, status: &GraphFreshness) -> Result<()> {
+    let status_path = config.data_dir.join("graph-freshness.json");
+    let temporary = config.data_dir.join("graph-freshness.json.tmp");
+    fs::write(&temporary, serde_json::to_vec(status)?)?;
+    fs::rename(temporary, status_path)?;
     Ok(())
 }
 
@@ -1163,7 +1202,7 @@ async fn sync_loop(
 
         {
             let graph_guard = graph.read().expect("graph lock poisoned");
-            persist_graph_snapshot(&config.root, &config.graph_db_dir, &graph_guard)?;
+            persist_graph_checkpoint(&config, &graph_guard)?;
             forwarding::refresh_allowlist(&graph_guard)?;
         }
         if graph_success {
@@ -1174,16 +1213,15 @@ async fn sync_loop(
             }
             let mut status = freshness.write().expect("freshness lock poisoned");
             status.last_graph_success_at = Some(now);
+            status.last_graph_checkpoint_at = Some(now);
+            status.checkpoint_is_partial = false;
             status.last_full_reconciliation_at = Some(last_full_reconciliation_at);
             status.graph_since = graph_since;
             status.consecutive_graph_failures = 0;
             if full_reconciliation && status.forwarding_failures == 0 && status.forwarding_enabled {
                 status.last_forward_reconciliation_at = Some(now);
             }
-            let status_path = config.data_dir.join("graph-freshness.json");
-            let temporary = config.data_dir.join("graph-freshness.json.tmp");
-            fs::write(&temporary, serde_json::to_vec(&*status)?)?;
-            fs::rename(temporary, status_path)?;
+            write_graph_freshness(&config, &status)?;
         }
         // Profiles cannot delay persisting a successfully reconciled graph.
         match sync_profiles_once(&client, &config, &graph, &profiles, profile_since).await {
@@ -1361,6 +1399,20 @@ async fn sync_graph_once(
             }
         }
 
+        {
+            let guard = graph.read().expect("graph lock");
+            persist_graph_checkpoint(config, &guard)?;
+        }
+        {
+            let mut status = freshness.write().expect("freshness lock");
+            status.last_graph_checkpoint_at = Some(unix_timestamp());
+            status.checkpoint_distance = Some(current_distance);
+            status.checkpoint_is_partial = true;
+            write_graph_freshness(config, &status)?;
+        }
+        info!(
+            "persisted PARTIAL graph crawl through distance {current_distance}; full repair is not complete"
+        );
         current_distance = current_distance.saturating_add(1);
     }
 

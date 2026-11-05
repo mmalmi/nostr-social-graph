@@ -183,7 +183,7 @@ fn forwardable(event: &Event) -> bool {
 
 // POSIX df is present in supported server images. Fail closed if its output is
 // unavailable; forwarding must never consume the configured filesystem reserve.
-fn free_bytes(path: &Path) -> Option<u64> {
+pub(crate) fn free_bytes(path: &Path) -> Option<u64> {
     let output = std::process::Command::new("df")
         .args(["-Pk"])
         .arg(path)

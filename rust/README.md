@@ -109,3 +109,13 @@ consuming that reserve. Protected events and events beyond the relay's 512-KiB /
 25,000-tag admission limits are intentionally not forwarded. Clients should retain
 other relay sources for these records. First complete forwarding reconciliation is
 reported separately from graph crawl freshness.
+
+
+Completed crawl distances create explicitly **partial** durable checkpoints;
+these never advance the full-pass watermark or make `/healthz` healthy. The
+checkpoint writer first budgets filesystem growth from the serialized snapshot
+and refuses to consume `GRAPH_CHECKPOINT_MIN_FREE_BYTES` (five GiB by default).
+`nostr-social-graph-server --check-checkpoint` reloads and verifies the durable
+Hashtree checkpoint and prints counts/revision coverage without connecting to
+relays. This allows deployment acceptance to verify recovery while a larger full
+repair is still in progress.

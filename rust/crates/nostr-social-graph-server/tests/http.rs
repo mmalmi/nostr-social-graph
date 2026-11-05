@@ -244,6 +244,9 @@ fn freshness_requires_successful_recent_repair_and_live_loop() {
     let mut status = GraphFreshness::default();
     assert!(!status.healthy_at(200_000));
     status.live_connected = true;
+    status.last_graph_checkpoint_at = Some(199_999);
+    status.checkpoint_is_partial = true;
+    assert!(!status.healthy_at(200_000));
     status.last_graph_success_at = Some(199_999);
     status.last_full_reconciliation_at = Some(199_999);
     assert!(status.healthy_at(200_000));
