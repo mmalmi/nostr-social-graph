@@ -16,6 +16,7 @@ export const CRAWL_DISTANCE_DEFAULT = 4;
 
 // Relay URLs
 export const RELAY_URLS = [
+  "wss://relay.ditto.pub",
   "wss://relay.snort.social",
   "wss://relay.damus.io",
   "wss://relay.nostr.band",

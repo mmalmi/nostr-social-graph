@@ -111,7 +111,7 @@ export async function syncGraphLists(options:GraphSyncOptions):Promise<GraphSync
           }
           send(['NEG-CLOSE',id]);
           stats.batches++;
-          const requests=Array.from(needed).reduce<{ids:string[]}[]>((all,eventId,i)=>{if(i%128===0)all.push({ids:[]});all[all.length-1].ids.push(eventId);return all;},[]);
+          const requests=Array.from(needed).reduce<{ids:string[]}[]>((all,eventId,i)=>{if(i%64===0)all.push({ids:[]});all[all.length-1].ids.push(eventId);return all;},[]);
           for(const request of requests){
             const pending=new Set(request.ids);
             const req=`g${++serial}`;send(['REQ',req,request]);const until=Date.now()+timeout;

@@ -23,7 +23,7 @@ for(const changed of [0,30,300,3000]){
   }
   wire+=Buffer.byteLength(JSON.stringify(['NEG-CLOSE','g']));
   const needs=[...needIds];downloadIds+=needs.length;
-  for(let i=0;i<needs.length;i+=128)wire+=Buffer.byteLength(JSON.stringify(['REQ','g',{ids:needs.slice(i,i+128)}]));
+  for(let i=0;i<needs.length;i+=64)wire+=Buffer.byteLength(JSON.stringify(['REQ','g',{ids:needs.slice(i,i+64)}]));
  }
  const example=JSON.stringify({kind:3,pubkey:id('author'),created_at:1700000000,id:id('event'),sig:'a'.repeat(128),content:'',tags:Array.from({length:100},(_,i)=>['p',id(`follows:${i}`)])});
  rows.push({authors:30000,revisionCount:60000,changedAuthors:changed,downloadIds,reconciliationAndRequestBytes:wire,roundTrips:rounds,cpuWallMs:Math.round(performance.now()-started),illustrativeChangedEventBytes:downloadIds*Buffer.byteLength(example),illustrativeEventGzipBytes:gzipSync(example).length});
