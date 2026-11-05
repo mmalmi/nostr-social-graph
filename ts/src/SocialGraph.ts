@@ -473,67 +473,24 @@ export class SocialGraph {
     return this.muteListCreatedAt.get(this.id(user))
   }
 
-  merge(other: SocialGraph): Promise<void> {
-    return new Promise((resolve) => {
-      console.log('size before merge', this.size());
-      console.time('merge graph');
-      
-      // Lists belong to the source graph's ID space. Include timestamp-only
-      // empty lists and disconnected authors so newer removals are not lost.
-      const users = Array.from(new Set([
-        ...other.followListCreatedAt.keys(),
-        ...other.followedByUser.keys(),
-        ...other.muteListCreatedAt.keys(),
-        ...other.mutedByUser.keys(),
-      ]));
-      let processedCount = 0;
-
-      const processNextUser = () => {
-        if (processedCount >= users.length) {
-          // All users processed, now recalculate distances
-          this.recalculateFollowDistances().then(() => {
-            console.timeEnd('merge graph');
-            console.log('size after merge', this.size());
-            resolve();
-          });
-          return;
-        }
-
-        const user = users[processedCount];
-        
-        this.mergeUserLists(
-          user,
-          other,
-          this.followListCreatedAt,
-          other.followListCreatedAt,
-          this.followedByUser,
-          other.followedByUser,
-          this.followersByUser
-        );
-
-        this.mergeUserLists(
-          user,
-          other,
-          this.muteListCreatedAt,
-          other.muteListCreatedAt,
-          this.mutedByUser,
-          other.mutedByUser,
-          this.userMutedBy
-        );
-        
-        processedCount++;
-
-        // Schedule next user processing
-        setTimeout(processNextUser, 0);
-      };
-
-      // Start processing
-      setTimeout(processNextUser, 0);
-    });
+  async merge(other: SocialGraph): Promise<void> {
+    // Lists belong to the source graph's ID space. Timestamp-only empty lists
+    // and disconnected authors must survive a merge too.
+    const users = new Set([
+      ...other.followListCreatedAt.keys(), ...other.followedByUser.keys(),
+      ...other.muteListCreatedAt.keys(), ...other.mutedByUser.keys(),
+    ]);
+    let processed = 0;
+    for (const user of users) {
+      this.mergeUserLists(user, other, this.followListCreatedAt, other.followListCreatedAt,
+        this.followedByUser, other.followedByUser, this.followersByUser);
+      this.mergeUserLists(user, other, this.muteListCreatedAt, other.muteListCreatedAt,
+        this.mutedByUser, other.mutedByUser, this.userMutedBy);
+      // Yield in bounded batches rather than imposing one timer per identity.
+      if (++processed % 256 === 0) await new Promise(resolve => setTimeout(resolve, 0));
+    }
+    await this.recalculateFollowDistances();
   }
-
-
-
 
   private mergeUserLists(
     theirUserId: number,
