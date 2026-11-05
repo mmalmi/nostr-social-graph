@@ -3,6 +3,10 @@ import {SocialGraph} from '../src/SocialGraph';
 const key = (n:number) => n.toString(16).padStart(64,'0');
 const event = (kind:number, id=2, at=100, targets=[1,2]) => ({pubkey:key(0),kind,id:key(id),created_at:at,tags:targets.map(n=>['p',key(n)]),content:'',sig:''});
 describe('list revisions', () => {
+  it.each([2,3,4])('rejects truncated and overlong version %i binary integers promptly', async version => {
+    await expect(SocialGraph.fromBinary(key(0),new Uint8Array([version,0,255,255,255,255,7]))).rejects.toThrow();
+    await expect(SocialGraph.fromBinary(key(0),new Uint8Array([version,...Array(20).fill(255)]))).rejects.toThrow();
+  });
   it.each([3,10000])('keeps winning kind %i revision, including empty lists', async kind => {
     const g = new SocialGraph(key(0));
     expect(g.handleEvent(event(kind))).toBe(true);

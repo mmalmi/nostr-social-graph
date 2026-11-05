@@ -161,21 +161,16 @@ function writeBinaryNodeId(
 // Variable-length integer decoding
 function decodeVarint(bytes: Uint8Array, offset: number): { value: number; bytesRead: number } {
     let value = 0;
-    let shift = 0;
-    let bytesRead = 0;
-    
-    for (let i = offset; i < bytes.length; i++) {
-        const byte = bytes[i];
-        value |= (byte & 0x7F) << shift;
-        bytesRead++;
-        
-        if ((byte & 0x80) === 0) {
-            break;
-        }
-        shift += 7;
+    let multiplier = 1;
+    for (let bytesRead = 1; bytesRead <= 8; bytesRead++) {
+        if (offset + bytesRead > bytes.length) throw new Error('Unexpected end of binary data');
+        const byte = bytes[offset + bytesRead - 1];
+        value += (byte & 0x7f) * multiplier;
+        if (!Number.isSafeInteger(value)) throw new Error('Binary integer exceeds safe range');
+        if ((byte & 0x80) === 0) return {value, bytesRead};
+        multiplier *= 128;
     }
-    
-    return { value, bytesRead };
+    throw new Error('Invalid binary integer');
 }
 
 // All integers use varint encoding for consistency and simplicity

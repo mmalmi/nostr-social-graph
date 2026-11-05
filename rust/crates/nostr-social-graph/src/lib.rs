@@ -774,6 +774,109 @@ impl SocialGraph {
         self.serialize_binary(&plan, version)
     }
 
+    /// Produce a bounded discovery graph rooted at `root` without cloning the
+    /// source graph or recalculating its global distances. Traversal follows the
+    /// retained prefixes, so its working memory is bounded by the node budget.
+    pub fn to_binary_for_root_with_budget(
+        &self,
+        root: &str,
+        budget: BinaryBudget,
+    ) -> Result<Vec<u8>> {
+        let Some(root) = self.ids.existing_id(root) else {
+            return Self::new(root).to_binary_with_budget(budget);
+        };
+        let max_nodes = budget.max_nodes.filter(|n| *n > 0);
+        let max_edges = budget.max_edges.filter(|n| *n > 0);
+        let per_owner = budget.max_edges_per_node.filter(|n| *n > 0);
+        let mut used_ids = IndexSet::new();
+        let mut follow_edge_count = IndexMap::new();
+        let mut mute_edge_count = IndexMap::new();
+        let mut distances = IndexMap::from([(root, 0u32)]);
+        let mut queue = VecDeque::from([root]);
+        let mut edge_count = 0;
+        'owners: while let Some(owner) = queue.pop_front() {
+            let distance = distances[&owner];
+            if budget.max_distance.is_some_and(|limit| distance > limit) {
+                continue;
+            }
+            let mut owner_edges = 0;
+            for (kind, lists, counts) in [
+                (3, &self.followed_by_user, &mut follow_edge_count),
+                (10_000, &self.muted_by_user, &mut mute_edge_count),
+            ] {
+                for target in lists.get(&owner).into_iter().flatten().copied() {
+                    if per_owner.is_some_and(|limit| owner_edges >= limit) {
+                        break;
+                    }
+                    if max_edges.is_some_and(|limit| edge_count >= limit) {
+                        break 'owners;
+                    }
+                    if self.ids.str(target).is_err() {
+                        continue;
+                    }
+                    let added = usize::from(!used_ids.contains(&owner))
+                        + usize::from(!used_ids.contains(&target));
+                    if max_nodes.is_some_and(|limit| used_ids.len() + added > limit) {
+                        break 'owners;
+                    }
+                    used_ids.insert(owner);
+                    used_ids.insert(target);
+                    *counts.entry(owner).or_insert(0) += 1;
+                    edge_count += 1;
+                    owner_edges += 1;
+                    if kind == 3 && !distances.contains_key(&target) {
+                        distances.insert(target, distance.saturating_add(1));
+                        queue.push_back(target);
+                    }
+                }
+            }
+        }
+        let mut empty_candidates = used_ids.clone();
+        empty_candidates.insert(root);
+        for owner in empty_candidates {
+            let Some(distance) = distances.get(&owner) else {
+                continue;
+            };
+            if budget.max_distance.is_some_and(|limit| *distance > limit)
+                || (!used_ids.contains(&owner)
+                    && max_nodes.is_some_and(|limit| used_ids.len() >= limit))
+            {
+                continue;
+            }
+            for (lists, timestamps, counts) in [
+                (
+                    &self.followed_by_user,
+                    &self.follow_list_created_at,
+                    &mut follow_edge_count,
+                ),
+                (
+                    &self.muted_by_user,
+                    &self.mute_list_created_at,
+                    &mut mute_edge_count,
+                ),
+            ] {
+                if lists.get(&owner).is_none_or(|targets| targets.is_empty())
+                    && (lists.contains_key(&owner) || timestamps.contains_key(&owner))
+                {
+                    used_ids.insert(owner);
+                    counts.insert(owner, 0);
+                }
+            }
+        }
+        let follow_owners = follow_edge_count.keys().copied().collect();
+        let mute_owners = mute_edge_count.keys().copied().collect();
+        self.serialize_binary(
+            &BinaryPlan {
+                used_ids,
+                follow_edge_count,
+                mute_edge_count,
+                follow_owners,
+                mute_owners,
+            },
+            BINARY_FORMAT_VERSION,
+        )
+    }
+
     pub fn to_binary_chunks(&self) -> Result<Vec<Vec<u8>>> {
         self.to_binary_chunks_with_budget(BinaryBudget::default())
     }
@@ -1081,7 +1184,7 @@ impl SocialGraph {
             return Err(SocialGraphError::InvalidVersion(version));
         }
 
-        let ids_count = read_varint(data, &mut offset)? as usize;
+        let ids_count = read_count(data, &mut offset)?;
         let mut unique_ids = Vec::with_capacity(ids_count);
         for _ in 0..ids_count {
             let (value, id) = read_binary_node_id(version, data, &mut offset)?;
@@ -1092,7 +1195,7 @@ impl SocialGraph {
         }
 
         let mut revisions = IndexMap::new();
-        let follow_lists_count = read_varint(data, &mut offset)? as usize;
+        let follow_lists_count = read_count(data, &mut offset)?;
         let mut follow_lists = Vec::with_capacity(follow_lists_count);
         for _ in 0..follow_lists_count {
             let user = read_varint(data, &mut offset)? as u32;
@@ -1102,7 +1205,7 @@ impl SocialGraph {
                     revisions.insert((user, 3), revision);
                 }
             }
-            let followed_count = read_varint(data, &mut offset)? as usize;
+            let followed_count = read_count(data, &mut offset)?;
             let mut followed = Vec::with_capacity(followed_count);
             for _ in 0..followed_count {
                 followed.push(read_varint(data, &mut offset)? as u32);
@@ -1110,7 +1213,7 @@ impl SocialGraph {
             follow_lists.push((user, followed, timestamp));
         }
 
-        let mute_lists_count = read_varint(data, &mut offset)? as usize;
+        let mute_lists_count = read_count(data, &mut offset)?;
         let mut mute_lists = Vec::with_capacity(mute_lists_count);
         for _ in 0..mute_lists_count {
             let user = read_varint(data, &mut offset)? as u32;
@@ -1120,7 +1223,7 @@ impl SocialGraph {
                     revisions.insert((user, 10000), revision);
                 }
             }
-            let muted_count = read_varint(data, &mut offset)? as usize;
+            let muted_count = read_count(data, &mut offset)?;
             let mut muted = Vec::with_capacity(muted_count);
             for _ in 0..muted_count {
                 muted.push(read_varint(data, &mut offset)? as u32);
@@ -1573,12 +1676,25 @@ fn write_varint(out: &mut Vec<u8>, mut value: u64) {
     out.push((value & 0x7f) as u8);
 }
 
+fn read_count(data: &[u8], offset: &mut usize) -> Result<usize> {
+    let value = read_varint(data, offset)?;
+    // Every item needs at least one encoded byte. Reject attacker-controlled
+    // capacity requests before allocating even for legacy snapshots.
+    if value > data.len().saturating_sub(*offset) as u64 {
+        return Err(SocialGraphError::UnexpectedEof);
+    }
+    Ok(value as usize)
+}
+
 fn read_varint(data: &[u8], offset: &mut usize) -> Result<u64> {
     let mut value = 0u64;
     let mut shift = 0u32;
     loop {
         let byte = *data.get(*offset).ok_or(SocialGraphError::UnexpectedEof)?;
         *offset += 1;
+        if shift >= 64 || (shift == 63 && byte > 1) {
+            return Err(SocialGraphError::UnexpectedEof);
+        }
         value |= u64::from(byte & 0x7f) << shift;
         if byte & 0x80 == 0 {
             return Ok(value);
