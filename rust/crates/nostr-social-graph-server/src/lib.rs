@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs;
-use std::net::Ipv4Addr;
+use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -604,6 +604,14 @@ pub async fn run(config: ServerConfig) -> Result<()> {
             "RELAY_URLS must contain at least one Nostr relay for graph syncing",
         )));
     }
+    let configured_bind = match std::env::var("BIND_ADDRESS") {
+        Ok(value) => Some(value),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(error) => {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, error).into());
+        }
+    };
+    let listen_address = parse_listen_address(configured_bind.as_deref(), config.port)?;
     fs::create_dir_all(&config.data_dir)?;
     // Filesystem modification time is not a successful crawl watermark. Always
     // repair all known lists on startup, also hydrating legacy revision IDs.
@@ -699,9 +707,24 @@ pub async fn run(config: ServerConfig) -> Result<()> {
     });
 
     let app = build_router_with_cors(state, config.allow_origin.as_deref());
-    let listener = tokio::net::TcpListener::bind((Ipv4Addr::UNSPECIFIED, config.port)).await?;
-    info!("server listening on http://0.0.0.0:{}", config.port);
+    let listener = tokio::net::TcpListener::bind(listen_address).await?;
+    info!("server listening on http://{}", listener.local_addr()?);
     axum::serve(listener, app).await.map_err(ServerError::from)
+}
+
+// Containers retain their existing default; native services can select loopback
+// without restricting the crawler's outbound relay connections.
+fn parse_listen_address(address: Option<&str>, port: u16) -> Result<SocketAddr> {
+    let ip = address
+        .unwrap_or("0.0.0.0")
+        .parse::<IpAddr>()
+        .map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "BIND_ADDRESS must be an IPv4 or IPv6 address",
+            )
+        })?;
+    Ok(SocketAddr::new(ip, port))
 }
 
 #[derive(Debug, Deserialize)]
@@ -1780,6 +1803,27 @@ fn unix_timestamp() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn explicit_loopback_binding_does_not_open_all_interfaces() {
+        let address = parse_listen_address(Some("127.0.0.1"), 0).unwrap();
+        let listener = tokio::net::TcpListener::bind(address).await.unwrap();
+        assert!(listener.local_addr().unwrap().ip().is_loopback());
+        assert!(
+            parse_listen_address(Some("::1"), 3000)
+                .unwrap()
+                .ip()
+                .is_loopback()
+        );
+        assert!(
+            parse_listen_address(None, 3000)
+                .unwrap()
+                .ip()
+                .is_unspecified()
+        );
+        assert!(parse_listen_address(Some("localhost"), 3000).is_err());
+        assert!(parse_listen_address(Some(""), 3000).is_err());
+    }
 
     #[tokio::test]
     async fn server_rejects_missing_crawl_relays_before_opening_data() {
