@@ -1251,7 +1251,16 @@ async fn notification_loop(
 
     loop {
         match notifications.recv().await {
-            Ok(RelayPoolNotification::Event { event, .. }) => {
+            Ok(RelayPoolNotification::Event {
+                subscription_id,
+                event,
+                ..
+            }) => {
+                // The bounded batch collector owns crawl events. Processing them
+                // here too doubles forwarding and can overflow the live queue.
+                if subscription_id.as_str().starts_with("graph-crawl-") {
+                    continue;
+                }
                 if matches!(event.kind.as_u16(), 3 | 10000) {
                     freshness
                         .write()
@@ -1362,7 +1371,7 @@ async fn sync_graph_once(
 // A crawl watermark requires an actual EOSE, not merely a completed timeout.
 async fn fetch_graph_batch(client: &NostrClient, filter: Filter) -> Result<Vec<nostr_sdk::Event>> {
     use nostr_sdk::{RelayMessage, SubscriptionId};
-    let id = SubscriptionId::generate();
+    let id = SubscriptionId::new(format!("graph-crawl-{}", SubscriptionId::generate()));
     let mut notifications = client.notifications();
     let subscribed = client
         .subscribe_with_id(id.clone(), filter.clone(), None)
@@ -1385,8 +1394,7 @@ async fn fetch_graph_batch(client: &NostrClient, filter: Filter) -> Result<Vec<n
                         subscription_id,
                         event,
                     } if subscription_id.as_ref() == &id => {
-                        if filter.match_event(&event, Default::default())
-                            && event.verify().is_ok()
+                        if filter.match_event(&event, Default::default()) && event.verify().is_ok()
                         {
                             let key = (event.pubkey.to_hex(), event.kind.as_u16());
                             let replace = winners.get(&key).is_none_or(|old| {

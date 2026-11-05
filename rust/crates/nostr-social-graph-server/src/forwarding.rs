@@ -39,6 +39,7 @@ impl Forwarder {
             .await
             .map_err(|e| ServerError::Io(std::io::Error::other(e.to_string())))?;
         client.connect().await;
+        client.wait_for_connection(Duration::from_secs(5)).await;
         let (sender, mut receiver) = mpsc::channel(256);
         let state = Arc::clone(&freshness);
         let path = data_dir.to_path_buf();
@@ -81,14 +82,26 @@ impl Forwarder {
                         if let Some((_, available)) = disk_check.as_mut() {
                             *available = available.saturating_sub(cost);
                         }
-                        let accepted = matches!(tokio::time::timeout(Duration::from_secs(5), client.send_event(&event)).await,
-                            Ok(Ok(output)) if !output.success.is_empty());
+                        let (accepted, transport_failure) = match tokio::time::timeout(
+                            Duration::from_secs(5),
+                            client.send_event(&event),
+                        )
+                        .await
+                        {
+                            Ok(Ok(output)) => classify_delivery(
+                                !output.success.is_empty(),
+                                output.failed.values().map(String::as_str),
+                            ),
+                            _ => (false, true),
+                        };
                         let mut status = state.write().expect("freshness lock");
                         if accepted {
                             status.last_forwarded_at = Some(crate::unix_timestamp());
                         } else {
                             status.forwarding_failures += 1;
-                            retry_after = Some(Instant::now() + Duration::from_secs(30));
+                            if transport_failure {
+                                retry_after = Some(Instant::now() + Duration::from_secs(30));
+                            }
                         }
                     }
                 }
@@ -135,6 +148,29 @@ impl Forwarder {
                 .forwarding_failures += 1;
         }
     }
+}
+
+// A relay that already holds a newer replaceable head is synchronized. A
+// per-event policy rejection must not pause delivery for unrelated authors.
+fn classify_delivery<'a>(accepted: bool, failures: impl Iterator<Item = &'a str>) -> (bool, bool) {
+    if accepted {
+        return (true, false);
+    }
+    let failures: Vec<_> = failures.collect();
+    if !failures.is_empty()
+        && failures
+            .iter()
+            .all(|failure| failure.contains("replaced: have newer event"))
+    {
+        return (true, false);
+    }
+    let transport_failure = failures.is_empty()
+        || failures.iter().any(|failure| {
+            failure.contains("not connected")
+                || failure.contains("timeout")
+                || failure.contains("Timeout")
+        });
+    (false, transport_failure)
 }
 
 fn forwardable(event: &Event) -> bool {
@@ -184,6 +220,29 @@ pub(crate) fn refresh_allowlist(graph: &nostr_social_graph::SocialGraph) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn newer_heads_and_individual_rejections_do_not_pause_other_authors() {
+        assert_eq!(
+            classify_delivery(
+                false,
+                ["event not published: replaced: have newer event"].into_iter()
+            ),
+            (true, false)
+        );
+        assert_eq!(
+            classify_delivery(
+                false,
+                ["event not published: blocked: author outside graph"].into_iter()
+            ),
+            (false, false)
+        );
+        assert_eq!(
+            classify_delivery(false, ["relay not connected"].into_iter()),
+            (false, true)
+        );
+        assert_eq!(classify_delivery(true, [].into_iter()), (true, false));
+    }
+
     #[test]
     fn forwarding_only_admits_verified_public_graph_lists() {
         use nostr_sdk::{EventBuilder, Kind, Tag};
