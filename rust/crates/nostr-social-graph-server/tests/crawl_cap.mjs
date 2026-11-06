@@ -21,7 +21,9 @@ const owned=new Set();const overallDeadline=setTimeout(()=>{for(const child of o
 mkdirSync(output,{recursive:true});const disk=statfsSync(output);assert(disk.bavail*disk.bsize>=20*1024**3,'20 GiB fixture reserve');
 const keys=Array.from({length:128},(_,i)=>{const key=new Uint8Array(32);key[31]=i+1;return key});
 const authors=keys.map(getPublicKey),root=authors[0],at=Math.floor(Date.now()/1000)-10;
-const events=keys.flatMap((key,i)=>[3,10000].map(kind=>finalizeEvent({kind,created_at:at,content:'',tags:(kind===3?(i===0?authors.slice(1):[root]):[authors[(i+1)%128]]).map(pubkey=>['p',pubkey])},key)));
+// Mute only the root (which is exempt from overmute admission); every author
+// under the batch-cap test must remain eligible for both signed list heads.
+const events=keys.flatMap((key,i)=>[3,10000].map(kind=>finalizeEvent({kind,created_at:at,content:'',tags:(kind===3?(i===0?authors.slice(1):[root]):[root]).map(pubkey=>['p',pubkey])},key)));
 const matches=(event,filter)=>(!filter.kinds||filter.kinds.includes(event.kind))&&(!filter.authors||filter.authors.includes(event.pubkey))&&(!filter.ids||filter.ids.includes(event.id))&&(filter.since===undefined||event.created_at>=filter.since);
 const source=new WebSocketServer({host:'127.0.0.1',port:0});await once(source,'listening');
 const sink=new WebSocketServer({host:'127.0.0.1',port:0});await once(sink,'listening');
