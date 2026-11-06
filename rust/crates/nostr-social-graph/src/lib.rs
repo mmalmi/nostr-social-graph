@@ -8,6 +8,10 @@ use uuid::Uuid;
 #[cfg(test)]
 mod prune_tests;
 
+#[cfg(test)]
+mod alias_tests;
+mod aliases;
+
 mod revision;
 pub use revision::*;
 
@@ -29,6 +33,8 @@ pub enum SocialGraphError {
     EmptyString,
     #[error("invalid id {0}")]
     InvalidId(u32),
+    #[error("snapshot contains conflicting latest follow lists for node {0}")]
+    ConflictingFollowLists(u32),
     #[error("invalid binary version {0}")]
     InvalidVersion(u64),
     #[error("unexpected end of binary data")]
@@ -169,6 +175,8 @@ struct UniqueIds {
 
 impl UniqueIds {
     fn id(&mut self, value: &str) -> Result<u32> {
+        let value = aliases::canonical_node_id(value);
+        let value = value.as_ref();
         if value.trim().is_empty() {
             return Err(SocialGraphError::EmptyString);
         }
@@ -183,7 +191,9 @@ impl UniqueIds {
     }
 
     fn existing_id(&self, value: &str) -> Option<u32> {
-        self.str_to_unique_id.get(value).copied()
+        self.str_to_unique_id
+            .get(aliases::canonical_node_id(value).as_ref())
+            .copied()
     }
 
     fn str(&self, id: u32) -> Result<&str> {
@@ -713,6 +723,7 @@ impl SocialGraph {
     }
 
     pub fn from_state(state: SocialGraphState) -> Result<Self> {
+        let (state, aliases_repaired) = aliases::canonicalize(state)?;
         let mut graph = Self::new(&state.root);
         graph.ids.clear();
         graph.follow_distance_by_user.clear();
@@ -770,6 +781,9 @@ impl SocialGraph {
             graph.mute_list_created_at.insert(user, created_at);
         }
 
+        if aliases_repaired {
+            graph.recalculate_follow_distances();
+        }
         Ok(graph)
     }
 
@@ -1251,52 +1265,58 @@ impl SocialGraph {
             mute_lists.push((user, muted, timestamp));
         }
 
-        let mut graph = Self::new(root);
-        graph.ids.clear();
-        graph.follow_distance_by_user.clear();
-        graph.users_by_follow_distance.clear();
-        graph.followed_by_user.clear();
-        graph.followers_by_user.clear();
-        graph.follow_list_created_at.clear();
-        graph.muted_by_user.clear();
-        graph.user_muted_by.clear();
-        graph.mute_list_created_at.clear();
-
-        graph.list_revisions = revisions;
-        for (value, id) in unique_ids {
-            graph.ids.insert_with_id(value, id);
-        }
-
-        graph.root = graph.ids.id(root)?;
-
-        for (follower, followed_users, created_at) in follow_lists {
-            graph
-                .followed_by_user
-                .insert(follower, followed_users.iter().copied().collect());
-            for followed_user in followed_users {
-                graph
-                    .followers_by_user
-                    .entry(followed_user)
-                    .or_default()
-                    .insert(follower);
+        let (followed_by_user, follow_list_created_at): (Vec<_>, Vec<_>) = follow_lists
+            .into_iter()
+            .map(|(owner, targets, at)| ((owner, targets), (owner, at)))
+            .unzip();
+        let (muted_by_user, mute_list_created_at): (Vec<_>, Vec<_>) = mute_lists
+            .into_iter()
+            .map(|(owner, targets, at)| ((owner, targets), (owner, at)))
+            .unzip();
+        let state = SocialGraphState {
+            root: root.to_owned(),
+            unique_ids,
+            list_revisions: revisions
+                .into_iter()
+                .map(|((owner, kind), r)| (owner, kind, r))
+                .collect(),
+            followed_by_user,
+            follow_list_created_at,
+            muted_by_user,
+            mute_list_created_at,
+            followers_by_user: Vec::new(),
+            user_muted_by: Vec::new(),
+            follow_distance_by_user: Vec::new(),
+            users_by_follow_distance: Vec::new(),
+        };
+        let mut graph = Self::from_state(state)?;
+        // Alias repair already derives reverse indexes and distances. Ordinary
+        // snapshots need these derived once after loading their forward lists.
+        if graph.followers_by_user.is_empty() {
+            for (owner, targets) in &graph.followed_by_user {
+                for target in targets {
+                    graph
+                        .followers_by_user
+                        .entry(*target)
+                        .or_default()
+                        .insert(*owner);
+                }
             }
-            graph.follow_list_created_at.insert(follower, created_at);
         }
-
-        for (muter, muted_users, created_at) in mute_lists {
-            let entry = graph.muted_by_user.entry(muter).or_default();
-            for muted_user in muted_users {
-                entry.insert(muted_user);
-                graph
-                    .user_muted_by
-                    .entry(muted_user)
-                    .or_default()
-                    .insert(muter);
+        if graph.user_muted_by.is_empty() {
+            for (owner, targets) in &graph.muted_by_user {
+                for target in targets {
+                    graph
+                        .user_muted_by
+                        .entry(*target)
+                        .or_default()
+                        .insert(*owner);
+                }
             }
-            graph.mute_list_created_at.insert(muter, created_at);
         }
-
-        graph.recalculate_follow_distances();
+        if graph.follow_distance_by_user.is_empty() {
+            graph.recalculate_follow_distances();
+        }
 
         Ok(graph)
     }
