@@ -85,19 +85,15 @@ try:
         result.update(passed=True,boundaryOnly=True)
     else:
         counts=dict(passed=0,failed=0,ignored=0)
-        if config.get('runtimeOnly'):
-            counts=config['reusedUnitCounts']
-            assert counts==dict(passed=286,failed=0,ignored=1)
-        else:
-            for i,harness in enumerate(config['harnesses']):
-                assert sha(harness['path'])==harness['sha256']
-                log=run(f'unit-{i:02d}-{harness["target"]["name"]}',[harness['path'],'--test-threads=1'],180,cwd=harness['cwd'])
-                matches=re.findall(r'test result: ok\. (\d+) passed; (\d+) failed; (\d+) ignored;',log.read_text())
-                assert len(matches)==1,'Missing exact harness result'
-                for k,n in zip(counts,matches[0]):counts[k]+=int(n)
-            core=[h for h in config['harnesses'] if h['target']['name']=='nostr_social_graph' and 'lib' in h['target']['kind']]
-            assert len(core)==1
-            run('release-prune-benchmark',[core[0]['path'],'--exact','prune_tests::bulk_pruning_sparse_graph_benchmark','--ignored','--nocapture','--test-threads=1'],120,cwd=core[0]['cwd'])
+        for i,harness in enumerate(config['harnesses']):
+            assert sha(harness['path'])==harness['sha256']
+            log=run(f'unit-{i:02d}-{harness["target"]["name"]}',[harness['path'],'--test-threads=1'],180,cwd=harness['cwd'])
+            matches=re.findall(r'test result: ok\. (\d+) passed; (\d+) failed; (\d+) ignored;',log.read_text())
+            assert len(matches)==1,'Missing exact harness result'
+            for k,n in zip(counts,matches[0]):counts[k]+=int(n)
+        core=[h for h in config['harnesses'] if h['target']['name']=='nostr_social_graph' and 'lib' in h['target']['kind']]
+        assert len(core)==1
+        run('release-prune-benchmark',[core[0]['path'],'--exact','prune_tests::bulk_pruning_sparse_graph_benchmark','--ignored','--nocapture','--test-threads=1'],120,cwd=core[0]['cwd'])
         base=source/'rust/crates/nostr-social-graph-server/tests'
         run('cap-forward-recovery',[config['node'],base/'crawl_cap.mjs',config['binary'],'--dependencies',source/'ts/package.json','--output',runtime/'cap-forward-recovery','--recovery'],165,cwd=source)
         run('persistence-recovery',[config['node'],base/'sync_recovery.mjs',config['binary'],'--dependencies',source/'ts/package.json','--output',runtime/'persistence-recovery'],195,cwd=source)
@@ -106,7 +102,7 @@ try:
         assert cap['passed'] and cap['oldFilterCappedHeads']==100 and cap['durableHeads']==256 and cap['recovery']
         assert faults['passed'] and {case['fault'] for case in faults['results']}=={'checkpoint','freshness','allowlist','profile','profile-index'}
         assert not remaining()
-        result.update(passed=True,tests=counts,unitAndBenchmarkEvidenceReused=config.get('runtimeOnly',False),harnesses=len(config['harnesses']),persistenceFaults=5,
+        result.update(passed=True,tests=counts,harnesses=len(config['harnesses']),persistenceFaults=5,
                       realCap100=True,forwardOutageRecovery=True,liveAllowlist=True,oldBinaryTested=False,
                       oldNegative='Actual old filter on same capped loopback relay; legacy prune function independently retained as test oracle.')
 except BaseException as exc:result['error']=repr(exc)

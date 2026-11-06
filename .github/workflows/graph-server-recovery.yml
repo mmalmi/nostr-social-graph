@@ -5,14 +5,13 @@ on:
     branches: [codex/graph-server-recovery]
 permissions:
   contents: read
-  actions: read
 concurrency:
   group: graph-server-recovery-${{ github.ref }}
   cancel-in-progress: false
 jobs:
   qualify:
     runs-on: ubuntu-22.04
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -21,7 +20,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
-          ref: adf438eebc0e68c8f982e761acdef65e498ed92a
+          ref: 775de2d84aed3d5eeac33b47ed84ff9e880aea28
           path: candidate
           persist-credentials: false
           fetch-depth: 0
@@ -31,15 +30,13 @@ jobs:
         with:
           version: 10.28.2
           run_install: false
-      - name: Replay recovery fixtures using the verified binary
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Build once and qualify without external test traffic
         run: python3 harness/fixtures/graph-server-recovery/controller.py qualify
       - name: Preserve binary and qualification evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: graph-server-recovery-${{ github.sha }}
-          path: ${{ runner.temp }}/graph-server-recovery-replay/evidence
+          path: ${{ runner.temp }}/graph-server-alias-repair/evidence
           if-no-files-found: error
           retention-days: 14
