@@ -11,6 +11,7 @@ mod prune_tests;
 #[cfg(test)]
 mod alias_tests;
 mod aliases;
+pub use aliases::canonical_node_id;
 
 mod revision;
 pub use revision::*;

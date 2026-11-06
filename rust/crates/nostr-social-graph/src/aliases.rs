@@ -1,9 +1,9 @@
 use super::*;
 use std::borrow::Cow;
 
-// Binary pubkey encoding is case-insensitive. Apply the same identity rule in
-// memory so differently cased tags cannot allocate different graph nodes.
-pub(crate) fn canonical_node_id(value: &str) -> Cow<'_, str> {
+/// Canonical graph identity: lowercase a valid 64-character hexadecimal pubkey.
+/// Other identifiers retain their exact spelling and case.
+pub fn canonical_node_id(value: &str) -> Cow<'_, str> {
     if is_valid_pubkey(value) && value.bytes().any(|b| b.is_ascii_uppercase()) {
         Cow::Owned(value.to_ascii_lowercase())
     } else {

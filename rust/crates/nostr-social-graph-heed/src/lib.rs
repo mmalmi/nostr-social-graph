@@ -9,8 +9,11 @@ use heed::types::{Bytes, SerdeBincode, Str, U32, U64};
 use heed::{Database, Env, EnvFlags, EnvOpenOptions, RoTxn};
 use nostr_social_graph::{
     GraphStats, ListRevision, NostrEvent, SocialGraph, SocialGraphBackend, SocialGraphError,
-    SocialGraphState, accepts_list_revision, valid_event_id,
+    SocialGraphState, accepts_list_revision, canonical_node_id, valid_event_id,
 };
+
+mod migration;
+use migration::normalize_state;
 
 #[cfg(target_pointer_width = "64")]
 const DEFAULT_MAP_SIZE: usize = 4 * 1024 * 1024 * 1024;
@@ -51,6 +54,10 @@ pub enum HeedSocialGraphError {
     MissingDatabase(&'static str),
     #[error("stored next unique id is invalid")]
     InvalidStoredNextUniqueId,
+    #[error("unsupported stored identity schema")]
+    UnsupportedIdentitySchema,
+    #[error("graph numeric identity space is exhausted")]
+    IdentitySpaceExhausted,
 }
 
 pub type Result<T> = std::result::Result<T, HeedSocialGraphError>;
@@ -133,6 +140,13 @@ impl HeedSocialGraph {
         let users_by_follow_distance =
             env.create_database(&mut wtxn, Some(USERS_BY_FOLLOW_DISTANCE_DB))?;
 
+        // Refuse future schemas before any legacy snapshot can replace them.
+        if metadata
+            .get(&wtxn, migration::IDENTITY_SCHEMA_KEY)?
+            .is_some_and(|version| version != [1])
+        {
+            return Err(HeedSocialGraphError::UnsupportedIdentitySchema);
+        }
         let snapshot = metadata.get(&wtxn, SNAPSHOT_KEY)?.map(ToOwned::to_owned);
         if let Some(snapshot) = snapshot {
             let root = read_root_from_wtxn(&metadata, &wtxn)?.to_string();
@@ -169,10 +183,8 @@ impl HeedSocialGraph {
             )?;
         }
 
-        wtxn.commit()?;
-
-        Ok(Self {
-            env,
+        let store = Self {
+            env: env.clone(),
             metadata,
             str_to_unique_id,
             unique_id_to_str,
@@ -184,12 +196,18 @@ impl HeedSocialGraph {
             user_muted_by,
             mute_list_created_at,
             users_by_follow_distance,
-        })
+        };
+        store.migrate_identities(&mut wtxn)?;
+        wtxn.commit()?;
+        Ok(store)
     }
 
     pub fn get_list_revision(&self, user: &str, kind: u32) -> Result<Option<ListRevision>> {
         let rtxn = self.env.read_txn()?;
-        let Some(owner) = self.str_to_unique_id.get(&rtxn, user)? else {
+        let Some(owner) = self
+            .str_to_unique_id
+            .get(&rtxn, canonical_node_id(user).as_ref())?
+        else {
             return Ok(None);
         };
         self.metadata
@@ -233,7 +251,10 @@ impl HeedSocialGraph {
         }
 
         let mut wtxn = self.env.write_txn()?;
-        let author = match self.str_to_unique_id.get(&wtxn, &event.pubkey)? {
+        let author = match self
+            .str_to_unique_id
+            .get(&wtxn, canonical_node_id(&event.pubkey).as_ref())?
+        {
             Some(id) => id,
             None if allow_unknown_authors => get_or_create_id(
                 &mut wtxn,
@@ -305,6 +326,8 @@ impl HeedSocialGraph {
     }
 
     pub fn set_root(&mut self, root: &str) -> Result<()> {
+        let root = canonical_node_id(root);
+        let root = root.as_ref();
         let mut wtxn = self.env.write_txn()?;
         let current_root = self.metadata.get(&wtxn, ROOT_KEY)?.map(ToOwned::to_owned);
         if current_root.as_deref() == Some(root.as_bytes()) {
@@ -324,7 +347,10 @@ impl HeedSocialGraph {
 
     pub fn get_follow_distance(&self, user: &str) -> Result<u32> {
         let rtxn = self.env.read_txn()?;
-        let Some(user_id) = self.str_to_unique_id.get(&rtxn, user)? else {
+        let Some(user_id) = self
+            .str_to_unique_id
+            .get(&rtxn, canonical_node_id(user).as_ref())?
+        else {
             return Ok(UNKNOWN_FOLLOW_DISTANCE);
         };
         Ok(self
@@ -335,10 +361,16 @@ impl HeedSocialGraph {
 
     pub fn is_following(&self, follower: &str, followed_user: &str) -> Result<bool> {
         let rtxn = self.env.read_txn()?;
-        let Some(follower_id) = self.str_to_unique_id.get(&rtxn, follower)? else {
+        let Some(follower_id) = self
+            .str_to_unique_id
+            .get(&rtxn, canonical_node_id(follower).as_ref())?
+        else {
             return Ok(false);
         };
-        let Some(followed_id) = self.str_to_unique_id.get(&rtxn, followed_user)? else {
+        let Some(followed_id) = self
+            .str_to_unique_id
+            .get(&rtxn, canonical_node_id(followed_user).as_ref())?
+        else {
             return Ok(false);
         };
         Ok(self
@@ -349,7 +381,10 @@ impl HeedSocialGraph {
 
     pub fn get_followed_by_user(&self, user: &str) -> Result<Vec<String>> {
         let rtxn = self.env.read_txn()?;
-        let Some(user_id) = self.str_to_unique_id.get(&rtxn, user)? else {
+        let Some(user_id) = self
+            .str_to_unique_id
+            .get(&rtxn, canonical_node_id(user).as_ref())?
+        else {
             return Ok(Vec::new());
         };
         ids_to_strings(
@@ -363,7 +398,10 @@ impl HeedSocialGraph {
 
     pub fn get_followers_by_user(&self, user: &str) -> Result<Vec<String>> {
         let rtxn = self.env.read_txn()?;
-        let Some(user_id) = self.str_to_unique_id.get(&rtxn, user)? else {
+        let Some(user_id) = self
+            .str_to_unique_id
+            .get(&rtxn, canonical_node_id(user).as_ref())?
+        else {
             return Ok(Vec::new());
         };
         ids_to_strings(
@@ -377,7 +415,10 @@ impl HeedSocialGraph {
 
     pub fn get_muted_by_user(&self, user: &str) -> Result<Vec<String>> {
         let rtxn = self.env.read_txn()?;
-        let Some(user_id) = self.str_to_unique_id.get(&rtxn, user)? else {
+        let Some(user_id) = self
+            .str_to_unique_id
+            .get(&rtxn, canonical_node_id(user).as_ref())?
+        else {
             return Ok(Vec::new());
         };
         ids_to_strings(
@@ -389,7 +430,10 @@ impl HeedSocialGraph {
 
     pub fn get_user_muted_by(&self, user: &str) -> Result<Vec<String>> {
         let rtxn = self.env.read_txn()?;
-        let Some(user_id) = self.str_to_unique_id.get(&rtxn, user)? else {
+        let Some(user_id) = self
+            .str_to_unique_id
+            .get(&rtxn, canonical_node_id(user).as_ref())?
+        else {
             return Ok(Vec::new());
         };
         ids_to_strings(
@@ -401,7 +445,10 @@ impl HeedSocialGraph {
 
     pub fn get_follow_list_created_at(&self, user: &str) -> Result<Option<u64>> {
         let rtxn = self.env.read_txn()?;
-        let Some(user_id) = self.str_to_unique_id.get(&rtxn, user)? else {
+        let Some(user_id) = self
+            .str_to_unique_id
+            .get(&rtxn, canonical_node_id(user).as_ref())?
+        else {
             return Ok(None);
         };
         self.follow_list_created_at
@@ -411,7 +458,10 @@ impl HeedSocialGraph {
 
     pub fn get_mute_list_created_at(&self, user: &str) -> Result<Option<u64>> {
         let rtxn = self.env.read_txn()?;
-        let Some(user_id) = self.str_to_unique_id.get(&rtxn, user)? else {
+        let Some(user_id) = self
+            .str_to_unique_id
+            .get(&rtxn, canonical_node_id(user).as_ref())?
+        else {
             return Ok(None);
         };
         self.mute_list_created_at
@@ -530,6 +580,7 @@ impl HeedSocialGraph {
     }
 
     pub fn replace_state(&mut self, state: &SocialGraphState) -> Result<()> {
+        let state = normalize_state(state.clone())?;
         let mut wtxn = self.env.write_txn()?;
         persist_state(
             &mut wtxn,
@@ -544,7 +595,7 @@ impl HeedSocialGraph {
             &self.user_muted_by,
             &self.mute_list_created_at,
             &self.users_by_follow_distance,
-            state,
+            &state,
         )?;
         wtxn.commit()?;
         Ok(())
@@ -1015,6 +1066,8 @@ fn is_overmuted_in_rotxn(
     user: &str,
     threshold: f64,
 ) -> Result<bool> {
+    let user = canonical_node_id(user);
+    let user = user.as_ref();
     let root = match metadata.get(txn, ROOT_KEY)? {
         Some(root) => str::from_utf8(root)?,
         None => return Err(HeedSocialGraphError::MissingRoot),
@@ -1076,6 +1129,8 @@ fn is_overmuted_in_wtxn(
     user: &str,
     threshold: f64,
 ) -> Result<bool> {
+    let user = canonical_node_id(user);
+    let user = user.as_ref();
     let root = match metadata.get(txn, ROOT_KEY)? {
         Some(root) => str::from_utf8(root)?,
         None => return Err(HeedSocialGraphError::MissingRoot),
@@ -1131,19 +1186,19 @@ fn ensure_next_unique_id(
     metadata: &Database<Str, Bytes>,
     unique_id_to_str: &Database<U32<BigEndian>, Str>,
 ) -> Result<u32> {
-    if let Some(bytes) = metadata.get(wtxn, NEXT_UNIQUE_ID_KEY)? {
-        return decode_u32(bytes);
+    let stored = metadata.get(wtxn, NEXT_UNIQUE_ID_KEY)?;
+    let minimum = unique_id_to_str
+        .last(wtxn)?
+        .map(|(id, _)| id.saturating_add(1))
+        .unwrap_or(0);
+    let next = stored
+        .map(decode_u32)
+        .transpose()?
+        .unwrap_or(minimum)
+        .max(minimum);
+    if stored != Some(next.to_be_bytes().as_slice()) {
+        metadata.put(wtxn, NEXT_UNIQUE_ID_KEY, &next.to_be_bytes())?;
     }
-
-    let mut next = 0u32;
-    {
-        let iter = unique_id_to_str.iter(wtxn)?;
-        for entry in iter {
-            let (id, _value) = entry?;
-            next = next.max(id.saturating_add(1));
-        }
-    }
-    metadata.put(wtxn, NEXT_UNIQUE_ID_KEY, &next.to_be_bytes())?;
     Ok(next)
 }
 
@@ -1161,6 +1216,8 @@ fn get_or_create_id(
     unique_id_to_str: &Database<U32<BigEndian>, Str>,
     value: &str,
 ) -> Result<u32> {
+    let value = canonical_node_id(value);
+    let value = value.as_ref();
     if value.trim().is_empty() {
         return Err(SocialGraphError::EmptyString.into());
     }
@@ -1170,6 +1227,10 @@ fn get_or_create_id(
     }
 
     let next = ensure_next_unique_id(wtxn, metadata, unique_id_to_str)?;
+    // u32::MAX is an exhaustion sentinel once its row exists; never overwrite it.
+    if unique_id_to_str.get(wtxn, &next)?.is_some() {
+        return Err(HeedSocialGraphError::IdentitySpaceExhausted);
+    }
     str_to_unique_id.put(wtxn, value, &next)?;
     unique_id_to_str.put(wtxn, &next, value)?;
     metadata.put(
@@ -1190,6 +1251,8 @@ fn initialize_root(
     users_by_follow_distance: &Database<U32<BigEndian>, SerdeBincode<Vec<u32>>>,
     default_root: &str,
 ) -> Result<()> {
+    let default_root = canonical_node_id(default_root);
+    let default_root = default_root.as_ref();
     let root_id = get_or_create_id(
         wtxn,
         metadata,
@@ -1234,6 +1297,7 @@ fn persist_state(
     users_by_follow_distance.clear(wtxn)?;
 
     metadata.put(wtxn, ROOT_KEY, state.root.as_bytes())?;
+    metadata.put(wtxn, migration::IDENTITY_SCHEMA_KEY, &[1])?;
     for (owner, kind, revision) in &state.list_revisions {
         metadata.put(
             wtxn,
@@ -1343,3 +1407,6 @@ fn read_revisions(
     }
     Ok(result)
 }
+
+#[cfg(test)]
+mod alias_migration_tests;
