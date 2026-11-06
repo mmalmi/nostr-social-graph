@@ -36,6 +36,17 @@ Crates:
 - [`crates/nostr-identity`](./crates/nostr-identity): Fact ops with opaque subjects, neutral `IdentityGraph` roster primitives, and app-facing `NostrIdentity` AppKey/secret-epoch event builders, parsers, projection, parent-id, and encrypted payload helpers
 - [`crates/nostr-social-memory`](./crates/nostr-social-memory): UUID-backed entities, Nostr attestations/counter-attestations, and trust scoring over a graph
 
+## Dependency minimums
+
+Version 0.2.1 of the Hashtree backend and social-memory package requires
+`nostr-social-graph` 0.2.1 or a later compatible 0.2.x release, carrying the
+alias-preserving snapshot import fix. Consumers still using either package at
+0.2.0 must update that dependency to receive the corrected minimum.
+
+The server also requires at least 0.2.1 of the core, Heed and Hashtree backends.
+These minimums belong in package manifests: a corrected workspace lock alone
+does not exclude core 0.2.0 from another consumer's existing lockfile.
+
 Common commands:
 
 - `cargo test --manifest-path rust/Cargo.toml`
