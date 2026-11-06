@@ -5,6 +5,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use indexmap::{IndexMap, IndexSet};
 use uuid::Uuid;
 
+#[cfg(test)]
+mod prune_tests;
+
 mod revision;
 pub use revision::*;
 
@@ -200,12 +203,6 @@ impl UniqueIds {
         self.current_unique_id = self.current_unique_id.max(id.saturating_add(1));
         self.str_to_unique_id.insert(value.clone(), id);
         self.unique_id_to_str.insert(id, value);
-    }
-
-    fn remove(&mut self, id: u32) {
-        if let Some(value) = self.unique_id_to_str.shift_remove(&id) {
-            self.str_to_unique_id.shift_remove(&value);
-        }
     }
 }
 
@@ -568,14 +565,12 @@ impl SocialGraph {
     }
 
     pub fn remove_muted_not_followed_users(&mut self) -> usize {
-        let mut has_followers = IndexSet::new();
-        for followed_users in self.followed_by_user.values() {
-            for user in followed_users {
-                has_followers.insert(*user);
-            }
-        }
-
-        let users_to_remove: Vec<u32> = self
+        let has_followers: IndexSet<u32> = self
+            .followed_by_user
+            .values()
+            .flat_map(|users| users.iter().copied())
+            .collect();
+        let users_to_remove: IndexSet<u32> = self
             .user_muted_by
             .iter()
             .filter_map(|(user, muters)| {
@@ -586,57 +581,77 @@ impl SocialGraph {
                 }
             })
             .collect();
-
         if users_to_remove.is_empty() {
             return 0;
         }
 
-        for user in users_to_remove.iter().copied() {
-            self.list_revisions.shift_remove(&(user, 3));
-            self.list_revisions.shift_remove(&(user, 10_000));
-            if let Some(distance) = self.follow_distance_by_user.shift_remove(&user)
-                && let Some(bucket) = self.users_by_follow_distance.get_mut(&distance)
-            {
-                bucket.shift_remove(&user);
-            }
-            self.followed_by_user.shift_remove(&user);
-            self.followers_by_user.shift_remove(&user);
-            self.follow_list_created_at.shift_remove(&user);
-            self.muted_by_user.shift_remove(&user);
-            self.user_muted_by.shift_remove(&user);
-            self.mute_list_created_at.shift_remove(&user);
-            self.ids.remove(user);
+        // Stable bulk retention visits each entry/edge once. Repeated shift_remove
+        // would compact these indexed collections once for every removed user.
+        self.list_revisions.retain(|(owner, kind), _| {
+            !users_to_remove.contains(owner) || !matches!(*kind, 3 | 10_000)
+        });
+        for (distance, users) in &mut self.users_by_follow_distance {
+            // Preserve the assigned-bucket behavior even for imported state whose
+            // distance buckets and distance map have not yet been reconciled.
+            users.retain(|user| {
+                !users_to_remove.contains(user)
+                    || self.follow_distance_by_user.get(user) != Some(distance)
+            });
         }
+        self.follow_distance_by_user
+            .retain(|user, _| !users_to_remove.contains(user));
+        self.followed_by_user
+            .retain(|user, _| !users_to_remove.contains(user));
+        self.followers_by_user
+            .retain(|user, _| !users_to_remove.contains(user));
+        self.follow_list_created_at
+            .retain(|user, _| !users_to_remove.contains(user));
+        self.muted_by_user
+            .retain(|user, _| !users_to_remove.contains(user));
+        self.user_muted_by
+            .retain(|user, _| !users_to_remove.contains(user));
+        self.mute_list_created_at
+            .retain(|user, _| !users_to_remove.contains(user));
+        // Remove the same string keys as the prior per-ID operation, including
+        // imported states that contain duplicate string values for distinct IDs.
+        let removed_values: IndexSet<&str> = self
+            .ids
+            .unique_id_to_str
+            .iter()
+            .filter(|(user, _)| users_to_remove.contains(*user))
+            .map(|(_, value)| value.as_str())
+            .collect();
+        self.ids
+            .str_to_unique_id
+            .retain(|value, _| !removed_values.contains(value.as_str()));
+        self.ids
+            .unique_id_to_str
+            .retain(|user, _| !users_to_remove.contains(user));
 
         for (owner, followed_users) in &mut self.followed_by_user {
-            let mut changed = false;
-            for user in &users_to_remove {
-                changed |= followed_users.shift_remove(user);
-            }
-            if changed && let Some(revision) = self.list_revisions.get_mut(&(*owner, 3)) {
+            let before = followed_users.len();
+            followed_users.retain(|user| !users_to_remove.contains(user));
+            if followed_users.len() != before
+                && let Some(revision) = self.list_revisions.get_mut(&(*owner, 3))
+            {
                 revision.complete = false;
             }
         }
         for followers in self.followers_by_user.values_mut() {
-            for user in &users_to_remove {
-                followers.shift_remove(user);
-            }
+            followers.retain(|user| !users_to_remove.contains(user));
         }
         for (owner, muted_users) in &mut self.muted_by_user {
-            let mut changed = false;
-            for user in &users_to_remove {
-                changed |= muted_users.shift_remove(user);
-            }
-            if changed && let Some(revision) = self.list_revisions.get_mut(&(*owner, 10_000)) {
+            let before = muted_users.len();
+            muted_users.retain(|user| !users_to_remove.contains(user));
+            if muted_users.len() != before
+                && let Some(revision) = self.list_revisions.get_mut(&(*owner, 10_000))
+            {
                 revision.complete = false;
             }
         }
         for muters in self.user_muted_by.values_mut() {
-            for user in &users_to_remove {
-                muters.shift_remove(user);
-            }
+            muters.retain(|user| !users_to_remove.contains(user));
         }
-
         users_to_remove.len()
     }
 

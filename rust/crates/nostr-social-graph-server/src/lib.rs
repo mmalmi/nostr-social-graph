@@ -33,6 +33,8 @@ pub use relay_mirror::{
     run_relay_mirror,
 };
 
+// Two replaceable kinds per author fit below relays with a 100-event cap.
+const MAX_GRAPH_CRAWL_AUTHORS: usize = 32;
 const PROFILE_NAME_MAX_LENGTH: usize = 100;
 const PROFILE_PICTURE_URL_MAX_LENGTH: usize = 255;
 pub const DEFAULT_SOCIAL_GRAPH_ROOT: &str =
@@ -1430,7 +1432,7 @@ async fn sync_graph_once(
             continue;
         }
 
-        for author_chunk in authors.chunks(config.crawl_batch_size.clamp(1, 128)) {
+        for author_chunk in authors.chunks(config.crawl_batch_size.clamp(1, MAX_GRAPH_CRAWL_AUTHORS)) {
             freshness
                 .write()
                 .expect("freshness lock poisoned")
@@ -1558,8 +1560,10 @@ async fn fetch_graph_events(
         return Ok(());
     }
 
-    let filter = graph_filter(pubkeys, since);
-    let events = fetch_graph_batch(client, filter).await?;
+    let mut events = Vec::new();
+    for chunk in pubkeys.chunks(MAX_GRAPH_CRAWL_AUTHORS) {
+        events.extend(fetch_graph_batch(client, graph_filter(chunk.to_vec(), since)).await?);
+    }
 
     let mut forward = Vec::new();
     let mut applied = 0usize;
@@ -1709,9 +1713,11 @@ fn parse_public_keys(authors: &[String]) -> Vec<PublicKey> {
 }
 
 fn graph_filter(pubkeys: Vec<PublicKey>, since: Option<u64>) -> Filter {
+    let limit = pubkeys.len() * 2;
     let filter = Filter::new()
         .authors(pubkeys)
-        .kinds(vec![Kind::from(3_u16), Kind::from(10_000_u16)]);
+        .kinds(vec![Kind::from(3_u16), Kind::from(10_000_u16)])
+        .limit(limit);
     if let Some(since) = since {
         filter.since(Timestamp::from(since))
     } else {
@@ -1889,6 +1895,27 @@ mod tests {
 #[cfg(test)]
 mod graph_crawl_tests {
     use super::*;
+
+    #[test]
+    fn graph_filters_bound_both_kinds_below_default_relay_caps() {
+        let authors: Vec<_> = (0..128).map(|_| Keys::generate().public_key()).collect();
+        let filters: Vec<_> = authors
+            .chunks(MAX_GRAPH_CRAWL_AUTHORS)
+            .map(|chunk| graph_filter(chunk.to_vec(), Some(123)))
+            .collect();
+        assert_eq!(filters.len(), 4);
+        for (filter, authors) in filters.iter().zip(authors.chunks(32)) {
+            let value = serde_json::to_value(filter).unwrap();
+            assert_eq!(value["limit"], 64);
+            assert_eq!(value["since"], 123);
+            assert_eq!(value["kinds"], serde_json::json!([3, 10_000]));
+            assert_eq!(value["authors"].as_array().unwrap().len(), authors.len());
+        }
+        let single = serde_json::to_value(graph_filter(vec![authors[0]], None)).unwrap();
+        assert_eq!(single["limit"], 2);
+        assert!(single.get("since").is_none());
+    }
+
     #[tokio::test]
     async fn disconnected_relays_cannot_mark_an_empty_crawl_successful() {
         let client = NostrClient::new(Keys::generate());
