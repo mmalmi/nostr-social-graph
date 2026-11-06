@@ -14,9 +14,9 @@ jobs:
   test:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
-    env:
-      GRAPH_GATE_EVIDENCE: ${{ runner.temp }}/graph-test-evidence
     steps:
+      - name: Set task-owned evidence directory
+        run: echo "GRAPH_GATE_EVIDENCE=$RUNNER_TEMP/graph-test-evidence" >> "$GITHUB_ENV"
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
