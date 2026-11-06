@@ -154,7 +154,7 @@ try:
     run('source-history',['git','fsck','--full','--strict'],120,cwd=CANDIDATE,env=env)
     run('pnpm-frozen',['pnpm','install','--frozen-lockfile','--ignore-scripts'],300,cwd=CANDIDATE,env=env)
     run('cargo-prefetch',[cargo,'fetch','--locked','--target','x86_64-unknown-linux-gnu'],300,cwd=CANDIDATE/'rust',env=env)
-    metadata=json.loads(out([cargo,'metadata','--frozen','--format-version','1'],cwd=CANDIDATE/'rust',env=env))
+    metadata=json.loads(out([cargo,'metadata','--frozen','--filter-platform','x86_64-unknown-linux-gnu','--format-version','1'],cwd=CANDIDATE/'rust',env=env))
     write(EVIDENCE/'cargo-metadata.json',metadata)
     build=run('release-test-build',[cargo,'test','--release','--frozen','--workspace','--no-run','--message-format=json'],1500,cwd=CANDIDATE/'rust',env=env)
     harnesses=[]

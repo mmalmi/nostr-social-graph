@@ -12,8 +12,26 @@ source=pathlib.Path(config['source']);evidence=pathlib.Path(config['evidence']);
 runtime=evidence/'runtime';runtime.mkdir()
 home=stage/'runtime-home';home.mkdir();os.chown(home,config['uid'],config['gid'])
 os.chown(runtime,config['uid'],config['gid'])
+libc=ctypes.CDLL(None,use_errno=True)
+libc.prctl.argtypes=[ctypes.c_int,ctypes.c_ulong,ctypes.c_ulong,ctypes.c_ulong,ctypes.c_ulong]
+# Bounding-set drops must happen before surrendering root's CAP_SETPCAP.
+last_cap=int(pathlib.Path('/proc/sys/kernel/cap_last_cap').read_text())
+for capability in range(last_cap+1):
+    assert libc.prctl(24,capability,0,0,0)==0,(capability,ctypes.get_errno()) # PR_CAPBSET_DROP
+assert libc.prctl(47,4,0,0,0)==0 # PR_CAP_AMBIENT_CLEAR_ALL
 os.setgroups([]);os.setgid(config['gid']);os.setuid(config['uid'])
-assert ctypes.CDLL(None).prctl(38,1,0,0,0)==0 # PR_SET_NO_NEW_PRIVS; descendants cannot regain root.
+# Explicitly clear inheritable as well as permitted/effective capability words.
+class CapHeader(ctypes.Structure):
+    _fields_=[('version',ctypes.c_uint32),('pid',ctypes.c_int)]
+class CapData(ctypes.Structure):
+    _fields_=[('effective',ctypes.c_uint32),('permitted',ctypes.c_uint32),('inheritable',ctypes.c_uint32)]
+header=CapHeader(0x20080522,0);data=(CapData*2)()
+assert libc.capset(ctypes.byref(header),ctypes.byref(data))==0,ctypes.get_errno()
+assert libc.prctl(38,1,0,0,0)==0 # PR_SET_NO_NEW_PRIVS; descendants cannot regain root.
+status=dict(line.split(':',1) for line in pathlib.Path('/proc/self/status').read_text().splitlines())
+for field in ['CapInh','CapPrm','CapEff','CapBnd','CapAmb']:assert int(status[field],16)==0,(field,status[field])
+assert int(status['NoNewPrivs'])==1
+capabilities={field:status[field].strip() for field in ['CapInh','CapPrm','CapEff','CapBnd','CapAmb','NoNewPrivs']}
 os.environ.clear();os.environ.update(PATH=config['path'],HOME=str(home),TMPDIR=str(home),
     LANG='C.UTF-8',LC_ALL='C.UTF-8',TOKIO_WORKER_THREADS='2',RAYON_NUM_THREADS='1',
     WS_NO_BUFFER_UTIL='1',WS_NO_UTF_8_VALIDATE='1',CI='true')
@@ -59,7 +77,7 @@ def run(name,args,seconds,cwd=None):
     assert error is None,error
     return log
 
-result=dict(passed=False,rootDropped=True,noNewPrivileges=True,netNamespace=os.readlink('/proc/self/ns/net'),pidNamespace=os.readlink('/proc/self/ns/pid'))
+result=dict(passed=False,rootDropped=True,noNewPrivileges=True,capabilities=capabilities,netNamespace=os.readlink('/proc/self/ns/net'),pidNamespace=os.readlink('/proc/self/ns/pid'))
 try:
     run('network-boundary',[sys.executable,HERE/'network_proof.py',runtime/'network-boundary-proof.json'],15)
     counts=dict(passed=0,failed=0,ignored=0)

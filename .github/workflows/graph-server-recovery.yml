@@ -1,6 +1,8 @@
 name: Graph server bounded recovery qualification
 on:
   workflow_dispatch:
+  push:
+    branches: [codex/graph-server-recovery]
 permissions:
   contents: read
 concurrency:

@@ -1,6 +1,9 @@
 import errno, json, os, pathlib, socket, subprocess, sys, threading
 
 def denied():
+    status=dict(line.split(':',1) for line in pathlib.Path('/proc/self/status').read_text().splitlines())
+    for field in ['CapInh','CapPrm','CapEff','CapBnd','CapAmb']:assert int(status[field],16)==0,(field,status[field])
+    assert int(status['NoNewPrivs'])==1
     checks=[]
     for family,address in [(socket.AF_INET,('203.0.113.1',443)),(socket.AF_INET6,('2001:db8::1',443))]:
         for kind in (socket.SOCK_STREAM,socket.SOCK_DGRAM):
