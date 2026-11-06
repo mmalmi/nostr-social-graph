@@ -153,6 +153,12 @@ try:
     assert 'host: x86_64-unknown-linux-gnu' in out([rustc,'-Vv'])
     run('source-history',['git','fsck','--full','--strict'],120,cwd=CANDIDATE,env=env)
     run('pnpm-frozen',['pnpm','install','--frozen-lockfile','--ignore-scripts'],300,cwd=CANDIDATE,env=env)
+    preflight=dict(source=str(CANDIDATE),stage=str(STAGE),evidence=str(EVIDENCE),node=shutil.which('node'),path=env['PATH'],
+                   uid=os.getuid(),gid=os.getgid(),hostNet=os.readlink('/proc/self/ns/net'),hostPid=os.readlink('/proc/self/ns/pid'),
+                   binary='',harnesses=[],boundaryOnly=True,runtimeName='boundary-preflight')
+    write(EVIDENCE/'boundary-input.json',preflight)
+    run('isolated-preflight',['sudo','-n','unshare','--mount','--net','--pid','--fork','--kill-child=KILL','--mount-proc',
+                             sys.executable,HERE/'namespace.py',EVIDENCE/'boundary-input.json'],30,env=env)
     run('cargo-prefetch',[cargo,'fetch','--locked','--target','x86_64-unknown-linux-gnu'],300,cwd=CANDIDATE/'rust',env=env)
     metadata=json.loads(out([cargo,'metadata','--frozen','--filter-platform','x86_64-unknown-linux-gnu','--format-version','1'],cwd=CANDIDATE/'rust',env=env))
     write(EVIDENCE/'cargo-metadata.json',metadata)
@@ -165,6 +171,15 @@ try:
             harnesses.append(dict(path=event['executable'],package=event['package_id'],target=event['target'],cwd=str(pathlib.Path(event['manifest_path']).parent),sha256=sha(event['executable'])))
     assert harnesses and any(h['target']['name']=='nostr_social_graph' for h in harnesses)
     assert len({h['path'] for h in harnesses})==len(harnesses)
+    # Preserve bounded executable artifacts, not a Cargo cache, for runtime-only
+    # qualification retries with unchanged source/toolchain/compiled bytes.
+    harness_dir=EVIDENCE/'compiled-harnesses';harness_dir.mkdir()
+    assert sum(pathlib.Path(h['path']).stat().st_size for h in harnesses)<=512*1024**2
+    for harness in harnesses:
+        archive=harness_dir/pathlib.Path(harness['path']).name
+        shutil.copy2(harness['path'],archive)
+        assert sha(archive)==harness['sha256']
+        harness['artifact']='compiled-harnesses/'+archive.name
     write(EVIDENCE/'test-harnesses.json',harnesses)
     run('release-server-build',[cargo,'build','--release','--frozen','-p','nostr-social-graph-server','--bin','nostr-social-graph-server'],1200,cwd=CANDIDATE/'rust',env=env)
     binary=STAGE/'target/release/nostr-social-graph-server'; artifact=EVIDENCE/'nostr-social-graph-server'

@@ -20,8 +20,9 @@ def denied():
 
 if '--child' in sys.argv:
     print(json.dumps(denied()));sys.exit(0)
-expected=['fixture0','lo'] if os.environ.get('FIPS_DUMMY')=='1' else ['lo']
-assert sorted(os.listdir('/sys/class/net'))==expected,'Unexpected external interface'
+expected=['lo']
+# sysfs may belong to the host mount; this syscall inspects our actual netns.
+assert sorted(name for _,name in socket.if_nameindex())==expected,'Unexpected external interface'
 status=pathlib.Path('/proc/self/status').read_text()
 for field in ('CapEff','CapBnd'):assert int(next(line.split()[1] for line in status.splitlines() if line.startswith(field+':')),16)==0
 routes=pathlib.Path('/proc/net/route').read_text();assert not routes.splitlines()[1:],'Unexpected IPv4 route; /32 dummy has only a local-table route'
