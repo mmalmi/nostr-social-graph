@@ -81,12 +81,14 @@ it("uses newer lists including explicit empty mutes over older aliases", async (
 })
 
 it("rejects conflicting latest follows rather than broadening discovery trust", async () => {
+  await expect((async () => {
   const source = await aliases([
     [0, 1, [1]],
     [1, 2, [3]],
     [2, 2, [4]],
   ])
-  await expect(projectSocialGraph(source, key(1), 1)).rejects.toThrow(
+  return projectSocialGraph(source, key(1), 1)
+  })()).rejects.toThrow(
     "conflicting latest follow lists"
   )
 })

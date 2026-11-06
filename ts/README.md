@@ -19,6 +19,13 @@ timestamps, so older lists cannot reappear after restoring a snapshot. Budgeted
 exports retain these empty facts for included owners within the distance limit;
 an omitted or truncated nonempty list is never recorded as an empty list.
 
+Snapshot imports canonicalize public-key hex case and repair legacy numeric aliases
+before calculating distances and follower/mute counts. For aliased owners, the
+latest timestamp wins; known equal-time event IDs use NIP-01 ordering. Conflicting
+latest follow lists without a determinable winner are rejected. Tied mute lists
+without a winner retain every mute and carry no complete event-ID claim. Older
+lists are never merged into a newer list, including an observed empty list.
+
 Notes:
 
 - `handleEvent` only uses kind `3` and `10000` events.
@@ -140,9 +147,13 @@ Package metadata lives in [`package.json`](./package.json). For repo-wide contex
 
 `data/socialGraph.bin` is a checksum-pinned public bootstrap rooted at Sirius
 Business Ltd. Its adjacent `socialGraph.json` records the root, capture source,
-input/output hashes and coverage. It retains complete follow and mute lists for
-owners through two hops, including their third-hop targets and empty-list
-timestamps. Applications should preserve explicitly selected personal roots.
+input/output hashes, capture time, list IDs, completeness and coverage. The
+current 1.03 MB snapshot was captured from the live graph server on 2026-11-06.
+It retains available follow/mute lists for owners through two hops and their
+third-hop targets. The server bounds the source projection; truncated lists
+retain their IDs with incomplete metadata so reconciliation downloads the full
+events. The full server crawl was still running at capture. Applications should
+preserve explicitly selected personal roots and existing local snapshots.
 The library constructor still takes an explicit root; this file is seed data,
 not a current or complete account graph.
 
@@ -155,7 +166,8 @@ aggregate state and do not contain individually verifiable event signatures.
 
 Run `pnpm snapshot:verify` to check the committed artifact. Explicitly reproduce
 it with `pnpm snapshot:refresh /path/to/pinned-source.bin` (or omit the source
-path to fetch the manifest's versioned URL). Input and output checksums must
+path to fetch the recorded server URL while it still serves those exact bytes).
+A newer live response requires a reviewed manifest update. Input/output hashes must
 match before writing. To adopt a newer source, review and update the manifest
 and coverage together. Ordinary packaging only verifies the reviewed bytes;
 it never fetches a mutable snapshot or replaces them with a local crawl.

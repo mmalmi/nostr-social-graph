@@ -22,6 +22,21 @@ async function verify(data: Uint8Array) {
       throw new Error("Snapshot mute list is inaccessible by public identity")
     }
   }
+  if (data[0] !== 4 || data.length > 4 * 1024 * 1024) {
+    throw new Error("Bundled graph must retain v4 revisions within the mobile byte budget")
+  }
+  const revisions = {follows: {ids: 0, complete: 0}, mutes: {ids: 0, complete: 0}}
+  for (const [, key] of internal.ids) for (const kind of [3, 10000] as const) {
+    const revision = graph.getListRevision(key, kind)
+    if (revision) {
+      const count = kind === 3 ? revisions.follows : revisions.mutes
+      count.ids++
+      if (revision.complete) count.complete++
+    }
+  }
+  if (JSON.stringify(revisions) !== JSON.stringify(manifest.revisionCounts)) {
+    throw new Error("Bundled graph list IDs/completeness do not match the reviewed manifest")
+  }
   const size = graph.size()
   if (
     graph.getFollowedByUser(manifest.root).size !== manifest.directFollows ||
@@ -59,8 +74,8 @@ async function main() {
       throw new Error("Source social graph does not match its reviewed checksum")
     }
     const graph = await SocialGraph.fromBinary(manifest.root, source)
-    // Keep complete follow/mute lists for owners within two hops, including
-    // their third-hop targets. No edge cap silently truncates anyone's lists.
+    // Keep the source lists for owners within two hops and their targets.
+    // Source truncation remains explicit: incomplete IDs never become complete.
     const canonical = await projectSocialGraph(
       graph,
       manifest.root,

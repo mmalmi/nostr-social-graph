@@ -1,18 +1,31 @@
 {
   "root": "336f319763657d6b0e65a5b5876719e8c8dcdcf9396852be71ee26b73368b29b",
   "ownerDistance": 2,
-  "bytes": 1563994,
-  "sha256": "df349a23122993183b9b9d2d056b7c655a984bdc86bc72f747202ad772de4d8f",
-  "users": 31187,
-  "follows": 195484,
-  "mutes": 4149,
+  "bytes": 1034502,
+  "sha256": "9af2ad6aaf830ff08aa14f83233e56c49d1379fb5da05efd1ebe9166aceabcb0",
+  "users": 21323,
+  "follows": 118569,
+  "mutes": 1555,
   "directFollows": 2,
-  "secondDegree": 408,
+  "secondDegree": 409,
   "source": {
-    "url": "https://github.com/irislib/iris-nostr/releases/download/v0.1.0/social-graph.bin",
-    "sha256": "dcb5b683d3a8bc7482a22468840257187ac2510362075669a756686ea94f90b7",
-    "bytes": 50440164,
-    "captured": "2026-10-29",
-    "provenanceCommit": "945e04c6b60b217145015ebd775a84b8b71ef681"
+    "url": "https://graph-api.iris.to/social-graph/mobile?root=336f319763657d6b0e65a5b5876719e8c8dcdcf9396852be71ee26b73368b29b",
+    "bytes": 1420890,
+    "sha256": "77eff179387760d8faa7d0844bfd207034701b83bda5b9a7af04a8ce3e2cb911",
+    "capturedAt": "2026-11-06T11:54:03.058927+00:00",
+    "sourceCommit": "775de2d84aed3d5eeac33b47ed84ff9e880aea28",
+    "formatVersion": 4,
+    "coverage": "Bounded live projection; full server reconciliation was still in progress at capture.",
+    "fullReconciliationComplete": false
+  },
+  "revisionCounts": {
+    "follows": {
+      "ids": 283,
+      "complete": 166
+    },
+    "mutes": {
+      "ids": 101,
+      "complete": 100
+    }
   }
 }

@@ -1,5 +1,9 @@
 export type UID = number;
 
+export function canonicalNodeId(value: string): string {
+  return /^[0-9a-fA-F]{64}$/.test(value) ? value.toLowerCase() : value;
+}
+
 /**
  * Save memory and storage by mapping repeatedly used long strings such as public keys to internal unique ID numbers.
  */
@@ -12,6 +16,7 @@ export class UniqueIds {
   }
 
   id(str: string): UID {
+    str = canonicalNodeId(str);
     // Prevent empty strings from being stored
     if (!str || str.trim() === '') {
       throw new Error('Cannot store empty or whitespace-only strings');
@@ -36,7 +41,7 @@ export class UniqueIds {
   }
 
   has(str: string): boolean {
-    return this.strToUniqueId.has(str);
+    return this.strToUniqueId.has(canonicalNodeId(str));
   }
 
   *[Symbol.iterator]() {

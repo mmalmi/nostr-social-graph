@@ -32,7 +32,11 @@ const bounded = (n:number, min:number, max:number) => {
 export function graphSyncAuthors(graph:SocialGraph):string[] {
   const {ids} = graph.getInternalData();
   // Public identities only; private contact node IDs never leave this adapter.
-  return [...new Set([graph.getRoot(), ...graph.getFollowedByUser(graph.getRoot()), ...Array.from(ids, ([,key])=>key)])].filter(key=>hex.test(key));
+  return [...new Set([graph.getRoot(), ...graph.getFollowedByUser(graph.getRoot()), ...Array.from(ids, ([,key])=>key)])]
+    .filter(key=>hex.test(key))
+    .map(key=>({key,distance:graph.getFollowDistance(key)}))
+    .sort((a,b)=>a.distance-b.distance||(a.key<b.key?-1:a.key>b.key?1:0))
+    .map(({key})=>key);
 }
 
 /** Optional NIP-77 catch-up. Only verified winning public lists alter this graph.
@@ -153,16 +157,18 @@ export interface GraphSyncLifecycleOptions extends Omit<GraphSyncOptions,'graph'
   intervalMs?:number;
   onError?:(error:unknown)=>void;
 }
-/** Active-tab catch-up with a rotating bounded author window. Caller persists onChange. */
+/** Active-tab catch-up rotating from closest users outward. Caller persists onChange. */
 export function startGraphSync(options:GraphSyncLifecycleOptions):()=>void {
-  const interval=bounded(options.intervalMs??15*60*1000,1000,24*60*60*1000);
+  const interval=bounded(options.intervalMs??60*1000,1000,24*60*60*1000);
   let stopped=false, controller:AbortController|undefined, timer:ReturnType<typeof setTimeout>|undefined, offset=0;
+  let sweepRoot:string|undefined;
   const active=()=>typeof document==='undefined'||!document.hidden;
   const run=async()=>{
     if(stopped||controller||!active()||(typeof navigator!=='undefined'&&navigator.onLine===false))return;
     clearTimeout(timer);controller=new AbortController();
     try{
       const graph=options.getGraph(), authors=graphSyncAuthors(graph), count=options.maxAuthors??500;
+      if(sweepRoot!==graph.getRoot()){sweepRoot=graph.getRoot();offset=0;}
       if(offset>=authors.length)offset=0;
       const batch=authors.slice(offset,offset+count);
       const result=await syncGraphLists({...options,graph,authors:batch,signal:controller.signal});

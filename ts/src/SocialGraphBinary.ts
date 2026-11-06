@@ -1,3 +1,5 @@
+import { canonicalizeGraphNodes } from './SocialGraphAliases';
+import { canonicalNodeId } from './UniqueIds';
 import { SocialGraph } from './SocialGraph';
 
 export const BINARY_FORMAT_VERSION = 4;
@@ -481,6 +483,9 @@ export async function fromBinary(root: string, data: Uint8Array): Promise<Social
         muteLists.push([user.value, mutedUsers, timestamp.value]);
     }
     
+    const canonical = canonicalizeGraphNodes(uniqueIds, followLists, muteLists, revisions);
+    root = canonicalNodeId(root);
+
     // Create a new SocialGraph and populate it directly
     const graph = new SocialGraph(root);
     const graphAny = graph as any;
@@ -491,13 +496,13 @@ export async function fromBinary(root: string, data: Uint8Array): Promise<Social
     graphAny.ids.currentUniqueId = 0;
     
     // Populate the UniqueIds mapping
-    for (const [value, id] of uniqueIds) {
+    for (const [value, id] of canonical.uniqueIds) {
         graphAny.ids.uniqueIdToStr.set(id, value);
         graphAny.ids.strToUniqueId.set(value, id);
         graphAny.ids.currentUniqueId = Math.max(graphAny.ids.currentUniqueId, id + 1);
     }
     
-    for (const [user, kind, id, created_at, complete] of revisions) {
+    for (const [user, kind, id, created_at, complete] of canonical.revisions) {
         graph.getInternalData().listRevisions.set(`${kind}:${graphAny.ids.str(user)}`, {id, created_at, complete});
     }
 
@@ -521,7 +526,7 @@ export async function fromBinary(root: string, data: Uint8Array): Promise<Social
     graphAny.muteListCreatedAt.clear();
 
     // Populate follow lists without deriving distances from serialized order.
-    for (const [follower, followedUsers, createdAt] of followLists) {
+    for (const [follower, followedUsers, createdAt] of canonical.followLists) {
         graphAny.followedByUser.set(follower, new Set(followedUsers));
         for (const followedUser of followedUsers) {
             if (!graphAny.followersByUser.has(followedUser)) {
@@ -533,7 +538,7 @@ export async function fromBinary(root: string, data: Uint8Array): Promise<Social
     }
     
     // Populate mute lists
-    for (const [muter, mutedUsers, createdAt] of muteLists) {
+    for (const [muter, mutedUsers, createdAt] of canonical.muteLists) {
         graphAny.mutedByUser.set(muter, new Set(mutedUsers));
         for (const mutedUser of mutedUsers) {
             if (!graphAny.userMutedBy.has(mutedUser)) {

@@ -32,7 +32,13 @@ author window incomplete for a later pass; already accepted lists remain intact.
 
 Defaults: 500 authors per pass in 256-author filters, 2 MiB total application
 traffic, 15-second batch deadlines, a 30-second total pass deadline, at most three configured relays, and a
-15-minute rotating catch-up interval while visible and online. A single arriving
+one-minute rotating catch-up interval while visible and online, starting immediately.
+Each sweep orders authors by follow distance from the current root: own lists,
+direct follows, then farther users, with unreachable users last. Equal-distance
+authors use public-key order. Later passes continue outward rather than repeatedly
+syncing only the closest users. Changing the root restarts with that root's own
+lists. Explicit author lists retain caller order.
+A single arriving
 WebSocket frame can cross the transfer budget before the socket is closed.
 Negentropy is required for catch-up. Unsupported or rejected negotiation, malformed
 responses, connection failures and timeouts end that relay attempt without an ordinary

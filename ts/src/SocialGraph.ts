@@ -1,4 +1,4 @@
-import { UniqueIds } from './UniqueIds';
+import { UniqueIds, canonicalNodeId } from './UniqueIds';
 import { isValidPubKey, NostrEvent } from './utils';
 import * as Binary from './SocialGraphBinary';
 import { SocialGraphUtils } from './SocialGraphUtils';
@@ -11,7 +11,7 @@ export class SocialGraph {
 
   /** Metadata is not a signature proof. Callers must verify events before ingestion. */
   getListRevision(pubkey: string, kind: number): ListRevision | undefined {
-    const revision = this.listRevisions.get(`${kind}:${pubkey}`);
+    const revision = this.listRevisions.get(`${kind}:${canonicalNodeId(pubkey)}`);
     return revision && {...revision};
   }
 
@@ -23,7 +23,7 @@ export class SocialGraph {
   }
 
   private acceptRevision(event: NostrEvent, previousAt: number | undefined): boolean {
-    const key = `${event.kind}:${event.pubkey}`;
+    const key = `${event.kind}:${canonicalNodeId(event.pubkey)}`;
     const previous = this.listRevisions.get(key);
     const validId = /^[0-9a-f]{64}$/.test(event.id);
     if (previousAt !== undefined && (event.created_at < previousAt ||
@@ -35,7 +35,7 @@ export class SocialGraph {
   }
 
   markListIncomplete(pubkey: string, kind: number) {
-    const revision = this.listRevisions.get(`${kind}:${pubkey}`);
+    const revision = this.listRevisions.get(`${kind}:${canonicalNodeId(pubkey)}`);
     if (revision) revision.complete = false;
   }
 
