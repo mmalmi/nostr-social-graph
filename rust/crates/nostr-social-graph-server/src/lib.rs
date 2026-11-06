@@ -35,6 +35,8 @@ pub use relay_mirror::{
 
 // Two replaceable kinds per author fit below relays with a 100-event cap.
 const MAX_GRAPH_CRAWL_AUTHORS: usize = 32;
+const FORWARD_REPAIR_BACKOFF: Duration = Duration::from_secs(30);
+const LIVE_ALLOWLIST_INTERVAL: Duration = Duration::from_secs(5);
 const PROFILE_NAME_MAX_LENGTH: usize = 100;
 const PROFILE_PICTURE_URL_MAX_LENGTH: usize = 255;
 pub const DEFAULT_SOCIAL_GRAPH_ROOT: &str =
@@ -1165,6 +1167,54 @@ fn profile_picture(profile: &serde_json::Map<String, Value>) -> Option<String> {
     Some(picture.trim_start_matches("https://").to_string())
 }
 
+// The same sync task services coalesced live membership changes while its
+// network requests or interval sleep are pending. No second file writer or
+// graph clone is introduced, and the in-flight request is never cancelled.
+async fn with_live_allowlist_maintenance<F: std::future::Future>(
+    future: F,
+    tick: &mut tokio::time::Interval,
+    graph: &Arc<RwLock<SocialGraph>>,
+    forwarder: Option<&Forwarder>,
+) -> F::Output {
+    tokio::pin!(future);
+    loop {
+        tokio::select! {
+            result = &mut future => return result,
+            _ = tick.tick() => {
+                if let Some(forwarder) = forwarder {
+                    forwarder.refresh_allowlist_if_dirty(&graph.read().expect("graph lock"));
+                }
+            }
+        }
+    }
+}
+
+fn forwarding_needs_repair(freshness: &Arc<RwLock<GraphFreshness>>) -> bool {
+    freshness
+        .read()
+        .expect("freshness lock")
+        .forwarding_failures
+        > 0
+}
+
+fn full_reconciliation_due(now: u64, last_full: u64, forwarding_failures: u64) -> bool {
+    forwarding_failures > 0 || now.saturating_sub(last_full) >= 86400
+}
+
+async fn wait_for_sync_interval_or_repair(
+    interval: Duration,
+    freshness: &Arc<RwLock<GraphFreshness>>,
+) {
+    let deadline = tokio::time::Instant::now() + interval;
+    while !forwarding_needs_repair(freshness) {
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            return;
+        }
+        tokio::time::sleep((deadline - now).min(LIVE_ALLOWLIST_INTERVAL)).await;
+    }
+}
+
 async fn sync_loop(
     client: NostrClient,
     config: ServerConfig,
@@ -1178,11 +1228,28 @@ async fn sync_loop(
     let mut graph_since = initial_graph_since;
     let mut profile_since = initial_profile_since;
     let mut last_full_reconciliation_at = 0;
+    let mut maintenance = tokio::time::interval(LIVE_ALLOWLIST_INTERVAL);
+    maintenance.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
+        if forwarding_needs_repair(&freshness) {
+            with_live_allowlist_maintenance(
+                tokio::time::sleep(FORWARD_REPAIR_BACKOFF),
+                &mut maintenance,
+                &graph,
+                forwarder.as_ref(),
+            )
+            .await;
+        }
         let cycle_started_at = unix_timestamp();
-        let full_reconciliation =
-            cycle_started_at.saturating_sub(last_full_reconciliation_at) >= 86400;
+        let full_reconciliation = full_reconciliation_due(
+            cycle_started_at,
+            last_full_reconciliation_at,
+            freshness
+                .read()
+                .expect("freshness lock")
+                .forwarding_failures,
+        );
         let requested_since = if full_reconciliation {
             None
         } else {
@@ -1193,12 +1260,17 @@ async fn sync_loop(
             .read()
             .expect("freshness lock")
             .forwarding_failures;
-        let graph_error = sync_graph_once(
-            &client,
-            &config,
+        let graph_error = with_live_allowlist_maintenance(
+            sync_graph_once(
+                &client,
+                &config,
+                &graph,
+                requested_since,
+                &freshness,
+                forwarder.as_ref(),
+            ),
+            &mut maintenance,
             &graph,
-            requested_since,
-            &freshness,
             forwarder.as_ref(),
         )
         .await
@@ -1207,7 +1279,13 @@ async fn sync_loop(
             warn!("graph crawl failed: {error}");
         }
         if let Some(forwarder) = &forwarder {
-            forwarder.drain().await;
+            with_live_allowlist_maintenance(
+                forwarder.drain(),
+                &mut maintenance,
+                &graph,
+                Some(forwarder),
+            )
+            .await;
         }
         {
             let mut graph_guard = graph.write().expect("graph lock poisoned");
@@ -1269,9 +1347,21 @@ async fn sync_loop(
         }
 
         // Profiles cannot delay persisting a successfully reconciled graph.
-        let profile_error = sync_profiles_once(&client, &config, &graph, &profiles, profile_since)
-            .await
-            .err();
+        let profile_error = with_live_allowlist_maintenance(
+            sync_profiles_once(
+                &client,
+                &config,
+                &graph,
+                &profiles,
+                profile_since,
+                &freshness,
+            ),
+            &mut maintenance,
+            &graph,
+            forwarder.as_ref(),
+        )
+        .await
+        .err();
         if let Some(error) = &profile_error {
             warn!("profile sync failed: {error}");
         }
@@ -1300,7 +1390,13 @@ async fn sync_loop(
                 .profile_count()
         );
 
-        tokio::time::sleep(config.sync_interval).await;
+        with_live_allowlist_maintenance(
+            wait_for_sync_interval_or_repair(config.sync_interval, &freshness),
+            &mut maintenance,
+            &graph,
+            forwarder.as_ref(),
+        )
+        .await;
     }
 }
 
@@ -1371,6 +1467,9 @@ async fn notification_loop(
                         .get_list_revision(&event.pubkey.to_hex(), event.kind.as_u16() as u32)
                         .is_some_and(|revision| revision.id == event.id.to_hex());
                     if winner {
+                        // A winning follow or mute list may introduce graph IDs.
+                        // Coalesce these hints instead of scanning/writing per event.
+                        forwarder.mark_allowlist_dirty();
                         forwarder.try_enqueue(&event);
                     }
                 }
@@ -1639,7 +1738,11 @@ async fn sync_profiles_once(
     graph: &Arc<RwLock<SocialGraph>>,
     profiles: &Arc<RwLock<ProfileStore>>,
     since: Option<u64>,
+    freshness: &Arc<RwLock<GraphFreshness>>,
 ) -> Result<()> {
+    if forwarding_needs_repair(freshness) {
+        return Err(std::io::Error::other("profile crawl deferred for forwarding repair").into());
+    }
     let mut authors = graph
         .read()
         .expect("graph lock poisoned")
@@ -1649,6 +1752,13 @@ async fn sync_profiles_once(
     }
 
     for author_chunk in authors.chunks(config.profile_batch_size.max(1)) {
+        // Stop only at completed fetch boundaries: SDK fetch cleanup closes its
+        // actual subscription, rather than abandoning a cancelled REQ future.
+        if forwarding_needs_repair(freshness) {
+            return Err(
+                std::io::Error::other("profile crawl deferred for forwarding repair").into(),
+            );
+        }
         let (new_authors, known_authors) = {
             let guard = profiles.read().expect("profile lock poisoned");
             author_chunk
@@ -1659,6 +1769,11 @@ async fn sync_profiles_once(
 
         if !new_authors.is_empty() {
             fetch_profile_events(client, &new_authors, None, profiles).await?;
+        }
+        if forwarding_needs_repair(freshness) {
+            return Err(
+                std::io::Error::other("profile crawl deferred for forwarding repair").into(),
+            );
         }
         if !known_authors.is_empty() && since.is_some() {
             fetch_profile_events(client, &known_authors, since, profiles).await?;
@@ -1895,6 +2010,14 @@ mod tests {
 #[cfg(test)]
 mod graph_crawl_tests {
     use super::*;
+
+    #[test]
+    fn missed_forwarding_forces_full_repair_without_a_daily_wait() {
+        assert!(!full_reconciliation_due(1001, 1000, 0));
+        assert!(full_reconciliation_due(1001, 1000, 1));
+        assert!(full_reconciliation_due(87400, 1000, 0));
+        assert_eq!(FORWARD_REPAIR_BACKOFF, Duration::from_secs(30));
+    }
 
     #[test]
     fn graph_filters_bound_both_kinds_below_default_relay_caps() {

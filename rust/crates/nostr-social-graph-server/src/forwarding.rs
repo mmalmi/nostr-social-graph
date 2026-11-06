@@ -4,7 +4,10 @@ use nostr_sdk::{Client, Event, Keys};
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, RwLock},
+    sync::{
+        Arc, Mutex, RwLock,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 use tokio::sync::{Notify, mpsc, oneshot};
@@ -16,6 +19,7 @@ pub(crate) struct Forwarder {
     freshness: Arc<RwLock<GraphFreshness>>,
     pending: Arc<Mutex<PendingHeads>>,
     wake: Arc<Notify>,
+    allowlist_dirty: Arc<AtomicBool>,
 }
 enum Message {
     Event(Box<Event>),
@@ -152,7 +156,25 @@ impl Forwarder {
             freshness,
             pending,
             wake,
+            allowlist_dirty: Arc::new(AtomicBool::new(false)),
         }))
+    }
+
+    pub fn mark_allowlist_dirty(&self) {
+        self.allowlist_dirty.store(true, Ordering::Release);
+    }
+
+    // Called only by the existing sync-loop owner, alongside its crawl and
+    // checkpoint writes. Live ingestion requests a refresh; it never writes it.
+    pub fn refresh_allowlist_if_dirty(&self, graph: &nostr_social_graph::SocialGraph) {
+        if let Err(error) =
+            refresh_dirty_allowlist(&self.allowlist_dirty, || refresh_allowlist(graph))
+        {
+            let mut status = self.freshness.write().expect("freshness lock");
+            status.forwarding_failures = status.forwarding_failures.saturating_add(1);
+            status.forwarding_last_failure = Some("allowlist persistence".into());
+            tracing::warn!("live allowlist refresh remains pending: {error}");
+        }
     }
 
     pub async fn enqueue(&self, event: &Event) {
@@ -212,6 +234,16 @@ impl Forwarder {
                 .forwarding_failures += 1;
         }
     }
+}
+
+fn refresh_dirty_allowlist(dirty: &AtomicBool, write: impl FnOnce() -> Result<()>) -> Result<()> {
+    if dirty.swap(false, Ordering::AcqRel) {
+        if let Err(error) = write() {
+            dirty.store(true, Ordering::Release);
+            return Err(error);
+        }
+    }
+    Ok(())
 }
 
 // Coalesce latest live heads while the crawl uses channel backpressure. Keep
@@ -299,6 +331,40 @@ pub(crate) fn refresh_allowlist(graph: &nostr_social_graph::SocialGraph) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn allowlist_updates_coalesce_and_failed_writes_remain_pending() {
+        let dirty = AtomicBool::new(false);
+        let writes = std::cell::Cell::new(0);
+        let write = || {
+            writes.set(writes.get() + 1);
+            Ok(())
+        };
+        refresh_dirty_allowlist(&dirty, write).unwrap();
+        assert_eq!(writes.get(), 0);
+        for _ in 0..100 {
+            dirty.store(true, Ordering::Release);
+        }
+        refresh_dirty_allowlist(&dirty, write).unwrap();
+        refresh_dirty_allowlist(&dirty, write).unwrap();
+        assert_eq!(writes.get(), 1);
+        dirty.store(true, Ordering::Release);
+        assert!(
+            refresh_dirty_allowlist(&dirty, || Err(std::io::Error::other("fixture").into()))
+                .is_err()
+        );
+        assert!(dirty.load(Ordering::Acquire));
+        refresh_dirty_allowlist(&dirty, || {
+            // A notification arriving while the write runs must not be erased.
+            dirty.store(true, Ordering::Release);
+            Ok(())
+        })
+        .unwrap();
+        assert!(dirty.load(Ordering::Acquire));
+        refresh_dirty_allowlist(&dirty, write).unwrap();
+        assert!(!dirty.load(Ordering::Acquire));
+        assert_eq!(writes.get(), 2);
+    }
+
     #[test]
     fn live_overflow_coalesces_latest_heads_with_a_fixed_memory_bound() {
         use nostr_sdk::{EventBuilder, Kind, Timestamp};
