@@ -1,0 +1,40 @@
+name: Graph server bounded recovery qualification
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: graph-server-recovery-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  qualify:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          path: harness
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: 75b1562d2aa8a028052c4dab7e766a192e8bc8bd
+          path: candidate
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Verify and install the pinned Node artifact
+        run: python3 harness/fixtures/graph-server-recovery/controller.py bootstrap
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
+        with:
+          version: 10.28.2
+          run_install: false
+      - name: Build once and qualify without external test traffic
+        run: python3 harness/fixtures/graph-server-recovery/controller.py qualify
+      - name: Preserve binary and qualification evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: graph-server-recovery-${{ github.sha }}
+          path: ${{ runner.temp }}/graph-server-recovery-75b156/evidence
+          if-no-files-found: error
+          retention-days: 14
