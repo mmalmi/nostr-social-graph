@@ -1,5 +1,7 @@
 //! Optional bounded forwarding into a replaceable-event relay. No second event DB.
+mod diagnostics;
 use crate::{GraphFreshness, Result, ServerError};
+use diagnostics::{Diagnostics, Outcome};
 use nostr_sdk::{Client, Event, Keys};
 use std::{
     collections::BTreeMap,
@@ -62,6 +64,9 @@ impl Forwarder {
         tokio::spawn(async move {
             let mut disk_check: Option<(Instant, u64)> = None;
             let mut retry_after: Option<Instant> = None;
+            let mut diagnostics = Diagnostics::default();
+            let mut report_tick = tokio::time::interval(Duration::from_secs(30));
+            report_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
                 let pending_event = pending_worker
                     .lock()
@@ -74,10 +79,15 @@ impl Forwarder {
                     tokio::select! {
                         message = receiver.recv() => match message { Some(message) => message, None => break },
                         _ = wake_worker.notified() => continue,
+                        _ = report_tick.tick() => {
+                            report_diagnostics(&mut diagnostics);
+                            continue;
+                        },
                     }
                 };
                 match message {
                     Message::Barrier(done) => {
+                        report_diagnostics(&mut diagnostics);
                         let _ = done.send(());
                     }
                     Message::Event(event) => {
@@ -85,6 +95,8 @@ impl Forwarder {
                         // per event. Record the missed delivery for full repair.
                         if retry_after.is_some_and(|until| Instant::now() < until) {
                             state.write().expect("freshness lock").forwarding_failures += 1;
+                            diagnostics.record(Outcome::CooldownSkip);
+                            report_diagnostics(&mut diagnostics);
                             continue;
                         }
                         if disk_check
@@ -113,40 +125,40 @@ impl Forwarder {
                             let mut status = state.write().expect("freshness lock");
                             status.forwarding_failures += 1;
                             status.forwarding_last_failure = Some("disk reserve".into());
+                            drop(status);
+                            diagnostics.record(Outcome::DiskReserve);
+                            report_diagnostics(&mut diagnostics);
                             continue;
                         }
                         if let Some((_, available)) = disk_check.as_mut() {
                             *available = available.saturating_sub(cost);
                         }
-                        let (accepted, transport_failure) = match tokio::time::timeout(
+                        let outcome = match tokio::time::timeout(
                             Duration::from_secs(5),
                             client.send_event(&event),
                         )
                         .await
                         {
-                            Ok(Ok(output)) => classify_delivery(
+                            Ok(Ok(output)) => delivery_outcome(
                                 !output.success.is_empty(),
                                 output.failed.values().map(String::as_str),
                             ),
-                            _ => (false, true),
+                            Ok(Err(_)) => Outcome::SendError,
+                            Err(_) => Outcome::SendTimeout,
                         };
                         let mut status = state.write().expect("freshness lock");
-                        if accepted {
+                        if outcome.accepted() {
                             status.last_forwarded_at = Some(crate::unix_timestamp());
                         } else {
                             status.forwarding_failures += 1;
-                            status.forwarding_last_failure = Some(
-                                if transport_failure {
-                                    "transport"
-                                } else {
-                                    "relay rejection"
-                                }
-                                .into(),
-                            );
-                            if transport_failure {
+                            status.forwarding_last_failure = Some(outcome.label().into());
+                            if outcome.starts_cooldown() {
                                 retry_after = Some(Instant::now() + Duration::from_secs(30));
                             }
                         }
+                        drop(status);
+                        diagnostics.record(outcome);
+                        report_diagnostics(&mut diagnostics);
                     }
                 }
             }
@@ -286,6 +298,54 @@ fn classify_delivery<'a>(accepted: bool, failures: impl Iterator<Item = &'a str>
     (false, transport_failure)
 }
 
+// The SDK flattens relay errors to strings. Preserve the existing delivery and
+// cooldown decisions; only count recognizable NIP-20 reason prefixes as reported
+// rejections. Never print a remote reason, URL, event ID, author or event body.
+fn delivery_outcome<'a>(accepted: bool, failures: impl Iterator<Item = &'a str>) -> Outcome {
+    let failures: Vec<_> = failures.collect();
+    let (accepted, transport) = classify_delivery(accepted, failures.iter().copied());
+    if accepted {
+        Outcome::Accepted
+    } else if transport {
+        Outcome::TransportFailure
+    } else if failures.iter().all(|failure| {
+        let reason = failure
+            .strip_prefix("event not published: ")
+            .unwrap_or(failure);
+        [
+            "blocked:",
+            "invalid:",
+            "pow:",
+            "duplicate:",
+            "rate-limited:",
+            "restricted:",
+        ]
+        .iter()
+        .any(|prefix| reason.starts_with(prefix))
+    }) {
+        Outcome::ReportedRejection
+    } else {
+        Outcome::OtherDeliveryFailure
+    }
+}
+
+fn report_diagnostics(diagnostics: &mut Diagnostics) {
+    if let Some(counts) = diagnostics.take_report(Instant::now()) {
+        tracing::warn!(
+            send_attempts = counts.send_attempts,
+            accepted = counts.accepted,
+            send_timeouts = counts.send_timeouts,
+            send_errors = counts.send_errors,
+            transport_failures = counts.transport_failures,
+            reported_rejections = counts.reported_rejections,
+            other_delivery_failures = counts.other_delivery_failures,
+            cooldown_skips = counts.cooldown_skips,
+            disk_reserve_skips = counts.disk_reserve_skips,
+            "graph forwarding cumulative diagnostics; skipped heads are not send attempts"
+        );
+    }
+}
+
 fn forwardable(event: &Event) -> bool {
     matches!(event.kind.as_u16(), 3 | 10000)
         && event.verify().is_ok()
@@ -416,6 +476,34 @@ mod tests {
             (false, true)
         );
         assert_eq!(classify_delivery(true, [].into_iter()), (true, false));
+    }
+
+    #[test]
+    fn delivery_diagnostics_do_not_guess_unknown_errors_or_change_admission() {
+        assert_eq!(
+            delivery_outcome(false, ["blocked: author outside graph"].into_iter()),
+            Outcome::ReportedRejection
+        );
+        assert_eq!(
+            delivery_outcome(false, ["unexpected SDK failure"].into_iter()),
+            Outcome::OtherDeliveryFailure
+        );
+        assert_eq!(
+            delivery_outcome(false, ["relay not connected"].into_iter()),
+            Outcome::TransportFailure
+        );
+        assert_eq!(
+            delivery_outcome(false, ["replaced: have newer event"].into_iter()),
+            Outcome::Accepted
+        );
+        assert_eq!(
+            delivery_outcome(true, ["blocked: other relay"].into_iter()),
+            Outcome::Accepted
+        );
+        assert_eq!(
+            delivery_outcome(false, [].into_iter()),
+            Outcome::TransportFailure
+        );
     }
 
     #[test]
