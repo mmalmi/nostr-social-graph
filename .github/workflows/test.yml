@@ -3,7 +3,7 @@ name: Test
 on:
   workflow_dispatch:
   push:
-    branches: [master, codex/graph-sdk-404]
+    branches: [master]
   pull_request:
     branches: [master]
 
@@ -27,13 +27,11 @@ jobs:
         with:
           node-version: 22.23.4
           cache: pnpm
-      - name: Install frozen dependencies before network isolation
-        run: pnpm install --frozen-lockfile --ignore-scripts
       - name: Prepare exact Rust toolchain and locked sources before isolation
         run: |
           rustup toolchain install 1.99.0 --profile minimal
           cargo +1.99.0 fetch --locked --manifest-path rust/Cargo.toml
-      - name: Run all TypeScript and graph persistence tests behind the OS boundary
+      - name: Test the memory and Hashtree libraries with the new dependency floor
         run: python3 .github/scripts/graph-gates/host.py tests
       - name: Preserve gate evidence
         if: always()

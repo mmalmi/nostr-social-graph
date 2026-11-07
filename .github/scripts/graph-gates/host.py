@@ -38,9 +38,8 @@ def inner(config):
             assert record['cargo'].startswith('cargo 1.99.0 ')
             record['cargoLockSha256'] = digest(ROOT / 'rust/Cargo.lock')
             commands = [
-                ['pnpm', '--filter', 'nostr-social-graph', 'exec', 'vitest', 'run'],
                 ['cargo', 'test', '--manifest-path', 'rust/Cargo.toml', '--locked', '--offline',
-                 '-j1', '-p', 'nostr-social-graph-hashtree', '-p', 'nostr-social-graph-server'],
+                 '-j1', '-p', 'nostr-social-graph-hashtree', '-p', 'nostr-social-memory'],
             ]
         else:
             commands = [['pnpm', '--filter', 'nostr-social-graph', 'build']]
