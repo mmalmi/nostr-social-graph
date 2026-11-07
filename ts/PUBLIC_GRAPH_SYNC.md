@@ -95,9 +95,9 @@ This is why clients should not reconcile the whole network on every page load.
 Removing the author filter against a much larger relay would repeatedly enumerate
 revisions the bounded client graph does not retain; catch-up keeps author filtering.
 A 500-author unchanged pass is roughly 35 KB per relay, before transport overhead.
-With a fresh persisted graph, only changed lists require event downloads. An
-initial import lacking revision IDs is more expensive; keep the same budgets
-and resume in subsequent passes. The benchmark's 0.24–0.35s local wall times are
+A matching complete revision ID avoids downloading its event. A partial list
+or a list with only a timestamp still needs a signed event to establish its
+revision. Keep the same budgets and resume in subsequent passes. The benchmark's 0.24–0.35s local wall times are
 not mobile CPU or real-network latency measurements. The script also reports
 illustrative event-payload cost separately so it cannot be confused with measured
 network traffic. `scripts/probeGraphSync.ts` exercises real configured public
@@ -109,6 +109,27 @@ events (30,451 received bytes) on first sync and zero events (157 received bytes
 protocol efficiency is not evidence of freshness. Deployment acceptance must
 include crawler and relay-forward progress, not only a successful handshake.
 
+
+### Live mobile snapshot measurement
+
+On 2026-11-07 we reconciled the same 32 public authors against the dedicated
+graph relay using SDK 4.0.4. The sample was Nostreddit’s discovery root and
+the first 31 direct follows sorted by public key. Each run used one relay, a
+2 MiB transfer budget and an immediate second pass on the same in-memory graph.
+Both snapshots and their initial list membership were public. No client cache
+was uploaded or replaced.
+
+| Starting snapshot | Snapshot bytes | First pass bytes | Events received / applied | Repeat bytes | Repeat received / applied |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Shipped on November 6 | 1,420,890 | 706,526 | 16 / 12 | 48,065 | 4 / 0 |
+| Live mobile projection on November 7 | 1,414,413 | 703,130 | 19 / 15 | 48,065 | 4 / 0 |
+
+These are application bytes in both directions, including event bodies.
+All 32 authors completed each pass within budget. Four signed events returned
+on the repeat had timestamps older than the corresponding local lists, which
+lacked revision IDs. The client retained the newer local state. Subsequent
+passes can request those bodies again until a matching or newer signed revision
+is available. Snapshot age alone does not predict catch-up traffic.
 
 ### Event-response caps (4.0.3)
 
