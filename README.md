@@ -30,12 +30,11 @@ const graph = new SocialGraph(root);
 // Supply verified kind 3 (follow) and 10000 (mute) events from your app.
 // Allow unknown authors while loading the graph.
 graph.handleEvent(followAndMuteEvents, true);
-await graph.recalculateFollowDistances();
 
 // Show content from yourself, your follows, and their follows, excluding mutes.
 function shouldShow(event: NostrEvent): boolean {
   return graph.getFollowDistance(event.pubkey) <= 2 &&
-    !graph.getMutedByUser(root).has(event.pubkey);
+    !graph.isMuting(root, event.pubkey);
 }
 ```
 

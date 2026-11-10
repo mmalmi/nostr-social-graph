@@ -213,9 +213,9 @@ export class SocialGraphUtils {
   static stats(graph: SocialGraph, user: string): { [distance: number]: { followers: number; muters: number } } {
     const stats: { [distance: number]: { followers: number; muters: number } } = {};
     const graphAny = graph as any;
-    const userId = graphAny.id(user);
+    const userId = graph.getInternalData().ids.get(user);
+    if (userId === undefined) return stats;
 
-    // Get followers set (using the private method)
     const followersSet = SocialGraphUtils.getFollowersSet(graph, userId);
     
     for (const follower of followersSet) {
@@ -255,13 +255,9 @@ export class SocialGraphUtils {
    * Check if a user has any followers at any distance (efficient implementation)
    */
   static hasFollowers(graph: SocialGraph, user: string): boolean {
-    const graphAny = graph as any;
-    const userId = graphAny.id(user);
-    const { followersByUser } = graph.getInternalData();
-    
-    // Use reverse index for O(1) lookup
-    const followers = followersByUser.get(userId);
-    return followers ? followers.size > 0 : false;
+    const { followersByUser, ids } = graph.getInternalData();
+    const userId = ids.get(user);
+    return userId !== undefined && !!followersByUser.get(userId)?.size;
   }
 
   /**
@@ -275,9 +271,10 @@ export class SocialGraphUtils {
     }
     
     const graphAny = graph as any;
-    const userId = graphAny.id(user);
-    const { followersByUser, userMutedBy } = graph.getInternalData();
-    
+    const { followersByUser, userMutedBy, ids } = graph.getInternalData();
+    const userId = ids.get(user);
+    if (userId === undefined) return false;
+
     // Early check: if no one has muted this user, they can't be overmuted
     const mutersSet = userMutedBy.get(userId);
     if (!mutersSet || mutersSet.size === 0) {

@@ -62,6 +62,11 @@ export class SocialGraph {
     return this.ids.id(str);
   }
 
+  /** Lookups must not grow the ID table: feeds query many keys the graph never stores. */
+  private known(str: string): number | undefined {
+    return this.ids.get(str);
+  }
+
   private str(id: number): string {
     return this.ids.str(id);
   }
@@ -100,7 +105,7 @@ export class SocialGraph {
   recalculateFollowDistances(
     batchSize = 1_000,
     logEvery = 100_000,
-    logger: (msg: string) => void = console.log
+    logger: (msg: string) => void = () => {}
   ): Promise<void> {
     if (!Number.isInteger(batchSize) || batchSize < 1) {
       return Promise.reject(new RangeError('batchSize must be a positive integer'));
@@ -164,11 +169,11 @@ export class SocialGraph {
             console.debug("event.created_at more than 10 minutes in the future", event)
             continue
         }
-        const author = this.id(event.pubkey);
-
-        if (!allowUnknownAuthors && !this.followDistanceByUser.has(author)) {
-          continue;
+        if (!allowUnknownAuthors) {
+          const known = this.known(event.pubkey);
+          if (known === undefined || !this.followDistanceByUser.has(known)) continue;
         }
+        const author = this.id(event.pubkey);
 
         if (SocialGraphUtils.isOvermuted(this, event.pubkey, overmuteThreshold)) {
             continue;
@@ -264,25 +269,103 @@ export class SocialGraph {
   }
 
   isFollowing(follower: string, followedUser: string): boolean {
-    const followedUserId = this.id(followedUser);
-    const followerId = this.id(follower);
+    const followedUserId = this.known(followedUser);
+    const followerId = this.known(follower);
+    if (followedUserId === undefined || followerId === undefined) return false;
     return !!this.followedByUser.get(followerId)?.has(followedUserId);
   }
 
+  isMuting(muter: string, mutedUser: string): boolean {
+    const mutedUserId = this.known(mutedUser);
+    const muterId = this.known(muter);
+    if (mutedUserId === undefined || muterId === undefined) return false;
+    return !!this.mutedByUser.get(muterId)?.has(mutedUserId);
+  }
+
+  /**
+   * Whether muters outweigh followers (`muters * threshold > followers`) among
+   * the closest users who do either. A user muted by the root always is.
+   */
+  isOvermuted(user: string, threshold = 1): boolean {
+    return SocialGraphUtils.isOvermuted(this, user, threshold);
+  }
+
   getFollowDistance(user: string): number {
-    const distance = this.followDistanceByUser.get(this.id(user));
+    const id = this.known(user);
+    const distance = id === undefined ? undefined : this.followDistanceByUser.get(id);
     return distance === undefined ? 1000 : distance;
   }
 
-  private addUserByFollowDistance(distance: number, user: number) {
-    if (!this.usersByFollowDistance.has(distance)) {
-      this.usersByFollowDistance.set(distance, new Set());
+  /** Keeps the distance map and its per-distance buckets in step. */
+  private setDistance(user: number, distance: number | undefined) {
+    const old = this.followDistanceByUser.get(user);
+    if (old === distance) return;
+    if (old !== undefined) {
+      const bucket = this.usersByFollowDistance.get(old);
+      if (bucket?.delete(user) && !bucket.size) this.usersByFollowDistance.delete(old);
     }
-    this.usersByFollowDistance.get(distance)?.add(user);
-    for (const d of this.usersByFollowDistance.keys()) {
-      if (d > distance) {
-        this.usersByFollowDistance.get(d)?.delete(user);
+    if (distance === undefined) {
+      this.followDistanceByUser.delete(user);
+      return;
+    }
+    this.followDistanceByUser.set(user, distance);
+    let bucket = this.usersByFollowDistance.get(distance);
+    if (!bucket) this.usersByFollowDistance.set(distance, bucket = new Set());
+    bucket.add(user);
+  }
+
+  /** Bring `user` to `distance` if that is closer, then everyone reached through them. */
+  private lowerDistance(user: number, distance: number) {
+    const current = this.followDistanceByUser.get(user);
+    if (current !== undefined && current <= distance) return;
+    this.setDistance(user, distance);
+    const queue = [user];
+    for (let head = 0; head < queue.length; head++) {
+      const next = this.followDistanceByUser.get(queue[head])! + 1;
+      for (const followed of this.followedByUser.get(queue[head]) ?? []) {
+        const known = this.followDistanceByUser.get(followed);
+        if (known === undefined || known > next) {
+          this.setDistance(followed, next);
+          queue.push(followed);
+        }
       }
+    }
+  }
+
+  /**
+   * `user` lost a follower on a shortest path. Users whose every shortest path
+   * ran through that edge move farther away or become unreachable.
+   */
+  private raiseDistance(user: number) {
+    const distances = this.followDistanceByUser;
+    const orphaned = new Set<number>();
+    const hasCloserFollower = (id: number) => {
+      const closer = distances.get(id)! - 1;
+      for (const follower of this.followersByUser.get(id) ?? []) {
+        if (distances.get(follower) === closer && !orphaned.has(follower)) return true;
+      }
+      return false;
+    };
+    if (hasCloserFollower(user)) return;
+    orphaned.add(user);
+    // Sets iterate in insertion order, including additions: closest users first.
+    for (const id of orphaned) {
+      const next = distances.get(id)! + 1;
+      for (const followed of this.followedByUser.get(id) ?? []) {
+        if (distances.get(followed) === next && !orphaned.has(followed) && !hasCloserFollower(followed)) {
+          orphaned.add(followed);
+        }
+      }
+    }
+    for (const id of orphaned) this.setDistance(id, undefined);
+    // Reattach through the nearest follower that is still reachable.
+    for (const id of orphaned) {
+      let nearest = Infinity;
+      for (const follower of this.followersByUser.get(id) ?? []) {
+        const distance = distances.get(follower);
+        if (distance !== undefined && distance < nearest) nearest = distance;
+      }
+      if (nearest !== Infinity) this.lowerDistance(id, nearest + 1);
     }
   }
 
@@ -291,40 +374,21 @@ export class SocialGraph {
       throw new Error('Invalid user id');
     }
 
-    if (!this.followedByUser.has(follower)) {
-      this.followedByUser.set(follower, new Set<number>());
-    }
-    const followed = this.followedByUser.get(follower)!;
+    let followed = this.followedByUser.get(follower);
+    if (!followed) this.followedByUser.set(follower, followed = new Set());
     if (!followed.has(followedUser)) {
       followed.add(followedUser);
       if (this.recalculatingPromise) this.recalculationRequested = true;
     }
 
     // Maintain reverse index
-    if (!this.followersByUser.has(followedUser)) {
-      this.followersByUser.set(followedUser, new Set<number>());
-    }
-    this.followersByUser.get(followedUser)!.add(follower);
+    let followers = this.followersByUser.get(followedUser);
+    if (!followers) this.followersByUser.set(followedUser, followers = new Set());
+    followers.add(follower);
 
-    if (followedUser !== this.root) {
-      let newFollowDistance;
-      if (follower === this.root) {
-        newFollowDistance = 1;
-        this.addUserByFollowDistance(newFollowDistance, followedUser);
-        this.followDistanceByUser.set(followedUser, newFollowDistance);
-      } else {
-        const existingFollowDistance = this.followDistanceByUser.get(followedUser);
-        const followerDistance = this.followDistanceByUser.get(follower);
-        newFollowDistance = followerDistance && followerDistance + 1;
-        if (
-          existingFollowDistance === undefined ||
-          (newFollowDistance && newFollowDistance < existingFollowDistance)
-        ) {
-          this.followDistanceByUser.set(followedUser, newFollowDistance!);
-          this.addUserByFollowDistance(newFollowDistance!, followedUser);
-        }
-      }
-    }
+    // A new edge can only shorten paths, and only from a reachable follower.
+    const followerDistance = this.followDistanceByUser.get(follower);
+    if (followerDistance !== undefined) this.lowerDistance(followedUser, followerDistance + 1);
   }
 
   addFollower(follower: string, followedUser: string) {
@@ -344,33 +408,20 @@ export class SocialGraph {
     // Maintain reverse index
     this.followersByUser.get(unfollowedUser)?.delete(follower);
 
-    if (unfollowedUser === this.root) {
-      return;
-    }
-
-    let smallest = Infinity;
-    for (const follower of this.getFollowersSet(unfollowedUser)) {
-      const followerDistance = this.followDistanceByUser.get(follower);
-      if (followerDistance !== undefined && followerDistance + 1 < smallest) {
-        smallest = followerDistance + 1;
-      }
-    }
-
-    if (smallest === Infinity) {
-      this.followDistanceByUser.delete(unfollowedUser);
-    } else {
-      this.followDistanceByUser.set(unfollowedUser, smallest);
+    // Only the loss of a shortest path can change distances.
+    const distance = this.followDistanceByUser.get(unfollowedUser);
+    if (distance && this.followDistanceByUser.get(follower) === distance - 1) {
+      this.raiseDistance(unfollowedUser);
     }
   }
 
   followerCount(address: string) {
-    const id = this.id(address);
-    return this.getFollowersSet(id).size;
+    return this.getFollowersSet(this.known(address)).size;
   }
 
   followedByFriendsCount(address: string) {
     let count = 0;
-    const id = this.id(address);
+    const id = this.known(address);
     for (const follower of this.getFollowersSet(id)) {
       if (this.followedByUser.get(this.root)?.has(follower)) {
         count++;
@@ -381,8 +432,8 @@ export class SocialGraph {
 
   mutedByFriendsCount(address: string) {
     let count = 0;
-    const id = this.id(address);
-    for (const muter of this.userMutedBy.get(id) ?? []) {
+    const id = this.known(address);
+    for (const muter of (id === undefined ? undefined : this.userMutedBy.get(id)) ?? []) {
       if (this.followedByUser.get(this.root)?.has(muter)) {
         count++;
       }
@@ -410,7 +461,7 @@ export class SocialGraph {
     // If follow distances haven't been calculated (e.g. when we deliberately
     // skip them for memory reasons), fall back to counting the unique IDs we
     // know about.
-    const usersCount = this.followDistanceByUser.size || (this.ids as any).uniqueIdToStr?.size || 0;
+    const usersCount = this.followDistanceByUser.size || this.ids.size;
 
     return {
       users: usersCount,
@@ -421,7 +472,7 @@ export class SocialGraph {
   }
 
   followedByFriends(address: string) {
-    const id = this.id(address);
+    const id = this.known(address);
     const set = new Set<string>();
     for (const follower of this.getFollowersSet(id)) {
       if (this.followedByUser.get(this.root)?.has(follower)) {
@@ -432,11 +483,7 @@ export class SocialGraph {
   }
 
   getFollowedByUser(user: string, includeSelf = false): Set<string> {
-    const userId = this.id(user);
-    const set = new Set<string>();
-    for (const id of this.followedByUser.get(userId) || []) {
-      set.add(this.str(id));
-    }
+    const set = this.strings(this.followedByUser, user);
     if (includeSelf) {
       set.add(user);
     }
@@ -444,33 +491,35 @@ export class SocialGraph {
   }
 
   getFollowersByUser(address: string): Set<string> {
-    const userId = this.id(address);
+    return this.strings(this.followersByUser, address);
+  }
+
+  /** Public keys related to `user` in one of the edge maps. */
+  private strings(edges: Map<number, Set<number>>, user: string): Set<string> {
     const set = new Set<string>();
-    for (const id of this.getFollowersSet(userId)) {
-      set.add(this.str(id));
+    const id = this.known(user);
+    for (const other of (id === undefined ? undefined : edges.get(id)) ?? []) {
+      set.add(this.str(other));
     }
     return set;
   }
 
-
-
-
-
   getUsersByFollowDistance(distance: number): Set<string> {
-    const users = this.usersByFollowDistance.get(distance) || new Set<number>();
     const result = new Set<string>();
-    for (const user of users) {
+    for (const user of this.usersByFollowDistance.get(distance) ?? []) {
       result.add(this.str(user));
     }
     return result;
   }
 
   getFollowListCreatedAt(user: string) {
-    return this.followListCreatedAt.get(this.id(user))
+    const id = this.known(user);
+    return id === undefined ? undefined : this.followListCreatedAt.get(id);
   }
 
   getMuteListCreatedAt(user: string) {
-    return this.muteListCreatedAt.get(this.id(user))
+    const id = this.known(user);
+    return id === undefined ? undefined : this.muteListCreatedAt.get(id);
   }
 
   async merge(other: SocialGraph): Promise<void> {
@@ -555,21 +604,11 @@ export class SocialGraph {
   }
 
   getMutedByUser(user: string): Set<string> {
-    const userId = this.id(user);
-    const set = new Set<string>();
-    for (const id of this.mutedByUser.get(userId) || []) {
-      set.add(this.str(id));
-    }
-    return set;
+    return this.strings(this.mutedByUser, user);
   }
 
   getUserMutedBy(user: string): Set<string> {
-    const userId = this.id(user);
-    const set = new Set<string>();
-    for (const id of this.userMutedBy.get(userId) || []) {
-      set.add(this.str(id));
-    }
-    return set;
+    return this.strings(this.userMutedBy, user);
   }
 
   // follower and muter counts by distance
@@ -605,7 +644,7 @@ export class SocialGraph {
     return Binary.fromBinaryStream(root, stream);
   }
 
-  private getFollowersSet(id: number): Set<number> {
-    return SocialGraphUtils.getFollowersSet(this, id);
+  private getFollowersSet(id: number | undefined): Set<number> {
+    return (id === undefined ? undefined : this.followersByUser.get(id)) ?? new Set();
   }
 }

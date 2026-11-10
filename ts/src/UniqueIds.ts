@@ -15,7 +15,18 @@ export class UniqueIds {
   constructor() {
   }
 
+  /** Existing ID, without allocating one for a string seen for the first time. */
+  get(str: string): UID | undefined {
+    // Stored keys are canonical, so a direct hit needs no normalization.
+    const id = this.strToUniqueId.get(str);
+    if (id !== undefined) return id;
+    const canonical = canonicalNodeId(str);
+    return canonical === str ? undefined : this.strToUniqueId.get(canonical);
+  }
+
   id(str: string): UID {
+    const known = this.strToUniqueId.get(str);
+    if (known !== undefined) return known;
     str = canonicalNodeId(str);
     // Prevent empty strings from being stored
     if (!str || str.trim() === '') {
@@ -41,7 +52,11 @@ export class UniqueIds {
   }
 
   has(str: string): boolean {
-    return this.strToUniqueId.has(canonicalNodeId(str));
+    return this.get(str) !== undefined;
+  }
+
+  get size(): number {
+    return this.strToUniqueId.size;
   }
 
   *[Symbol.iterator]() {

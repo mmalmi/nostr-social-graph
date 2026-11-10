@@ -1,5 +1,24 @@
 # Changelog
 
+## 4.1.0 - 2026-11-10
+
+- Follow distances stay exact after every follow and unfollow. A newly followed
+  user's known follows become reachable at once, and an unfollow moves or drops
+  everyone who was only reachable through that edge, including in
+  `getUsersByFollowDistance`. Callers no longer need
+  `recalculateFollowDistances()` after `handleEvent` or graph sync.
+- Queries (`getFollowDistance`, `isFollowing`, `getFollowedByUser`, counts and
+  the rest) no longer assign an internal ID to keys the graph has never stored,
+  and ignored lists from unknown authors are not remembered. Previously each
+  unknown author seen by a feed filter stayed in memory and was later offered to
+  graph sync. `getFollowDistance` is about 10x faster on known keys.
+- `startGraphSync` spends up to half of each pass on the root and its direct
+  follows, so their list changes arrive within a minute or two instead of once
+  per sweep of the whole graph. Transfer budgets are unchanged.
+- Add `isMuting(muter, user)`, `isOvermuted(user, threshold)` and
+  `UniqueIds.get`/`size`. `recalculateFollowDistances` is silent unless given a
+  logger.
+
 ## 3.1.0 - 2026-11-04
 
 - Add an optional `nostr-social-graph/ranking` entry point for personalized

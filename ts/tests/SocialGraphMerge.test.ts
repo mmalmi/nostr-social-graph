@@ -49,9 +49,8 @@ describe('SocialGraph.merge', () => {
     list(source, 3, root, [author], 10);
     list(source, kind, author, [newTarget], 30);
     const destination = new SocialGraph(root);
-    destination.getFollowDistance(decoy);
-    destination.getFollowDistance(oldTarget);
-    destination.getFollowDistance(newTarget);
+    // Allocate IDs in a different order than the source graph.
+    for (const key of [decoy, oldTarget, newTarget]) destination.getInternalData().ids.id(key);
     list(destination, 3, root, [author], 10);
     list(destination, kind, author, [oldTarget], 20);
     await source.recalculateFollowDistances();

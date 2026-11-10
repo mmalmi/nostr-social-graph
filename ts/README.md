@@ -34,7 +34,14 @@ Notes:
 - Lower-level `IdentityGraph*` exports are the neutral fact-roster primitives used by `NostrIdentity`.
 - Unknown authors are ignored by default. Pass `true` when ingesting from a cold start.
 - `await graph.setRoot(pubkey)` before reading follow distances for a new root.
-- If you connect a new root into preloaded graph data, run `recalculateFollowDistances()` before reading distances.
+- Follow distances and `getUsersByFollowDistance` stay exact as lists change:
+  `handleEvent`, `addFollower` and `removeFollower` update everyone reached
+  through the changed edge. `recalculateFollowDistances()` is only needed after
+  editing `getInternalData()` maps directly; `fromBinary`, `merge` and `setRoot`
+  already run it.
+- Queries never store the keys they are asked about, so filtering a feed full of
+  unknown authors does not grow the graph. `isFollowing`, `isMuting` and
+  `isOvermuted` answer without building a set.
 
 ## Nondelegated author authority
 

@@ -157,22 +157,30 @@ export interface GraphSyncLifecycleOptions extends Omit<GraphSyncOptions,'graph'
   intervalMs?:number;
   onError?:(error:unknown)=>void;
 }
-/** Active-tab catch-up rotating from closest users outward. Caller persists onChange. */
+/** Active-tab catch-up. Each pass spends up to half its author budget on the
+ * root and its direct follows, whose lists decide what a user sees, and the
+ * rest on a sweep that continues outward. Caller persists onChange. */
 export function startGraphSync(options:GraphSyncLifecycleOptions):()=>void {
   const interval=bounded(options.intervalMs??60*1000,1000,24*60*60*1000);
-  let stopped=false, controller:AbortController|undefined, timer:ReturnType<typeof setTimeout>|undefined, offset=0;
-  let sweepRoot:string|undefined;
+  let stopped=false, controller:AbortController|undefined, timer:ReturnType<typeof setTimeout>|undefined;
+  let sweepRoot:string|undefined, nearOffset=0, farOffset=0;
   const active=()=>typeof document==='undefined'||!document.hidden;
+  const window=(list:string[],offset:number,size:number)=>
+    Array.from({length:Math.max(0,Math.min(size,list.length))},(_,i)=>list[(offset+i)%list.length]);
   const run=async()=>{
     if(stopped||controller||!active()||(typeof navigator!=='undefined'&&navigator.onLine===false))return;
     clearTimeout(timer);controller=new AbortController();
     try{
       const graph=options.getGraph(), authors=graphSyncAuthors(graph), count=options.maxAuthors??500;
-      if(sweepRoot!==graph.getRoot()){sweepRoot=graph.getRoot();offset=0;}
-      if(offset>=authors.length)offset=0;
-      const batch=authors.slice(offset,offset+count);
-      const result=await syncGraphLists({...options,graph,authors:batch,signal:controller.signal});
-      offset=(offset+result.completedAuthors)%Math.max(1,authors.length);
+      if(sweepRoot!==graph.getRoot()){sweepRoot=graph.getRoot();nearOffset=farOffset=0;}
+      // Authors are ordered by distance, so the root and its follows come first.
+      const split=count<2?0:authors.findIndex(author=>graph.getFollowDistance(author)>1);
+      const near=authors.slice(0,split<0?authors.length:split), far=authors.slice(near.length);
+      const nearBatch=window(near,nearOffset%=Math.max(1,near.length),Math.max(count>>1,count-far.length));
+      const farBatch=window(far,farOffset%=Math.max(1,far.length),count-nearBatch.length);
+      const result=await syncGraphLists({...options,graph,authors:[...nearBatch,...farBatch],signal:controller.signal});
+      nearOffset+=Math.min(result.completedAuthors,nearBatch.length);
+      farOffset+=Math.max(0,result.completedAuthors-nearBatch.length);
     }catch(error){if(!controller.signal.aborted)options.onError?.(error);}
     finally{controller=undefined;if(!stopped)timer=setTimeout(run,interval);}
   };

@@ -35,6 +35,28 @@ describe('graph sync lifecycle bounds',()=>{
     } finally {stop();vi.useRealTimers();await server.close();}
   });
 
+  it('revisits the root and its follows while the rest of the sweep continues outward',async()=>{
+    const server=await graphSyncRelay([]);
+    vi.useFakeTimers({toFake:['setTimeout','clearTimeout','Date']});
+    const graph=new SocialGraph(key(1));
+    for(const followed of [2,3,4])graph.addFollower(key(1),key(followed));
+    for(let followed=5;followed<=10;followed++)graph.addFollower(key(2),key(followed));
+    const passes=()=>server.requests.filter(frame=>frame[0]==='NEG-OPEN')
+      .map(frame=>(frame[2] as {authors:string[]}).authors.map(author=>parseInt(author,16)));
+    const waitForPass=async(count:number)=>{
+      for(let attempt=0;attempt<200&&passes().length<count;attempt++)await delay(5);
+      expect(passes()).toHaveLength(count);
+    };
+    const stop=startGraphSync({getGraph:()=>graph,maxAuthors:4,relays:[server.url],webSocket:WebSocket as any});
+    try {
+      await waitForPass(1);
+      for(let pass=2;pass<=4;pass++){await vi.advanceTimersByTimeAsync(60000);await waitForPass(pass);}
+      // Half of each pass cycles through the four closest authors, half moves on.
+      expect(passes()).toEqual([[1,2,5,6],[3,4,7,8],[1,2,9,10],[3,4,5,6]]);
+      expect(server.errors).toEqual([]);
+    } finally {stop();vi.useRealTimers();await server.close();}
+  });
+
   it('orders public authors by distance from the current root, regardless of insertion order',async()=>{
     const graph=new SocialGraph(key(1));
     graph.addFollower(key(9),key(3));

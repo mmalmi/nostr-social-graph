@@ -35,9 +35,14 @@ traffic, 15-second batch deadlines, a 30-second total pass deadline, at most thr
 one-minute rotating catch-up interval while visible and online, starting immediately.
 Each sweep orders authors by follow distance from the current root: own lists,
 direct follows, then farther users, with unreachable users last. Equal-distance
-authors use public-key order. Later passes continue outward rather than repeatedly
-syncing only the closest users. Changing the root restarts with that root's own
-lists. Explicit author lists retain caller order.
+authors use public-key order. Since 4.1.0 each pass spends up to half its author
+budget on the root and its direct follows and the rest on a sweep that continues
+outward. With the defaults, up to 250 of the closest authors are checked again
+every minute (500 follows take two minutes) instead of once per sweep of the
+whole graph; an unchanged author costs the same bytes either way. Changing the
+root restarts with that root's own lists. Explicit author lists retain caller
+order. Applied lists update follow distances immediately; no recalculation is
+needed in `onChange`.
 A single arriving
 WebSocket frame can cross the transfer budget before the socket is closed.
 Negentropy is required for catch-up. Unsupported or rejected negotiation, malformed
