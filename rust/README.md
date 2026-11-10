@@ -26,7 +26,7 @@ graph.handle_event(&event, true, 1.0)?;
 Notes:
 
 - `allow_unknown_authors` defaults to your call site, not the library. Pass `true` during initial ingest if you are not filtering to already-reachable authors.
-- If you switch roots or connect a new root into preloaded graph data, recompute distances before reading them.
+- Follow distances stay exact as lists change: a follow or unfollow updates everyone reached through that edge, including when a new root links into preloaded graph data. `set_root` recalculates them itself; `recalculate_follow_distances()` is only needed for imported state whose distances were never computed.
 - Binary snapshots retain observed empty follow/mute lists and their timestamps, preventing stale lists from returning after reload. Budgeted snapshots keep these facts for retained, in-range owners; truncated nonempty lists are not labeled empty.
 
 Crates:

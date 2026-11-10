@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::str;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -24,6 +24,11 @@ const BINARY_FORMAT_VERSION_V2: u64 = 2;
 const BINARY_CHUNK_SIZE: usize = 16 * 1024;
 const MAX_FUTURE_EVENT_SECONDS: u64 = 10 * 60;
 const UNKNOWN_FOLLOW_DISTANCE: u32 = 1000;
+/// Marks a user whose path was cut while its new distance is worked out.
+/// Never left in the graph once an update returns.
+const DETACHED_DISTANCE: u32 = u32::MAX;
+/// Users whose distance changed in one update, with the distance they had.
+type Moved = IndexMap<u32, Option<u32>>;
 const BINARY_NODE_ID_PUBKEY: u64 = 0;
 const BINARY_NODE_ID_UUID: u64 = 1;
 const BINARY_NODE_ID_STRING: u64 = 2;
@@ -426,11 +431,8 @@ impl SocialGraph {
             let Some(distance) = self.follow_distance_by_user.get(&user).copied() else {
                 continue;
             };
-            let Some(followed) = self.followed_by_user.get(&user).cloned() else {
-                continue;
-            };
             let next_distance = distance.saturating_add(1);
-            for target in followed {
+            for &target in self.followed_by_user.get(&user).into_iter().flatten() {
                 if self.follow_distance_by_user.contains_key(&target) {
                     continue;
                 }
@@ -1484,75 +1486,166 @@ impl SocialGraph {
             .or_default()
             .insert(follower);
 
-        if followed_user == self.root {
-            return;
-        }
-
-        if follower == self.root {
-            self.follow_distance_by_user.insert(followed_user, 1);
-            self.add_user_by_follow_distance(1, followed_user);
-            return;
-        }
-
-        let existing = self.follow_distance_by_user.get(&followed_user).copied();
-        let follower_distance = self.follow_distance_by_user.get(&follower).copied();
-        let new_distance = follower_distance.map(|distance| distance.saturating_add(1));
-        if let Some(distance) = new_distance
-            .filter(|distance| existing.is_none() || *distance < existing.unwrap_or(u32::MAX))
-        {
-            self.follow_distance_by_user.insert(followed_user, distance);
-            self.add_user_by_follow_distance(distance, followed_user);
+        // A new edge can only shorten paths, and only from a reachable follower.
+        if let Some(distance) = self.follow_distance_by_user.get(&follower).copied() {
+            let mut moved = Moved::new();
+            self.lower_distance(followed_user, distance.saturating_add(1), &mut moved);
+            self.rebucket(moved);
         }
     }
 
     fn private_remove_follower(&mut self, unfollowed_user: u32, follower: u32) {
-        if let Some(set) = self.followed_by_user.get_mut(&follower) {
-            set.shift_remove(&unfollowed_user);
-        }
+        let removed = self
+            .followed_by_user
+            .get_mut(&follower)
+            .is_some_and(|set| set.shift_remove(&unfollowed_user));
         if let Some(set) = self.followers_by_user.get_mut(&unfollowed_user) {
             set.shift_remove(&follower);
         }
 
-        if unfollowed_user == self.root {
+        // Only the loss of a shortest path can change distances.
+        let distances = &self.follow_distance_by_user;
+        if removed
+            && distances.get(&unfollowed_user).is_some_and(|distance| {
+                *distance > 0 && distances.get(&follower) == Some(&(distance - 1))
+            })
+        {
+            self.raise_distance(unfollowed_user);
+        }
+    }
+
+    /// Brings `start` to `distance` if that is closer, then everyone reached
+    /// through them. Buckets are settled afterwards by `rebucket`.
+    fn lower_distance(&mut self, start: u32, distance: u32, moved: &mut Moved) {
+        let current = self.follow_distance_by_user.get(&start).copied();
+        if current.is_some_and(|current| current <= distance) {
             return;
         }
+        moved.entry(start).or_insert(current);
+        self.follow_distance_by_user.insert(start, distance);
 
-        let mut smallest = None;
-        if let Some(followers) = self.followers_by_user.get(&unfollowed_user) {
-            for follower in followers {
-                if let Some(distance) = self.follow_distance_by_user.get(follower).copied() {
-                    let candidate = distance.saturating_add(1);
-                    smallest =
-                        Some(smallest.map_or(candidate, |current: u32| current.min(candidate)));
-                }
-            }
-        }
-
-        match smallest {
-            Some(distance) => {
-                self.follow_distance_by_user
-                    .insert(unfollowed_user, distance);
-                self.add_user_by_follow_distance(distance, unfollowed_user);
-            }
-            None => {
-                self.follow_distance_by_user.shift_remove(&unfollowed_user);
-                for bucket in self.users_by_follow_distance.values_mut() {
-                    bucket.shift_remove(&unfollowed_user);
+        let mut queue = VecDeque::from([start]);
+        while let Some(user) = queue.pop_front() {
+            let next = self.follow_distance_by_user[&user].saturating_add(1);
+            for &target in self.followed_by_user.get(&user).into_iter().flatten() {
+                let known = self.follow_distance_by_user.get(&target).copied();
+                if known.is_none_or(|known| known > next) {
+                    moved.entry(target).or_insert(known);
+                    self.follow_distance_by_user.insert(target, next);
+                    queue.push_back(target);
                 }
             }
         }
     }
 
-    fn add_user_by_follow_distance(&mut self, distance: u32, user: u32) {
-        self.users_by_follow_distance
-            .entry(distance)
-            .or_default()
-            .insert(user);
-        let keys: Vec<u32> = self.users_by_follow_distance.keys().copied().collect();
-        for key in keys.into_iter().filter(|key| *key > distance) {
-            if let Some(bucket) = self.users_by_follow_distance.get_mut(&key) {
-                bucket.shift_remove(&user);
+    /// `user` lost a follower on a shortest path. Users whose every shortest
+    /// path ran through that edge move farther away or become unreachable.
+    fn raise_distance(&mut self, user: u32) {
+        let distance = self.follow_distance_by_user[&user];
+        if self.has_follower_at(user, distance - 1) {
+            return;
+        }
+        // Orphans are marked in place, closest first, so that they no longer
+        // count as a closer follower of anyone checked after them.
+        let mut moved = Moved::new();
+        moved.insert(user, Some(distance));
+        self.follow_distance_by_user.insert(user, DETACHED_DISTANCE);
+        let mut index = 0;
+        while let Some((&orphan, &was)) = moved.get_index(index) {
+            index += 1;
+            let next = was.unwrap_or(DETACHED_DISTANCE).saturating_add(1);
+            let orphaned: Vec<u32> = self
+                .followed_by_user
+                .get(&orphan)
+                .into_iter()
+                .flatten()
+                .copied()
+                .filter(|target| {
+                    self.follow_distance_by_user.get(target) == Some(&next)
+                        && !self.has_follower_at(*target, next - 1)
+                })
+                .collect();
+            for target in orphaned {
+                moved.insert(target, Some(next));
+                self.follow_distance_by_user
+                    .insert(target, DETACHED_DISTANCE);
             }
+        }
+
+        // Reattach through the nearest follower that is still reachable.
+        for index in 0..moved.len() {
+            let orphan = *moved.get_index(index).expect("orphan index").0;
+            let nearest = self
+                .followers_by_user
+                .get(&orphan)
+                .into_iter()
+                .flatten()
+                .filter_map(|follower| self.follow_distance_by_user.get(follower).copied())
+                .filter(|distance| *distance != DETACHED_DISTANCE)
+                .min();
+            if let Some(nearest) = nearest {
+                self.lower_distance(orphan, nearest.saturating_add(1), &mut moved);
+            }
+        }
+        self.rebucket(moved);
+    }
+
+    fn has_follower_at(&self, user: u32, distance: u32) -> bool {
+        self.followers_by_user.get(&user).is_some_and(|followers| {
+            followers
+                .iter()
+                .any(|follower| self.follow_distance_by_user.get(follower) == Some(&distance))
+        })
+    }
+
+    /// Moves users whose distance changed into their new buckets and drops the
+    /// ones left detached. Several users leaving one collection take a single
+    /// stable pass rather than one compaction each.
+    fn rebucket(&mut self, moved: Moved) {
+        let mut leaving: IndexMap<u32, Vec<u32>> = IndexMap::new();
+        let mut detached = Vec::new();
+        for (user, old) in moved {
+            let new = self
+                .follow_distance_by_user
+                .get(&user)
+                .copied()
+                .filter(|distance| *distance != DETACHED_DISTANCE);
+            if new.is_none() {
+                detached.push(user);
+            }
+            if new == old {
+                continue;
+            }
+            if let Some(old) = old {
+                leaving.entry(old).or_default().push(user);
+            }
+            if let Some(new) = new {
+                self.users_by_follow_distance
+                    .entry(new)
+                    .or_default()
+                    .insert(user);
+            }
+        }
+        for (distance, users) in leaving {
+            let Some(bucket) = self.users_by_follow_distance.get_mut(&distance) else {
+                continue;
+            };
+            if let [user] = users[..] {
+                bucket.shift_remove(&user);
+            } else {
+                let users: HashSet<u32> = users.into_iter().collect();
+                bucket.retain(|user| !users.contains(user));
+            }
+            if bucket.is_empty() {
+                self.users_by_follow_distance.shift_remove(&distance);
+            }
+        }
+        if let [user] = detached[..] {
+            self.follow_distance_by_user.shift_remove(&user);
+        } else if !detached.is_empty() {
+            let detached: HashSet<u32> = detached.into_iter().collect();
+            self.follow_distance_by_user
+                .retain(|user, _| !detached.contains(user));
         }
     }
 }

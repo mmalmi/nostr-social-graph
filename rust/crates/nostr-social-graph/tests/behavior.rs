@@ -98,7 +98,7 @@ fn set_root_recalculates_follow_distances() {
 }
 
 #[test]
-fn alternate_root_can_link_into_existing_graph_after_recalc() {
+fn alternate_root_links_into_existing_graph_at_once() {
     let mut graph = SocialGraph::new(ADAM);
     graph.handle_event(&event(ADAM, 3, 1_000, vec![FIATJAF]), true, 1.0);
     graph.handle_event(&event(FIATJAF, 3, 2_000, vec![SNOWDEN]), true, 1.0);
@@ -115,8 +115,10 @@ fn alternate_root_can_link_into_existing_graph_after_recalc() {
 
     new_graph.handle_event(&event(SIRIUS, 3, 3_000, vec![ADAM]), true, 1.0);
 
+    // The new root's follow reaches the existing lists without a recalculation.
     assert_eq!(new_graph.get_follow_distance(ADAM), 1);
-    assert_eq!(new_graph.get_follow_distance(FIATJAF), 1000);
+    assert_eq!(new_graph.get_follow_distance(FIATJAF), 2);
+    assert_eq!(new_graph.get_follow_distance(SNOWDEN), 3);
 
     new_graph.recalculate_follow_distances();
 
