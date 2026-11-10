@@ -43,6 +43,10 @@ Version 0.2.1 of the Hashtree backend and social-memory package requires
 alias-preserving snapshot import fix. Consumers still using either package at
 0.2.0 must update that dependency to receive the corrected minimum.
 
+Core 0.2.2 keeps in-memory follow distances exact on every follow and unfollow.
+It is a compatible update: the Hashtree backend and server pick it up through
+their existing 0.2.1 minimum once a consumer's lockfile is updated.
+
 The server also requires at least 0.2.1 of the core, Heed and Hashtree backends.
 These minimums belong in package manifests: a corrected workspace lock alone
 does not exclude core 0.2.0 from another consumer's existing lockfile.
