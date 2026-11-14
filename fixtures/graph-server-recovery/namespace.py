@@ -97,6 +97,18 @@ try:
         base=source/'rust/crates/nostr-social-graph-server/tests'
         run('cap-forward-recovery',[config['node'],base/'crawl_cap.mjs',config['binary'],'--dependencies',source/'ts/package.json','--output',runtime/'cap-forward-recovery','--recovery'],165,cwd=source)
         run('persistence-recovery',[config['node'],base/'sync_recovery.mjs',config['binary'],'--dependencies',source/'ts/package.json','--output',runtime/'persistence-recovery'],195,cwd=source)
+        timeout_output = runtime / 'forward-timeout-recovery'
+        run('forward-timeout-recovery', [
+            config['node'], base / 'crawl_cap.mjs', config['binary'],
+            '--dependencies', source / 'ts/package.json', '--output', timeout_output,
+            '--forward-timeout-recovery',
+        ], 105, cwd=source)
+        delivery = json.loads((timeout_output / 'receipt.json').read_text())
+        assert delivery['passed'] and delivery['mode'] == 'forward-timeout-recovery'
+        assert delivery['binarySha256'] == sha(config['binary'])
+        assert delivery['forwardedHeads'] == 256
+        assert delivery['retainedSnapshotSha256'] == delivery['repairedSnapshotSha256']
+        result['forwardTimeoutRecovery'] = True
         cap=json.loads((runtime/'cap-forward-recovery/receipt.json').read_text())
         faults=json.loads((runtime/'persistence-recovery/result.json').read_text())
         assert cap['passed'] and cap['oldFilterCappedHeads']==100 and cap['durableHeads']==256 and cap['recovery']

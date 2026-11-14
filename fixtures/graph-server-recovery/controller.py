@@ -1,7 +1,7 @@
 """Task-only Linux producer. No deployment, signing, source push, or cache cleanup."""
 import hashlib, json, os, pathlib, re, shutil, signal, subprocess, sys, tarfile, time, urllib.request
 
-SOURCE = '775de2d84aed3d5eeac33b47ed84ff9e880aea28'
+SOURCE = '091a642bdc02694f7bf629ad8e3208777cadc8cc'
 NODE = '22.23.4'
 NODE_SHA = '1805bcd35e6815559bd2eb97db438d3fdb0eb3a5e6a977b7c1badca76337e9ce'
 NODE_URL = f'https://nodejs.org/dist/v{NODE}/node-v{NODE}-linux-x64.tar.xz'
@@ -151,6 +151,8 @@ try:
     cargo=out(['rustup','which','--toolchain','1.99.0','cargo']);rustc=out(['rustup','which','--toolchain','1.99.0','rustc'])
     env['RUSTC']=rustc
     assert 'host: x86_64-unknown-linux-gnu' in out([rustc,'-Vv'])
+    assert sha(cargo)=='e951141cc55a6cd7b9876d187bd30a3720e6086b99413af95e3b8de1cdd72f14', 'Unexpected cargo artifact'
+    assert sha(rustc)=='f3834d26669b03f6855fa54bd2381443123e860167bc0c7a8dd137e5cf6e5e4f', 'Unexpected rustc artifact'
     run('source-history',['git','fsck','--full','--strict'],120,cwd=CANDIDATE,env=env)
     run('pnpm-frozen',['pnpm','install','--frozen-lockfile','--ignore-scripts'],300,cwd=CANDIDATE,env=env)
     preflight=dict(source=str(CANDIDATE),stage=str(STAGE),evidence=str(EVIDENCE),node=shutil.which('node'),path=env['PATH'],
