@@ -1,7 +1,7 @@
 """Task-only Linux producer. No deployment, signing, source push, or cache cleanup."""
 import hashlib, json, os, pathlib, re, shutil, signal, subprocess, sys, tarfile, time, urllib.request
 
-SOURCE = '40ba1c69ae7f737cf4547bce65c6c3e320c9f04a'
+SOURCE = 'd708560ae0e82a6881781876478c40fb4b96f847'
 NODE = '22.23.4'
 NODE_SHA = '1805bcd35e6815559bd2eb97db438d3fdb0eb3a5e6a977b7c1badca76337e9ce'
 NODE_URL = f'https://nodejs.org/dist/v{NODE}/node-v{NODE}-linux-x64.tar.xz'

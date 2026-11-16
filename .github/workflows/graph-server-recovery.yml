@@ -20,7 +20,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
-          ref: 40ba1c69ae7f737cf4547bce65c6c3e320c9f04a
+          ref: d708560ae0e82a6881781876478c40fb4b96f847
           path: candidate
           persist-credentials: false
           fetch-depth: 0
