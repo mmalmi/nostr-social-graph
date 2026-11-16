@@ -20,11 +20,13 @@ jobs:
           fetch-depth: 0
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
-          ref: 091a642bdc02694f7bf629ad8e3208777cadc8cc
+          ref: 3dc9ce3d153690cb48d58ce16b1b5279699dedcc
           path: candidate
           persist-credentials: false
           fetch-depth: 0
-      - name: Verify and install the pinned Node artifact
+      - name: Verify pinned Node and Hashtree tools
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: python3 harness/fixtures/graph-server-recovery/controller.py bootstrap
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
         with:
@@ -32,7 +34,7 @@ jobs:
           run_install: false
       - name: Build once and qualify without external test traffic
         run: python3 harness/fixtures/graph-server-recovery/controller.py qualify
-      - name: Preserve binary and qualification evidence
+      - name: Preserve both binaries and qualification evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
