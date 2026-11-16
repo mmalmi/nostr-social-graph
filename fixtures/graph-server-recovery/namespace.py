@@ -78,11 +78,63 @@ def run(name,args,seconds,cwd=None):
     assert error is None,error
     return log
 
+def run_publication_fixtures(base, result):
+    publisher_output = runtime / 'hashtree-publication'
+    assert sha(config['htree']) == config['htreeSha256']
+    assert sha(config['legacyHtree']) == config['legacyHtreeSha256']
+    assert sha(config['reader']) == config['readerSha256']
+    run('hashtree-publication', [
+        config['node'], base / 'hashtree_publication.mjs', config['binary'],
+        '--htree', config['htree'], '--legacy-htree', config['legacyHtree'], '--dependencies', source / 'ts/package.json',
+        '--output', publisher_output,
+    ], 300, cwd=source)
+    published = json.loads((publisher_output / 'receipt.json').read_text())
+    assert published['passed'] and published['binarySha256'] == sha(config['binary'])
+    assert published['htreeSha256'] == config['htreeSha256'] and published['namedTree']
+    assert published['defaultOff'] and published['priorSnapshotPreserved']
+    assert published['readerUsedSeparateStore'] and published['notificationBytesMatched']
+    assert published['retryRecovered'] and published['upstreamUploads'] == 0
+    assert published['encryptedAtRest'] and published['manifestVerified']
+    assert published['failedCheckpointStayedPrivate'] and published['writerScratchCleaned']
+    assert published['oldImmutableReadableAfterRename']
+    assert published['legacyReaderVerified'] and published['legacyHtreeSha256'] == config['legacyHtreeSha256']
+    result['hashtreePublication'] = True
+    assert sha(config['notifier']) == config['notifierSha256']
+    policy = published['expectedNotifierPolicy']
+    notifier_results = {}
+    for generation, current, other in [
+        ('initial', 'initialFriend', 'recoveredFriend'),
+        ('recovered', 'recoveredFriend', 'initialFriend'),
+    ]:
+        snapshot = publisher_output / generation / 'social-graph.bin'
+        log = run('notifier-policy-' + generation, [config['notifier'], snapshot,
+            policy['root'], policy[current], policy[other], policy['stableFriend']], 10, cwd=source)
+        checks = json.loads(log.read_text())
+        assert checks['passed']
+        notifier_results[generation] = dict(v3Sha256=sha(snapshot), checks=checks)
+    write(runtime / 'notifier-policy-receipt.json', dict(passed=True,
+          binarySha256=config['notifierSha256'], generations=notifier_results))
+    result['notifierPolicy'] = True
+    reader_receipt = runtime / 'snapshot-reader-receipt.json'
+    run('snapshot-reader', [sys.executable, base / 'snapshot_reader.py', config['reader'],
+                            publisher_output, reader_receipt], 75, cwd=source)
+    verified = json.loads(reader_receipt.read_text())
+    assert verified['passed'] and verified['readerSha256'] == config['readerSha256']
+    assert verified['mobileRoots'] == 2 and verified['exactV3'] and verified['staleHealth']
+    assert verified['retirementPreserved'] and verified['rollbackRejected']
+    assert verified['corruptRejected'] and verified['incompleteRejected']
+    assert verified['sourceManifests'] == [sha(publisher_output / n / 'manifest.json') for n in ['initial', 'recovered']]
+    result['snapshotReader'] = True
+
 result=dict(passed=False,rootDropped=True,noNewPrivileges=True,capabilities=capabilities,netNamespace=os.readlink('/proc/self/ns/net'),pidNamespace=os.readlink('/proc/self/ns/pid'))
 try:
     run('network-boundary',[sys.executable,HERE/'network_proof.py',runtime/'network-boundary-proof.json'],15)
     if config.get('boundaryOnly'):
         result.update(passed=True,boundaryOnly=True)
+    elif config.get('transportReplay'):
+        run_publication_fixtures(source / 'rust/crates/nostr-social-graph-server/tests', result)
+        assert not remaining()
+        result.update(passed=True,transportReplay=True,releaseQualification=False)
     else:
         counts=dict(passed=0,failed=0,ignored=0)
         for i,harness in enumerate(config['harnesses']):
@@ -101,52 +153,7 @@ try:
         faults=json.loads((runtime/'persistence-recovery/result.json').read_text())
         assert cap['passed'] and cap['oldFilterCappedHeads']==100 and cap['durableHeads']==256 and cap['recovery']
         assert faults['passed'] and {case['fault'] for case in faults['results']}=={'checkpoint','freshness','allowlist','profile','profile-index'}
-        publisher_output = runtime / 'hashtree-publication'
-        assert sha(config['htree']) == config['htreeSha256']
-        assert sha(config['legacyHtree']) == config['legacyHtreeSha256']
-        assert sha(config['reader']) == config['readerSha256']
-        run('hashtree-publication', [
-            config['node'], base / 'hashtree_publication.mjs', config['binary'],
-            '--htree', config['htree'], '--legacy-htree', config['legacyHtree'], '--dependencies', source / 'ts/package.json',
-            '--output', publisher_output,
-        ], 300, cwd=source)
-        published = json.loads((publisher_output / 'receipt.json').read_text())
-        assert published['passed'] and published['binarySha256'] == sha(config['binary'])
-        assert published['htreeSha256'] == config['htreeSha256'] and published['namedTree']
-        assert published['defaultOff'] and published['priorSnapshotPreserved']
-        assert published['readerUsedSeparateStore'] and published['notificationBytesMatched']
-        assert published['retryRecovered'] and published['upstreamUploads'] == 0
-        assert published['encryptedAtRest'] and published['manifestVerified']
-        assert published['failedCheckpointStayedPrivate'] and published['writerScratchCleaned']
-        assert published['oldImmutableReadableAfterRename']
-        assert published['legacyReaderVerified'] and published['legacyHtreeSha256'] == config['legacyHtreeSha256']
-        result['hashtreePublication'] = True
-        assert sha(config['notifier']) == config['notifierSha256']
-        policy = published['expectedNotifierPolicy']
-        notifier_results = {}
-        for generation, current, other in [
-            ('initial', 'initialFriend', 'recoveredFriend'),
-            ('recovered', 'recoveredFriend', 'initialFriend'),
-        ]:
-            snapshot = publisher_output / generation / 'social-graph.bin'
-            log = run('notifier-policy-' + generation, [config['notifier'], snapshot,
-                policy['root'], policy[current], policy[other], policy['stableFriend']], 10, cwd=source)
-            checks = json.loads(log.read_text())
-            assert checks['passed']
-            notifier_results[generation] = dict(v3Sha256=sha(snapshot), checks=checks)
-        write(runtime / 'notifier-policy-receipt.json', dict(passed=True,
-              binarySha256=config['notifierSha256'], generations=notifier_results))
-        result['notifierPolicy'] = True
-        reader_receipt = runtime / 'snapshot-reader-receipt.json'
-        run('snapshot-reader', [sys.executable, base / 'snapshot_reader.py', config['reader'],
-                                publisher_output, reader_receipt], 75, cwd=source)
-        verified = json.loads(reader_receipt.read_text())
-        assert verified['passed'] and verified['readerSha256'] == config['readerSha256']
-        assert verified['mobileRoots'] == 2 and verified['exactV3'] and verified['staleHealth']
-        assert verified['retirementPreserved'] and verified['rollbackRejected']
-        assert verified['corruptRejected'] and verified['incompleteRejected']
-        assert verified['sourceManifests'] == [sha(publisher_output / n / 'manifest.json') for n in ['initial', 'recovered']]
-        result['snapshotReader'] = True
+        run_publication_fixtures(base, result)
         assert not remaining()
         result.update(passed=True,tests=counts,harnesses=len(config['harnesses']),persistenceFaults=5,
                       realCap100=True,forwardOutageRecovery=True,liveAllowlist=True,oldBinaryTested=False,

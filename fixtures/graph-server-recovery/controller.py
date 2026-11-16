@@ -1,7 +1,7 @@
 """Task-only Linux producer. No deployment, signing, source push, or cache cleanup."""
 import hashlib, json, os, pathlib, re, shutil, signal, subprocess, sys, tarfile, time, urllib.request
 
-SOURCE = '3dc9ce3d153690cb48d58ce16b1b5279699dedcc'
+SOURCE = '16dbfde1ba69a3d4e152349dc41795496b784123'
 NODE = '22.23.4'
 NODE_SHA = '1805bcd35e6815559bd2eb97db438d3fdb0eb3a5e6a977b7c1badca76337e9ce'
 NODE_URL = f'https://nodejs.org/dist/v{NODE}/node-v{NODE}-linux-x64.tar.xz'
@@ -137,7 +137,7 @@ def interrupted(signum, _frame):
 
 for signum in (signal.SIGTERM, signal.SIGINT): signal.signal(signum,interrupted)
 
-mode=sys.argv[1]; assert mode in ('bootstrap','qualify')
+mode=sys.argv[1]; assert mode in ('bootstrap','qualify','transport-replay')
 if mode=='bootstrap':
     STAGE.mkdir(); EVIDENCE.mkdir(); BASELINE=sample()
     assert BASELINE['diskFree']>=LIMITS['entryDiskBytes'] and BASELINE['available']>=LIMITS['entryAvailableBytes']
@@ -205,6 +205,44 @@ assert out(['git','rev-parse','HEAD'],cwd=CANDIDATE)==SOURCE
 assert not out(['git','status','--porcelain','--untracked-files=no'],cwd=CANDIDATE)
 assert out(['node','--version'])=='v'+NODE and out(['pnpm','--version'])=='10.28.2'
 entry=sample();guard(entry);assert entry['available']>=LIMITS['entryAvailableBytes'] and entry['diskFree']>=LIMITS['entryDiskBytes']
+if mode == 'transport-replay':
+    evidence = dict(fixtureSource=SOURCE, recipe=out(['git','rev-parse','HEAD'],cwd=HERE),
+                    passed=False, compilationPerformed=False, releaseQualification=False)
+    try:
+        run('recover-executables', [sys.executable, HERE / 'stage_transport_replay.py', STAGE, EVIDENCE], 100)
+        # The token only authorizes fetching the named retained artifact.
+        os.environ.pop('GH_TOKEN')
+        retained = json.loads((EVIDENCE / 'replay-inputs.json').read_text())
+        binaries = retained['binaries']
+        fixture_dir = CANDIDATE / 'rust/crates/nostr-social-graph-server/tests'
+        evidence.update(compiledSource=retained['compiledSource'], originalArtifact=retained['artifact'],
+                        binaries=binaries, fixtures={n: sha(fixture_dir / n) for n in ['hashtree_publication.mjs', 'snapshot_reader.py']})
+        for lock in ['pnpm-lock.yaml', 'package.json', 'ts/package.json']:
+            assert sha(CANDIDATE / lock) == retained['dependencyLocks'][lock]
+        run('pnpm-frozen', ['pnpm','install','--frozen-lockfile','--ignore-scripts'], 160, cwd=CANDIDATE)
+        binary_dir = STAGE / 'replay'
+        config = dict(source=str(CANDIDATE),stage=str(STAGE),evidence=str(EVIDENCE),node=shutil.which('node'),
+            path=os.environ['PATH'],uid=os.getuid(),gid=os.getgid(),hostNet=os.readlink('/proc/self/ns/net'),
+            hostPid=os.readlink('/proc/self/ns/pid'),transportReplay=True,
+            binary=str(binary_dir / 'nostr-social-graph-server'),reader=str(binary_dir / 'graph-snapshot-reader'),
+            readerSha256=binaries['graph-snapshot-reader'],notifier=str(binary_dir / 'notifier-policy-probe'),
+            notifierSha256=binaries['notifier-policy-probe'],htree=str(STAGE/'htree'),htreeSha256=HTREE_BINARY_SHA,
+            legacyHtree=str(STAGE/'legacy-htree'),legacyHtreeSha256=LEGACY_HTREE_BINARY_SHA)
+        write(EVIDENCE/'runtime-input.json',config)
+        run('isolated-transport-replay',['sudo','-n','unshare','--mount','--net','--pid','--fork',
+            '--kill-child=KILL','--mount-proc',sys.executable,HERE/'namespace.py',EVIDENCE/'runtime-input.json'],450)
+        for name, expected in binaries.items():
+            assert sha(binary_dir / name) == expected
+        assert not out(['git','status','--porcelain','--untracked-files=no'],cwd=CANDIDATE)
+        evidence['passed'] = True
+    except BaseException as exc:
+        evidence['error'] = repr(exc)
+    finally:
+        evidence['elapsedSeconds'] = time.monotonic() - START
+        write(EVIDENCE/'transport-smoke.json',evidence)
+    assert evidence['passed'], evidence.get('error')
+    sys.exit(0)
+
 result=dict(source=SOURCE,recipeCommit=out(['git','rev-parse','HEAD'],cwd=HERE),limits=LIMITS,passed=False)
 try:
     env=dict(os.environ,CARGO_TARGET_DIR=str(STAGE/'target'),CARGO_BUILD_JOBS='1',CARGO_INCREMENTAL='0',
