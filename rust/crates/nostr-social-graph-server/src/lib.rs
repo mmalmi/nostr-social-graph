@@ -42,6 +42,8 @@ const FORWARD_REPAIR_BACKOFF: Duration = Duration::from_secs(30);
 const LIVE_ALLOWLIST_INTERVAL: Duration = Duration::from_secs(5);
 const PROFILE_NAME_MAX_LENGTH: usize = 100;
 const PROFILE_PICTURE_URL_MAX_LENGTH: usize = 255;
+const MOBILE_DISCOVERY_ROOT: &str =
+    "336f319763657d6b0e65a5b5876719e8c8dcdcf9396852be71ee26b73368b29b";
 pub const DEFAULT_SOCIAL_GRAPH_ROOT: &str =
     "4523be58d395b1b196a9b8c82b038b6895cb02b683d0c253a955068dba1facd0";
 pub const DEFAULT_RELAY_URLS: &[&str] = &[];
@@ -953,9 +955,7 @@ async fn mobile_graph_binary(
     let root = query.root.unwrap_or_else(|| default_root.clone());
     // Only maintained public discovery roots: arbitrary roots would permit
     // unbounded traversal/cache work controlled by unauthenticated requests.
-    if root != default_root
-        && root != "336f319763657d6b0e65a5b5876719e8c8dcdcf9396852be71ee26b73368b29b"
-    {
+    if root != default_root && root != MOBILE_DISCOVERY_ROOT {
         return (StatusCode::BAD_REQUEST, "Unsupported discovery root").into_response();
     }
 

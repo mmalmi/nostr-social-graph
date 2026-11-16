@@ -40,7 +40,9 @@ const npub = nip19.npubEncode(publishPubkey);
 const treeName = 'social-graph';
 const uri = 'htree://' + npub + '/' + treeName;
 const members = ['allowlist.txt', 'mobile.bin', 'profile-data.json', 'profile-index.json', 'social-graph-v4.bin', 'social-graph.bin'];
-const entries = [...members, 'manifest.json'].sort();
+const alternateRoot = '336f319763657d6b0e65a5b5876719e8c8dcdcf9396852be71ee26b73368b29b';
+const alternateMobile = 'mobile-' + alternateRoot + '.bin';
+const entries = [...members, alternateMobile, 'manifest.json'].sort();
 const names = [];
 const stableFriend = getPublicKey(generateSecretKey());
 const tag = (event, name) => event.tags.find(field => field[0] === name)?.[1];
@@ -285,7 +287,7 @@ async function readNamed(scratch, phase, naming, storage) {
   assert(signed, 'Reader must resolve an actual signed root from this relay');
   const cid = resolvedHash + ':' + tag(signed, 'key');
   assert(naming.queries > beforeQueries && storage.suffixedReads > beforeReads, 'Fresh reader must resolve the name and retrieve native .bin blob URLs');
-  assert.deepEqual(readdirSync(location).sort(), entries, 'Public tree contains exactly the manifest and six consumer files');
+  assert.deepEqual(readdirSync(location).sort(), entries, 'Public tree contains exactly the documented members');
   const files = Object.fromEntries(entries.map(name => [name, readFileSync(path.join(location, name))]));
   // Read the same files by immutable CID once a consumer has resolved the name.
   for (const filename of ['social-graph.bin', 'profile-index.json', 'allowlist.txt']) {
@@ -318,6 +320,12 @@ function checkManifest(files) {
   assert(manifest.graph_completed_at <= manifest.generated_at && manifest.generated_at <= Math.floor(Date.now() / 1000) + 1);
   assert.deepEqual(Object.keys(manifest.files).sort(), members);
   for (const file of members) assert.deepEqual(manifest.files[file], { size: files[file].length, sha256: digest(files[file]) });
+  const projection = files[alternateMobile];
+  assert.deepEqual(manifest.mobile_roots, { [alternateRoot]: {
+    file: alternateMobile, size: projection.length, sha256: digest(projection),
+  } });
+  assert.equal(projection[0], 4);
+  assert(projection.length <= 4 * 1024 * 1024);
   return manifest;
 }
 
@@ -422,6 +430,7 @@ try {
   const initial = await readNamed(scratch, 'first-reader', naming, storage);
   checkManifest(initial.files);
   checkConsumer(ordinary, initial.files, first);
+  assert.deepEqual(initial.files[alternateMobile], await worker.read('/social-graph/mobile?root=' + alternateRoot));
   storage.checkEncrypted(initial.files, first);
   assert.equal(initial.cid.split(':')[0], heldHash);
 
@@ -464,6 +473,35 @@ try {
 
   await worker.stop();
   worker = undefined;
+  // A separately managed identity can name a completed upload. The crawler
+  // supplies only a public immutable reference after its own upload succeeds.
+  const handoff = path.join(scratch, 'handoff');
+  const handoffEnv = envFor(handoff, naming, storage, publishKey);
+  const receiptPath = path.join(handoff, 'upload.json');
+  const previousReceipt = JSON.stringify({ hash: heldHash, key: initial.cid.split(':')[1] });
+  writeFileSync(receiptPath, previousReceipt);
+  const namesBeforeHandoff = naming.writes, denialsBeforeHandoff = storage.denials;
+  storage.fault = true;
+  current = generation('Handoff Profile', now);
+  worker = await launch(handoff, { ...handoffEnv, GRAPH_PUBLISH_RECEIPT_PATH: receiptPath }, upstream, storage, true);
+  await until(() => storage.denials > denialsBeforeHandoff, 'failed upload in handoff mode');
+  assert.equal(readFileSync(receiptPath, 'utf8'), previousReceipt);
+  storage.fault = false;
+  const upload = await until(() => {
+    const receipt = JSON.parse(readFileSync(receiptPath, 'utf8'));
+    return receipt.version === 1 ? receipt : null;
+  }, 'complete upload receipt', 70_000);
+  assert.match(upload.hash, /^[a-f0-9]{64}$/);
+  assert.match(upload.key, /^[a-f0-9]{64}$/);
+  const cold = envFor(path.join(scratch, 'receipt-reader'), naming, storage);
+  const { stdout: manifestBytes } = await run(htree, ['--data-dir', cold.HTREE_DATA_DIR, 'cat',
+    upload.hash + ':' + upload.key + '/manifest.json'], {env: cold, encoding: 'buffer', timeout: 40_000});
+  assert.equal(upload.manifest_sha256, digest(manifestBytes));
+  assert.equal(upload.graph_completed_at, JSON.parse(manifestBytes).graph_completed_at);
+  await worker.stop();
+  worker = undefined;
+  assert.equal(naming.writes, namesBeforeHandoff, 'Receipt mode must leave name signing to its owner');
+
   mkdirSync(output);
   for (const [stage, generation] of [['initial', initial], ['recovered', recovered]]) {
     const dest = path.join(output, stage);
@@ -474,7 +512,7 @@ try {
     legacyHtreeSha256: await hashFile(legacyHtree), legacyReaderVerified: true, encryptedAtRest: true,
     namedTree: uri, defaultOff: true, priorSnapshotPreserved: true, notificationBytesMatched: true,
     readerUsedSeparateStore: true, retryRecovered: true, upstreamUploads: upstream.writes,
-    manifestVerified: true, failedCheckpointStayedPrivate: true, writerScratchCleaned: true, oldImmutableReadableAfterRename: true, acceptedBeforeFailure: storage.newDuringFault, rejectedDuringFailure: storage.denials,
+    uploadReceiptVerified: true, alternateMobileVerified: true, manifestVerified: true, failedCheckpointStayedPrivate: true, writerScratchCleaned: true, oldImmutableReadableAfterRename: true, acceptedBeforeFailure: storage.newDuringFault, rejectedDuringFailure: storage.denials,
     initialRoot: heldHash, recoveredRoot: recovered.cid.split(':')[0],
     expectedNotifierPolicy: { root, initialFriend: first.friend, recoveredFriend: second.friend, stableFriend },
     initialDirectory: 'initial', recoveredDirectory: 'recovered' };

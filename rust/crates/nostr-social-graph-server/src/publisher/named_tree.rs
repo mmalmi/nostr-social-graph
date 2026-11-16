@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
+use nostr_sdk::hashes::{Hash, sha256};
 use nostr_sdk::{FromBech32, Keys, PublicKey};
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
@@ -23,6 +24,7 @@ pub(super) struct NamedTree {
     data_dir: PathBuf,
     publisher: PublicKey,
     blossom: String,
+    receipt_path: Option<PathBuf>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -149,6 +151,49 @@ fn public_cid(output: &[u8]) -> io::Result<(&str, &str)> {
     Ok((field(text, "hash:")?, field(text, "key:")?))
 }
 
+fn handoff_path() -> io::Result<Option<PathBuf>> {
+    let Some(raw) = env::var_os("GRAPH_PUBLISH_RECEIPT_PATH") else {
+        return Ok(None);
+    };
+    let path = PathBuf::from(raw);
+    if !path.is_absolute() || path.file_name().is_none() || path.is_dir() {
+        return Err(invalid(
+            "GRAPH_PUBLISH_RECEIPT_PATH must be an absolute file path",
+        ));
+    }
+    let parent = path.parent().expect("absolute file").canonicalize()?;
+    Ok(Some(parent.join(path.file_name().expect("file name"))))
+}
+
+fn write_upload_receipt(path: &Path, directory: &Path, hash: &str, key: &str) -> io::Result<()> {
+    let bytes = fs::read(directory.join("manifest.json"))?;
+    let manifest: crate::SnapshotManifest = serde_json::from_slice(&bytes)?;
+    let receipt = serde_json::json!({
+        "version": 1,
+        "hash": hash,
+        "key": key,
+        "manifest_sha256": sha256::Hash::hash(&bytes).to_string(),
+        "graph_completed_at": manifest.graph_completed_at,
+    });
+    let parent = path
+        .parent()
+        .ok_or_else(|| invalid("missing receipt parent"))?;
+    let mut temp = tempfile::NamedTempFile::new_in(parent)?;
+    serde_json::to_writer(temp.as_file_mut(), &receipt)?;
+    temp.as_file_mut().write_all(b"\n")?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        temp.as_file()
+            .set_permissions(fs::Permissions::from_mode(0o644))?;
+    }
+    temp.as_file().sync_all()?;
+    temp.persist(path)?;
+    #[cfg(unix)]
+    fs::File::open(parent)?.sync_all()?;
+    Ok(())
+}
+
 impl NamedTree {
     pub(super) fn from_env() -> io::Result<Option<Self>> {
         match env::var("GRAPH_PUBLISH_HASHTREE") {
@@ -170,7 +215,18 @@ impl NamedTree {
             config_dir: absolute_path("HTREE_CONFIG_DIR", true)?,
             data_dir: absolute_path("HTREE_DATA_DIR", true)?,
             blossom,
+            receipt_path: handoff_path()?,
         };
+        let private_dir = tree.config_dir.canonicalize()?;
+        if tree
+            .receipt_path
+            .as_ref()
+            .is_some_and(|path| path.starts_with(&private_dir))
+        {
+            return Err(invalid(
+                "public upload receipt must be outside the private Hashtree config directory",
+            ));
+        }
         tree.settings()?;
         Ok(Some(tree))
     }
@@ -333,6 +389,9 @@ impl NamedTree {
             Duration::from_secs(900),
         )
         .await?;
+        if let Some(path) = &self.receipt_path {
+            return write_upload_receipt(path, directory, hash, key);
+        }
         self.run(
             config,
             store,
@@ -382,6 +441,7 @@ mod tests {
         let tree = NamedTree {
             publisher: keys.public_key(),
             binary: PathBuf::from("/unused"),
+            receipt_path: None,
             blossom: "http://localhost:8080".into(),
             config_dir: source.path().to_owned(),
             data_dir: source.path().to_owned(),

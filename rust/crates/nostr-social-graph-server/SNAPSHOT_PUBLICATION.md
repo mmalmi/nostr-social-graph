@@ -16,6 +16,8 @@ Publishing defaults to off. Set these variables on the existing crawler to enabl
 | `HTREE_DATA_DIR` | Existing dedicated writable directory for the temporary block store |
 | `GRAPH_PUBLISH_INTERVAL_SECS` | Minimum time between captured checkpoints, default 900 seconds |
 
+To let a separate content publisher sign the name, set `GRAPH_PUBLISH_RECEIPT_PATH` to an absolute file in an existing shared directory. The crawler uploads blocks with its own Blossom identity. After a successful upload it atomically writes a public JSON receipt with `version: 1`, the 32-byte root `hash` and public CHK `key` in hex, `manifest_sha256` and the Unix `graph_completed_at`. The content publisher can verify the immutable manifest against that receipt before announcing the name. A failed upload leaves the previous receipt in place. Omitting the option enables the built-in name announcement.
+
 Provision the expected first signing key in `keys` and the name relays in `[nostr].relays` before startup. Restrict access to the signing key. The signing identity must match the configured npub. Invalid startup settings disable publication and log an error. Fix the settings and restart the crawler. Use `TMPDIR` on a filesystem with room to stage a full export, and provision the dedicated store for the encrypted chunks of one attempt. Normal completion or failure removes the temporary store. Uploads use the configured signer, which must be permitted to write to the target. The target must retain published blocks for as long as readers need the generation. The crawler’s existing data directory and relay configuration retain their usual roles.
 
 The first successful graph and profile pass supplies the first generation. Later passes can publish once the interval elapses. Partial checkpoints and failed passes never advance the name. The checkpoint uses the crawler’s existing graph to encode both projections. Publication logs their sizes and the extra encoding time. One background worker stages the public files and uploads their encrypted content-addressed blocks before announcing the signed name. It releases serialized buffers after staging. A failed upload retries after 30 seconds using the previous staged files or a newer complete checkpoint. Older readers can decrypt the public-link tree using its 32-byte CHK. Crawl and HTTP service continue during upload. A completed pass can advance the manifest watermark when graph edges are unchanged.
@@ -33,6 +35,8 @@ Resolve the signed name for the pinned publisher and directory, retain the full 
 | `profile-data.json` | Public profile rows |
 | `profile-index.json` | Matching public search index |
 | `manifest.json` | Checkpoint metadata and digests of the six files above |
+
+For the manifest’s scoring root, use `files["mobile.bin"]`. For another supported discovery root, look up its exact lowercase hex pubkey in `mobile_roots`. Each entry records `file` (`mobile-<root>.bin`), `size` and `sha256`. Fetch only that member from the same immutable tree, check its digest and the 4 MiB size limit, and keep the local graph when the requested projection is unavailable. Earlier manifests can omit `mobile_roots`.
 
 A resolver stages files in an immutable directory. Verify the signed publisher, manifest, scoring root, sizes, digests and freshness before switching the local `current` symlink atomically. Preserve the previous usable generation across download or verification failures.
 
