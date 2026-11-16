@@ -1,23 +1,18 @@
 name: Graph server bounded recovery qualification
 on:
   workflow_dispatch:
-    inputs:
-      smoke_only:
-        type: boolean
-        default: false
-        description: Run the retained-binary transport diagnostic only
   push:
     branches: [codex/graph-server-recovery]
 permissions:
+  actions: read
   contents: read
 jobs:
   qualify:
-    if: ${{ !contains(github.event.head_commit.message, '[transport smoke only]') && inputs.smoke_only != true }}
     concurrency:
       group: graph-server-recovery-${{ github.ref }}
       cancel-in-progress: false
     runs-on: ubuntu-22.04
-    timeout-minutes: 60
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -38,51 +33,15 @@ jobs:
         with:
           version: 10.28.2
           run_install: false
-      - name: Build once and qualify without external test traffic
-        run: python3 harness/fixtures/graph-server-recovery/controller.py qualify
+      - name: Qualify the final fixture with identical compiled source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 harness/fixtures/graph-server-recovery/controller.py source-recert
       - name: Preserve both binaries and qualification evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: graph-server-recovery-${{ github.sha }}
+          name: graph-server-recert-${{ github.sha }}
           path: ${{ runner.temp }}/graph-server-alias-repair/evidence
           if-no-files-found: error
           retention-days: 14
-
-  transport-smoke:
-    runs-on: ubuntu-22.04
-    timeout-minutes: 15
-    permissions:
-      actions: read
-      contents: read
-    continue-on-error: ${{ !contains(github.event.head_commit.message, '[transport smoke only]') && inputs.smoke_only != true }}
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          path: harness
-          persist-credentials: false
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          ref: c7bfd23132e8dc1c024cdc39e0b5ca00c7746c67
-          path: candidate
-          persist-credentials: false
-      - name: Verify pinned transport tools
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: python3 harness/fixtures/graph-server-recovery/controller.py bootstrap
-      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
-        with:
-          version: 10.28.2
-          run_install: false
-      - name: Replay updated fixtures on the retained release binaries
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: python3 harness/fixtures/graph-server-recovery/controller.py transport-replay
-      - name: Preserve transport diagnostic evidence
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: graph-transport-smoke-${{ github.sha }}
-          path: ${{ runner.temp }}/graph-server-alias-repair/evidence
-          if-no-files-found: error
-          retention-days: 7

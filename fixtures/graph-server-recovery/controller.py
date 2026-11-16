@@ -137,7 +137,7 @@ def interrupted(signum, _frame):
 
 for signum in (signal.SIGTERM, signal.SIGINT): signal.signal(signum,interrupted)
 
-mode=sys.argv[1]; assert mode in ('bootstrap','qualify','transport-replay')
+mode=sys.argv[1]; assert mode in ('bootstrap','qualify','transport-replay','source-recert')
 if mode=='bootstrap':
     STAGE.mkdir(); EVIDENCE.mkdir(); BASELINE=sample()
     assert BASELINE['diskFree']>=LIMITS['entryDiskBytes'] and BASELINE['available']>=LIMITS['entryAvailableBytes']
@@ -205,6 +205,11 @@ assert out(['git','rev-parse','HEAD'],cwd=CANDIDATE)==SOURCE
 assert not out(['git','status','--porcelain','--untracked-files=no'],cwd=CANDIDATE)
 assert out(['node','--version'])=='v'+NODE and out(['pnpm','--version'])=='10.28.2'
 entry=sample();guard(entry);assert entry['available']>=LIMITS['entryAvailableBytes'] and entry['diskFree']>=LIMITS['entryDiskBytes']
+if mode == 'source-recert':
+    from recert import qualify
+    qualify()
+    sys.exit(0)
+
 if mode == 'transport-replay':
     evidence = dict(fixtureSource=SOURCE, recipe=out(['git','rev-parse','HEAD'],cwd=HERE),
                     passed=False, compilationPerformed=False, releaseQualification=False)
