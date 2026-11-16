@@ -4,10 +4,11 @@ Explore follow distances and mute relationships at [graph.iris.to](https://graph
 
 ## Data
 
-The public API provides [graph snapshots](https://graph-api.iris.to/social-graph?maxBytes=2000000)
-and [profile data](https://graph-api.iris.to/profile-data?maxBytes=2000000&noPictures=true).
-See the [server guide](../server/README.md) to run your own service, or use the
-[checksum-pinned bootstrap snapshot](../README.md#published-bootstrap-snapshot).
+Applications can read the signed graph, mobile projections and public profile
+files directly from the [named Hashtree snapshot](../PUBLIC_GRAPH_SYNC.md#snapshot-and-local-data-rules).
+The [checksum-pinned bootstrap](../README.md#published-bootstrap-snapshot) is also
+available with the library. See the [server guide](../server/README.md) to run
+your own crawler.
 
 ## Profile search index
 

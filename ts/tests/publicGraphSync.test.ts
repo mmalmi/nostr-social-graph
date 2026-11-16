@@ -114,6 +114,6 @@ describe('sync lifecycle and import bounds',()=>{
  });
  it('rejects an oversized streamed bootstrap before decoding',async()=>{
   vi.stubGlobal('fetch',async()=>new Response(new Uint8Array(2048),{headers:{'x-graph-root':pubkey}}));
-  try{await expect(loadGraphBootstrap({root:pubkey,maxBytes:1024})).rejects.toThrow('byte limit');}finally{vi.unstubAllGlobals();}
+  try{await expect(loadGraphBootstrap({root:pubkey,url:"https://custom.example/snapshot",maxBytes:1024})).rejects.toThrow('byte limit');}finally{vi.unstubAllGlobals();}
  });
 });

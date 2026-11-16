@@ -177,7 +177,7 @@ function decodeVarint(bytes: Uint8Array, offset: number): { value: number; bytes
 
 // All integers use varint encoding for consistency and simplicity
 
-export async function* toBinaryChunks(graph: SocialGraph, maxNodes?: number, maxEdges?: number, maxDistance?: number, maxEdgesPerNode?: number): AsyncGenerator<Uint8Array> {
+export async function* toBinaryChunks(graph: SocialGraph, maxNodes?: number, maxEdges?: number, maxDistance?: number, maxEdgesPerNode?: number, version: 3 | 4 = BINARY_FORMAT_VERSION): AsyncGenerator<Uint8Array> {
     // --- Phase 1: grab internal graph data ---
     const data = graph.getInternalData();
 
@@ -278,7 +278,7 @@ export async function* toBinaryChunks(graph: SocialGraph, maxNodes?: number, max
     };
 
     // --- Header ---
-    writeVar(BINARY_FORMAT_VERSION);
+    writeVar(version);
 
     // --- uniqueIds block ---
     writeVar(usedIds.size);
@@ -288,6 +288,7 @@ export async function* toBinaryChunks(graph: SocialGraph, maxNodes?: number, max
     }
 
     const writeRevision = (owner: number, kind: number, timestamp: number, complete: boolean) => {
+        if (version === 3) return;
         const revision = graph.getListRevision(data.str(owner), kind);
         if (!revision || revision.created_at !== timestamp) { writeVar(0); return; }
         writeVar(revision.complete && complete ? 2 : 1);
@@ -340,11 +341,11 @@ export async function* toBinaryChunks(graph: SocialGraph, maxNodes?: number, max
 }
 
 
-export async function toBinary(graph: SocialGraph, maxNodes?: number, maxEdges?: number, maxDistance?: number, maxEdgesPerNode?: number): Promise<Uint8Array> {
+export async function toBinary(graph: SocialGraph, maxNodes?: number, maxEdges?: number, maxDistance?: number, maxEdgesPerNode?: number, version: 3 | 4 = BINARY_FORMAT_VERSION): Promise<Uint8Array> {
     const chunks: Uint8Array[] = [];
     let total = 0;
     
-    for await (const c of toBinaryChunks(graph, maxNodes, maxEdges, maxDistance, maxEdgesPerNode)) {
+    for await (const c of toBinaryChunks(graph, maxNodes, maxEdges, maxDistance, maxEdgesPerNode, version)) {
         chunks.push(c);
         total += c.length;
     }

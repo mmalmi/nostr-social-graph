@@ -1,6 +1,6 @@
 {
   "name": "nostr-social-graph",
-  "version": "4.1.0",
+  "version": "4.2.0",
   "type": "module",
   "packageManager": "pnpm@10.28.2",
   "description": "Nostr social graph library",
@@ -56,6 +56,16 @@
       "types": "./dist/publicGraphSync.d.ts",
       "import": "./dist/publicGraphSync.js",
       "require": "./dist/publicGraphSync.cjs"
+    },
+    "./hashtreeSnapshot": {
+      "types": "./dist/hashtreeSnapshot.d.ts",
+      "import": "./dist/hashtreeSnapshot.js",
+      "require": "./dist/hashtreeSnapshot.cjs"
+    },
+    "./testing/namedGraph": {
+      "types": "./dist/testing/namedGraph.d.ts",
+      "import": "./dist/testing/namedGraph.js",
+      "require": "./dist/testing/namedGraph.cjs"
     }
   },
   "scripts": {
@@ -101,6 +111,7 @@
     "@cashu/cashu-ts": "^4.7.1",
     "@hashtree/core": "https://github.com/mmalmi/hashtree/releases/download/hashtree-ts-runtime-v0.5.27/hashtree-core-0.4.0.tgz",
     "@hashtree/index": "https://github.com/mmalmi/hashtree/releases/download/hashtree-ts-runtime-v0.5.27/hashtree-index-0.1.15.tgz",
+    "@hashtree/nostr": "https://github.com/mmalmi/hashtree/releases/download/hashtree-ts-runtime-v0.5.27/hashtree-nostr-0.2.6.tgz",
     "@playwright/test": "^1.61.1",
     "@scure/base": "^2.2.0",
     "@types/express": "^5.0.6",

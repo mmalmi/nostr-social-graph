@@ -1,5 +1,6 @@
 import { verifyEvent, type Event } from 'nostr-tools';
 import { SocialGraph } from './SocialGraph';
+import { openGraphSnapshot, mobileGraphFile, MOBILE_GRAPH_MAX_BYTES, type GraphSnapshotOptions } from './hashtreeSnapshot';
 import { Negentropy, NegentropyStorageVector } from './vendor/negentropy.js';
 
 export interface GraphSyncStats {
@@ -194,23 +195,35 @@ export function startGraphSync(options:GraphSyncLifecycleOptions):()=>void {
 /** Fresh discovery bootstrap only. Caller decides whether local state is absent.
  * This unsigned projection is not evidence of an event signature or ownership.
  */
-export async function loadGraphBootstrap(options:{root:string;url?:string;signal?:AbortSignal;maxBytes?:number}):Promise<SocialGraph> {
+export async function loadGraphBootstrap(options:{root:string;url?:string;signal?:AbortSignal;maxBytes?:number;snapshot?:GraphSnapshotOptions}):Promise<SocialGraph> {
   if(!hex.test(options.root))throw new Error('Invalid public graph root');
-  const maxBytes=bounded(options.maxBytes??4*1024*1024,1024,4*1024*1024);
+  const maxBytes=bounded(options.maxBytes??MOBILE_GRAPH_MAX_BYTES,1024,MOBILE_GRAPH_MAX_BYTES);
   const timeout=AbortSignal.timeout(8000);
   const signal=options.signal?AbortSignal.any([options.signal,timeout]):timeout;
-  const url=new URL(options.url??'https://graph-api.iris.to/social-graph/mobile');
-  url.searchParams.set('root',options.root);
-  const response=await fetch(url,{credentials:'omit',signal});
-  if(!response.ok||!response.body)throw new Error('Graph bootstrap unavailable');
-  if(response.headers.get('x-graph-root')!==options.root)throw new Error('Graph bootstrap root mismatch');
-  const reader=response.body.getReader(),chunks:Uint8Array[]=[];let length=0;
-  try{for(;;){const {value,done}=await reader.read();if(done)break;length+=value.length;if(length>maxBytes)throw new Error('Graph bootstrap byte limit');chunks.push(value);}}
-  catch(error){await reader.cancel().catch(()=>{});throw error;}finally{reader.releaseLock();}
-  const data=new Uint8Array(length);let offset=0;for(const chunk of chunks){data.set(chunk,offset);offset+=chunk.length;}
+  let data: Uint8Array;
+  if (options.url !== undefined) {
+    data = await readCustomBootstrap(options.url, options.root, maxBytes, signal);
+  } else {
+    const snapshot = await openGraphSnapshot({...options.snapshot, signal});
+    data = await snapshot.readFile(mobileGraphFile(snapshot.manifest, options.root), {signal, maxBytes});
+    if (data[0] !== 4) throw new Error('Invalid mobile graph binary version');
+  }
   const graph=await SocialGraph.fromBinary(options.root,data);
   const size=graph.size();
   if(!graph.getListRevision(options.root,3)&&!graph.getFollowedByUser(options.root).size)throw new Error('Graph bootstrap has no discovery root list');
   if(Array.from(graph.getInternalData().ids).length>30000||size.users>30000||size.follows+size.mutes>180000)throw new Error('Graph bootstrap node limit');
   return graph;
+}
+
+async function readCustomBootstrap(urlString: string, root: string, maxBytes: number, signal: AbortSignal): Promise<Uint8Array> {
+  const url=new URL(urlString);
+  url.searchParams.set('root',root);
+  const response=await fetch(url,{credentials:'omit',signal});
+  if(!response.ok||!response.body)throw new Error('Graph bootstrap unavailable');
+  if(response.headers.get('x-graph-root')!==root)throw new Error('Graph bootstrap root mismatch');
+  const reader=response.body.getReader(),chunks:Uint8Array[]=[];let length=0;
+  try{for(;;){const {value,done}=await reader.read();if(done)break;length+=value.length;if(length>maxBytes)throw new Error('Graph bootstrap byte limit');chunks.push(value);}}
+  catch(error){await reader.cancel().catch(()=>{});throw error;}finally{reader.releaseLock();}
+  const data=new Uint8Array(length);let offset=0;for(const chunk of chunks){data.set(chunk,offset);offset+=chunk.length;}
+  return data;
 }

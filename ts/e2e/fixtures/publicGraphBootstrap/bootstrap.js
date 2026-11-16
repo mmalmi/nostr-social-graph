@@ -6,8 +6,8 @@ const root = '1'.repeat(64);
 // entries exposes namespace tree-shaking regressions in the downstream bundle.
 let graph = new SocialGraph(root);
 
-export async function bootstrap(url) {
-  graph = await loadGraphBootstrap({ root, url });
+export async function bootstrap(source) {
+  graph = await loadGraphBootstrap(typeof source === 'string' ? {root, url: source} : {root, snapshot: source.snapshot});
   const roundtrip = await SocialGraph.fromBinary(root, await graph.toBinary());
   return {
     root: roundtrip.getRoot(),

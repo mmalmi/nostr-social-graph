@@ -66,7 +66,25 @@ Never treat a relay missing an event as a deletion. Equal-time revisions use the
 lexicographically smaller ID. Keep graph and revision metadata in one durable
 snapshot; preserve empty lists and private node identity boundaries.
 
-For mobile bootstraps the server provides `/social-graph/mobile`: at most 30,000
+`loadGraphBootstrap({root, signal})` resolves the public Hashtree directory
+`npub1yscmnnadrmvape0mvgzfx9uyl267klnhzy8znsr6ysl8wtxngpqsnx6dm0/social-graph`
+through a signed kind-30064 event. It pins that immutable CID, reads its manifest,
+and downloads only the bounded v4 file for the requested discovery root. Each
+ciphertext block is checked against its address. The decrypted file is checked
+against its signed directory's manifest size and SHA-256. If the directory has
+no projection for the requested root, the call rejects and the app can use its
+bundled graph and ordinary relay catch-up.
+
+To read other public data from the same generation, import `openGraphSnapshot`
+from `nostr-social-graph/hashtreeSnapshot`. Call `const snapshot = await
+openGraphSnapshot({signal})`, then `await snapshot.readFile("profile-data.json",
+{maxBytes})` or `"profile-index.json"` only when needed. The manifest exposes
+`graph_completed_at` and the byte sizes of the available files. `publisher`,
+`treeName`, `relays`, and `blossomServers` may be configured together on the
+opener or in the bootstrap's `snapshot` option. An explicitly supplied `url`
+uses the caller's own HTTP projection provider.
+
+The default mobile projection contains at most 30,000
 nodes, 180,000 edges, 500 edges per owner and 4 MiB uncompressed. This is a discovery
 projection, not a substitute for verified event signatures. Its byte cap is a
 hard response cap, not an assurance that every graph can be represented within

@@ -7,7 +7,7 @@ export default defineConfig({
     alias: {
       "@msgpack/msgpack": path.resolve(
         __dirname,
-        "../node_modules/@msgpack/msgpack/dist.esm/index.mjs",
+        "node_modules/@msgpack/msgpack/dist.esm/index.mjs",
       ),
     },
   },
@@ -15,6 +15,8 @@ export default defineConfig({
     rollupOptions: { external: ['nostr-tools'] },
     lib: {
       entry: {
+        "testing/namedGraph": path.resolve(__dirname, "src/testing/namedGraph.ts"),
+        hashtreeSnapshot: path.resolve(__dirname, "src/hashtreeSnapshot.ts"),
         publicGraphSync: path.resolve(__dirname, "src/publicGraphSync.ts"),
         ranking: path.resolve(__dirname, "src/ranking.ts"),
         privateEvents: path.resolve(__dirname, "src/privateEvents.ts"),

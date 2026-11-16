@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build, preview } from 'vite';
 import { SocialGraph } from '../src/SocialGraph';
+import { namedGraphFixture } from '../tests/helpers/namedGraph';
 
 const packageRoot = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 const fixtureRoot = path.join(packageRoot, 'e2e/fixtures/publicGraphBootstrap');
@@ -21,6 +22,7 @@ for (const entry of ['index.html', 'worker.html']) {
     graph.markListIncomplete(root, 3);
     graph.markListIncomplete(root, 10000);
     const body = Buffer.from(await graph.toBinary());
+    const named = await namedGraphFixture(root, body);
     const outDir = await mkdtemp(path.join(os.tmpdir(), 'graph-bootstrap-bundle-'));
     let server: Awaited<ReturnType<typeof preview>> | undefined;
     try {
@@ -65,7 +67,11 @@ for (const entry of ['index.html', 'worker.html']) {
         followRevision: { id: 'a'.repeat(64), created_at: 20, complete: false },
         muteRevision: { id: 'b'.repeat(64), created_at: 21, complete: false },
       });
+      const direct = await page.evaluate((snapshot) => (window as any).bootstrap({snapshot}), named.options);
+      expect(direct).toEqual(loaded);
+      expect(named.filters).toHaveLength(1);
     } finally {
+      await named.close();
       if (server) await new Promise<void>((resolve, reject) => server!.httpServer.close(error => error ? reject(error) : resolve()));
       await rm(outDir, { recursive: true, force: true });
     }

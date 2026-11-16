@@ -35,6 +35,11 @@ jobs:
         run: python3 .github/scripts/graph-gates/host.py build
       - name: Prove browser isolation then run all four page and IIFE checks
         run: python3 .github/scripts/graph-gates/container.py
+      - name: Pack the verified production distribution
+        working-directory: ts
+        run: |
+          pnpm run snapshot:verify
+          npm pack --ignore-scripts --pack-destination "$GRAPH_GATE_EVIDENCE"
       - name: Preserve gate evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

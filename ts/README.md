@@ -173,7 +173,7 @@ aggregate state and do not contain individually verifiable event signatures.
 
 Run `pnpm snapshot:verify` to check the committed artifact. Explicitly reproduce
 it with `pnpm snapshot:refresh /path/to/pinned-source.bin` (or omit the source
-path to fetch the recorded server URL while it still serves those exact bytes).
+path to read the signed Hashtree projection when it matches the reviewed bytes).
 A newer live response requires a reviewed manifest update. Input/output hashes must
 match before writing. To adopt a newer source, review and update the manifest
 and coverage together. Ordinary packaging only verifies the reviewed bytes;

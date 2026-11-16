@@ -2,6 +2,7 @@ import {createHash} from "node:crypto"
 import {readFile, writeFile} from "node:fs/promises"
 import {SocialGraph} from "../src/SocialGraph"
 import manifest from "../data/socialGraph.json"
+import {openGraphSnapshot, mobileGraphFile, MOBILE_GRAPH_MAX_BYTES} from "../src/hashtreeSnapshot"
 import {projectSocialGraph} from "../src/projectSocialGraph"
 
 const asset = new URL("../data/socialGraph.bin", import.meta.url)
@@ -49,6 +50,11 @@ async function verify(data: Uint8Array) {
   }
 }
 
+async function readPublishedProjection() {
+  const snapshot = await openGraphSnapshot()
+  return snapshot.readFile(mobileGraphFile(snapshot.manifest, manifest.root), {maxBytes: MOBILE_GRAPH_MAX_BYTES})
+}
+
 async function main() {
   const [mode = "--verify", input, ...extra] = process.argv.slice(2)
   if (
@@ -61,12 +67,7 @@ async function main() {
   if (mode === "--refresh") {
     const source = input
       ? new Uint8Array(await readFile(input))
-      : await fetch(manifest.source.url, {signal: AbortSignal.timeout(60_000)}).then(
-          async (response) => {
-            if (!response.ok) throw new Error(`Graph download failed: ${response.status}`)
-            return new Uint8Array(await response.arrayBuffer())
-          }
-        )
+      : await readPublishedProjection()
     if (
       source.length !== manifest.source.bytes ||
       sha256(source) !== manifest.source.sha256
