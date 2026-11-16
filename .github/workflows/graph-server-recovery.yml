@@ -4,15 +4,14 @@ on:
   push:
     branches: [codex/graph-server-recovery]
 permissions:
-  actions: read
   contents: read
+concurrency:
+  group: graph-server-recovery-${{ github.ref }}
+  cancel-in-progress: false
 jobs:
   qualify:
-    concurrency:
-      group: graph-server-recovery-${{ github.ref }}
-      cancel-in-progress: false
     runs-on: ubuntu-22.04
-    timeout-minutes: 25
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -21,7 +20,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
-          ref: c7bfd23132e8dc1c024cdc39e0b5ca00c7746c67
+          ref: 40ba1c69ae7f737cf4547bce65c6c3e320c9f04a
           path: candidate
           persist-credentials: false
           fetch-depth: 0
@@ -33,15 +32,13 @@ jobs:
         with:
           version: 10.28.2
           run_install: false
-      - name: Qualify the final fixture with identical compiled source
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: python3 harness/fixtures/graph-server-recovery/controller.py source-recert
+      - name: Build once and qualify without external test traffic
+        run: python3 harness/fixtures/graph-server-recovery/controller.py qualify
       - name: Preserve both binaries and qualification evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: graph-server-recert-${{ github.sha }}
+          name: graph-server-recovery-${{ github.sha }}
           path: ${{ runner.temp }}/graph-server-alias-repair/evidence
           if-no-files-found: error
           retention-days: 14
