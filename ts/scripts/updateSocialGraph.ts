@@ -1,99 +1,71 @@
-import {createHash} from "node:crypto"
-import {readFile, writeFile} from "node:fs/promises"
-import {SocialGraph} from "../src/SocialGraph"
-import manifest from "../data/socialGraph.json"
-import {openGraphSnapshot, mobileGraphFile, MOBILE_GRAPH_MAX_BYTES} from "../src/hashtreeSnapshot"
-import {projectSocialGraph} from "../src/projectSocialGraph"
+import { mkdir, mkdtemp, readFile, rename, rm, rmdir, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { DEFAULT_GRAPH_SNAPSHOT } from '../src/hashtreeSnapshot';
+import { readMobileGraphSnapshot, verifyMobileGraphSnapshot, type MobileGraphReceipt } from '../src/mobileGraphSnapshot';
 
-const asset = new URL("../data/socialGraph.bin", import.meta.url)
-const sha256 = (data: Uint8Array) => createHash("sha256").update(data).digest("hex")
+const dataDir = fileURLToPath(new URL('../data/', import.meta.url));
+const binary = join(dataDir, 'socialGraph.bin');
+const receiptPath = join(dataDir, 'socialGraph.json');
+const root = '336f319763657d6b0e65a5b5876719e8c8dcdcf9396852be71ee26b73368b29b';
 
-async function verify(data: Uint8Array) {
-  if (data.length !== manifest.bytes || sha256(data) !== manifest.sha256) {
-    throw new Error("Bundled social graph does not match its reviewed checksum")
-  }
-  const graph = await SocialGraph.fromBinary(manifest.root, data)
-  const internal=graph.getInternalData()
-  const identities=[...internal.ids].map(([, value])=>value)
-  if (new Set(identities).size !== identities.length) throw new Error("Duplicate snapshot identities")
-  for (const [id, targets] of internal.mutedByUser) {
-    const actual=graph.getMutedByUser(internal.str(id))
-    const expected=new Set([...targets].map(internal.str))
-    if (actual.size !== expected.size || [...expected].some((key)=>!actual.has(key))) {
-      throw new Error("Snapshot mute list is inaccessible by public identity")
-    }
-  }
-  if (data[0] !== 4 || data.length > 4 * 1024 * 1024) {
-    throw new Error("Bundled graph must retain v4 revisions within the mobile byte budget")
-  }
-  const revisions = {follows: {ids: 0, complete: 0}, mutes: {ids: 0, complete: 0}}
-  for (const [, key] of internal.ids) for (const kind of [3, 10000] as const) {
-    const revision = graph.getListRevision(key, kind)
-    if (revision) {
-      const count = kind === 3 ? revisions.follows : revisions.mutes
-      count.ids++
-      if (revision.complete) count.complete++
-    }
-  }
-  if (JSON.stringify(revisions) !== JSON.stringify(manifest.revisionCounts)) {
-    throw new Error("Bundled graph list IDs/completeness do not match the reviewed manifest")
-  }
-  const size = graph.size()
-  if (
-    graph.getFollowedByUser(manifest.root).size !== manifest.directFollows ||
-    size.users !== manifest.users ||
-    size.follows !== manifest.follows ||
-    size.mutes !== manifest.mutes ||
-    size.sizeByDistance[2] !== manifest.secondDegree
-  ) {
-    throw new Error("Bundled social graph is missing the expected company network")
-  }
+function canonical(receipt: MobileGraphReceipt) {
+  if (receipt.root !== root || receipt.source?.publisher !== DEFAULT_GRAPH_SNAPSHOT.publisher ||
+      receipt.source?.treeName !== DEFAULT_GRAPH_SNAPSHOT.treeName) throw new Error('Unexpected bundled graph publisher, directory or scoring root');
 }
 
-async function readPublishedProjection() {
-  const snapshot = await openGraphSnapshot()
-  return snapshot.readFile(mobileGraphFile(snapshot.manifest, manifest.root), {maxBytes: MOBILE_GRAPH_MAX_BYTES})
+async function refresh() {
+  const previous = JSON.parse(await readFile(receiptPath, 'utf8'));
+  const {bytes, receipt} = await readMobileGraphSnapshot(root);
+  canonical(receipt);
+  if (previous.version === 2 && (receipt.source.graphCompletedAt < previous.source.graphCompletedAt || receipt.source.generatedAt < previous.source.generatedAt)) {
+    throw new Error('Signed graph crawl predates the pinned generation');
+  }
+  const stage = await mkdtemp(join(dataDir, '.graph-'));
+  try {
+    const oldBytes = await readFile(binary);
+    await writeFile(join(stage, 'previous'), oldBytes);
+    await writeFile(join(stage, 'bytes'), bytes);
+    await writeFile(join(stage, 'receipt'), JSON.stringify(receipt, null, 2) + '\n');
+    await rename(join(stage, 'bytes'), binary);
+    try { await rename(join(stage, 'receipt'), receiptPath); }
+    catch (error) { await rename(join(stage, 'previous'), binary); throw error; }
+  } finally { await rm(stage, {recursive: true, force: true}); }
+  return receipt;
 }
 
 async function main() {
-  const [mode = "--verify", input, ...extra] = process.argv.slice(2)
-  if (
-    extra.length ||
-    !["--verify", "--refresh"].includes(mode) ||
-    (mode === "--verify" && input)
-  ) {
-    throw new Error("Usage: updateSocialGraph.ts [--verify | --refresh [source.bin]]")
+  const [mode = '--verify', input, ...extra] = process.argv.slice(2);
+  if (extra.length || !['--verify','--refresh'].includes(mode) || (mode === '--verify' && input)) {
+    throw new Error('Usage: updateSocialGraph.ts [--verify | --refresh [pinned-member.bin]]');
   }
-  if (mode === "--refresh") {
-    const source = input
-      ? new Uint8Array(await readFile(input))
-      : await readPublishedProjection()
-    if (
-      source.length !== manifest.source.bytes ||
-      sha256(source) !== manifest.source.sha256
-    ) {
-      throw new Error("Source social graph does not match its reviewed checksum")
-    }
-    const graph = await SocialGraph.fromBinary(manifest.root, source)
-    // Keep the source lists for owners within two hops and their targets.
-    // Source truncation remains explicit: incomplete IDs never become complete.
-    const canonical = await projectSocialGraph(
-      graph,
-      manifest.root,
-      manifest.ownerDistance
-    )
-    const projected = await canonical.toBinary()
-    await verify(projected)
-    await writeFile(asset, projected)
-  } else {
-    await verify(await readFile(asset))
+  const lock = join(dataDir, '.snapshot-refresh.lock');
+  if (mode === '--refresh') await mkdir(lock);
+  try {
+    await run(mode, input);
+  } finally {
+    if (mode === '--refresh') await rmdir(lock);
   }
-  console.log(
-    `Verified company discovery graph: ${manifest.users} users, ${manifest.bytes} bytes`
-  )
 }
 
-main().catch((error) => {
-  console.error(error instanceof Error ? error.message : error)
-  process.exitCode = 1
-})
+async function run(mode: string, input?: string) {
+  let receipt: MobileGraphReceipt;
+  if (mode === '--refresh' && !input) {
+    receipt = await refresh();
+  } else {
+    receipt = JSON.parse(await readFile(receiptPath, 'utf8'));
+    canonical(receipt);
+    const bytes = await readFile(input ?? binary);
+    await verifyMobileGraphSnapshot(bytes, receipt);
+    if (input) {
+      const stage = await mkdtemp(join(dataDir, '.graph-'));
+      try {
+        await writeFile(join(stage, 'bytes'), bytes);
+        await rename(join(stage, 'bytes'), binary);
+      } finally { await rm(stage, {recursive: true, force: true}); }
+    }
+  }
+  console.log(`Verified discovery graph: ${receipt.users} users, ${receipt.bytes} bytes, ${receipt.source.eventId}`);
+}
+
+main().catch(error => { console.error(error instanceof Error ? error.message : error); process.exitCode = 1; });

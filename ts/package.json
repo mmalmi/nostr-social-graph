@@ -1,6 +1,6 @@
 {
   "name": "nostr-social-graph",
-  "version": "4.2.0",
+  "version": "4.2.1",
   "type": "module",
   "packageManager": "pnpm@10.28.2",
   "description": "Nostr social graph library",
@@ -66,6 +66,11 @@
       "types": "./dist/testing/namedGraph.d.ts",
       "import": "./dist/testing/namedGraph.js",
       "require": "./dist/testing/namedGraph.cjs"
+    },
+    "./mobileGraphSnapshot": {
+      "types": "./dist/mobileGraphSnapshot.d.ts",
+      "import": "./dist/mobileGraphSnapshot.js",
+      "require": "./dist/mobileGraphSnapshot.cjs"
     }
   },
   "scripts": {

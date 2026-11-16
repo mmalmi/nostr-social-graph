@@ -152,17 +152,13 @@ Package metadata lives in [`package.json`](./package.json). For repo-wide contex
 
 ## Published bootstrap snapshot
 
-`data/socialGraph.bin` is a checksum-pinned public bootstrap rooted at Sirius
-Business Ltd. Its adjacent `socialGraph.json` records the root, capture source,
-input/output hashes, capture time, list IDs, completeness and coverage. The
-current 1.03 MB snapshot was captured from the live graph server on 2026-11-06.
-It retains available follow/mute lists for owners through two hops and their
-third-hop targets. The server bounds the source projection; truncated lists
-retain their IDs with incomplete metadata so reconciliation downloads the full
-events. The full server crawl was still running at capture. Applications should
-preserve explicitly selected personal roots and existing local snapshots.
-The library constructor still takes an explicit root; this file is seed data,
-not a current or complete account graph.
+The discovery seed in `data/socialGraph.bin` is the published mobile member
+for the Sirius Business Ltd scoring root. It carries the producer’s follow and
+mute event IDs, including empty lists and partial lists. Its adjacent
+`data/socialGraph.json` pins the signing identity, tree name, event ID,
+directory hash, crawl time, file digest, size, row counts and revision counts.
+Check the crawl time in that receipt when using an offline copy. Keep an
+existing personal graph until its owner chooses to replace it.
 
 `projectSocialGraph(source, root, ownerDistance)` canonicalizes numeric aliases
 by public identity before traversing and assigning fresh IDs. The newest list
@@ -171,16 +167,20 @@ mute lists conservatively union. This policy avoids silently losing mutes when
 a server aggregate contains duplicate mappings. Binary snapshots are trusted
 aggregate state and do not contain individually verifiable event signatures.
 
-Run `pnpm snapshot:verify` to check the committed artifact. Explicitly reproduce
-it with `pnpm snapshot:refresh /path/to/pinned-source.bin` (or omit the source
-path to read the signed Hashtree projection when it matches the reviewed bytes).
-A newer live response requires a reviewed manifest update. Input/output hashes must
-match before writing. To adopt a newer source, review and update the manifest
-and coverage together. Ordinary packaging only verifies the reviewed bytes;
-it never fetches a mutable snapshot or replaces them with a local crawl.
+Run `pnpm snapshot:verify` to verify the committed bytes and row counts
+offline. To reconstruct those exact bytes locally, run
+`pnpm snapshot:refresh /path/to/pinned-member.bin`. To adopt a new generation,
+run `pnpm snapshot:refresh` without an input. It resolves the configured signed
+directory, reads the mobile member for the discovery root, checks its size and
+hash, and writes the verified bytes and new receipt. Review and commit both
+files together. Packaging only runs the offline verification.
 
-Versioned releases provide `socialGraph.bin` and its manifest separately, so
-native and web consumers can pin the same data without upgrading their SDK.
+Applications can import `readMobileGraphSnapshot` and
+`verifyMobileGraphSnapshot` from `nostr-social-graph/mobileGraphSnapshot`.
+The reader returns `{graph, bytes, receipt}` and accepts an existing
+`openGraphSnapshot()` result in its `snapshot` option to reuse a previewed
+generation. The verifier checks reviewed bytes against a pinned receipt offline.
+The release tarball exports both assets under `nostr-social-graph/data/`.
 
 ## Optional public graph updates
 

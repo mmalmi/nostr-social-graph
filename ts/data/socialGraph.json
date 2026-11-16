@@ -1,31 +1,35 @@
 {
+  "version": 2,
   "root": "336f319763657d6b0e65a5b5876719e8c8dcdcf9396852be71ee26b73368b29b",
-  "ownerDistance": 2,
-  "bytes": 1034502,
-  "sha256": "9af2ad6aaf830ff08aa14f83233e56c49d1379fb5da05efd1ebe9166aceabcb0",
-  "users": 21323,
-  "follows": 118569,
-  "mutes": 1555,
-  "directFollows": 2,
+  "bytes": 1416341,
+  "sha256": "d9d11e34916b33fb8540f3a124f5968c0d67db7c45d75412a17c382f011256ca",
+  "users": 25805,
+  "follows": 177674,
+  "mutes": 2326,
+  "directFollows": 3,
   "secondDegree": 409,
-  "source": {
-    "url": "https://graph-api.iris.to/social-graph/mobile?root=336f319763657d6b0e65a5b5876719e8c8dcdcf9396852be71ee26b73368b29b",
-    "bytes": 1420890,
-    "sha256": "77eff179387760d8faa7d0844bfd207034701b83bda5b9a7af04a8ce3e2cb911",
-    "capturedAt": "2026-11-06T11:54:03.058927+00:00",
-    "sourceCommit": "775de2d84aed3d5eeac33b47ed84ff9e880aea28",
-    "formatVersion": 4,
-    "coverage": "Bounded live projection; full server reconciliation was still in progress at capture.",
-    "fullReconciliationComplete": false
-  },
   "revisionCounts": {
     "follows": {
-      "ids": 283,
-      "complete": 166
+      "ids": 520,
+      "complete": 345
     },
     "mutes": {
-      "ids": 101,
-      "complete": 100
+      "ids": 1663,
+      "complete": 1499
     }
+  },
+  "source": {
+    "url": "htree://npub1yscmnnadrmvape0mvgzfx9uyl267klnhzy8znsr6ysl8wtxngpqsnx6dm0/social-graph/mobile-336f319763657d6b0e65a5b5876719e8c8dcdcf9396852be71ee26b73368b29b.bin",
+    "publisher": "npub1yscmnnadrmvape0mvgzfx9uyl267klnhzy8znsr6ysl8wtxngpqsnx6dm0",
+    "treeName": "social-graph",
+    "eventId": "89416ffecfb072fbb90805def7858801b3b5770c4a5bb5cc5fd0cecebb2d2d7e",
+    "directoryHash": "18b8449d3c36d5665496137597fc0fdfae6109bdd90b2af4eaa39f8f767d30f7",
+    "file": "mobile-336f319763657d6b0e65a5b5876719e8c8dcdcf9396852be71ee26b73368b29b.bin",
+    "graphSince": 1794828278,
+    "graphCompletedAt": 1794832567,
+    "generatedAt": 1794834028,
+    "formatVersion": 4,
+    "bytes": 1416341,
+    "sha256": "d9d11e34916b33fb8540f3a124f5968c0d67db7c45d75412a17c382f011256ca"
   }
 }

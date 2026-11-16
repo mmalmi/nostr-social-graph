@@ -36,6 +36,8 @@ export interface GraphSnapshotManifest {
 }
 
 export interface GraphSnapshot {
+  publisher: string;
+  treeName: string;
   /** Signed name event and immutable directory hash for this generation. */
   eventId: string;
   directoryHash: string;
@@ -176,7 +178,14 @@ function parseManifest(bytes: Uint8Array): GraphSnapshotManifest {
       throw new Error('Invalid graph snapshot mobile projection');
     }
   }
-  return manifest;
+  // The public preview and later reads use the same authenticated metadata.
+  for (const file of Object.values(manifest.files)) Object.freeze(file);
+  Object.freeze(manifest.files);
+  if (manifest.mobile_roots) {
+    for (const file of Object.values(manifest.mobile_roots)) Object.freeze(file);
+    Object.freeze(manifest.mobile_roots);
+  }
+  return Object.freeze(manifest);
 }
 
 /** Choose only the requested discovery region from the signed manifest. */
@@ -208,7 +217,7 @@ export async function openGraphSnapshot(options: GraphSnapshotOptions = {}): Pro
   for (const name of fileNames) files.set(name, {...manifest.files[name]});
   for (const entry of Object.values(manifest.mobile_roots ?? {})) files.set(entry.file, {...entry});
   return {
-    manifest, eventId: signed.eventId, directoryHash: toHex(signed.cid.hash),
+    publisher, treeName: name, manifest, eventId: signed.eventId, directoryHash: toHex(signed.cid.hash),
     async readFile(name, {maxBytes, signal: readSignal} = {}) {
       const file = files.get(name);
       const entry = directory.get(name);

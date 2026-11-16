@@ -16,6 +16,7 @@ export default defineConfig({
     lib: {
       entry: {
         "testing/namedGraph": path.resolve(__dirname, "src/testing/namedGraph.ts"),
+        mobileGraphSnapshot: path.resolve(__dirname, "src/mobileGraphSnapshot.ts"),
         hashtreeSnapshot: path.resolve(__dirname, "src/hashtreeSnapshot.ts"),
         publicGraphSync: path.resolve(__dirname, "src/publicGraphSync.ts"),
         ranking: path.resolve(__dirname, "src/ranking.ts"),
