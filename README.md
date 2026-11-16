@@ -54,6 +54,7 @@ for persistence and root changes, or the [Rust guide](./rust/README.md) to get s
 
 - [TypeScript](./ts/README.md) and [Rust](./rust/README.md): setup, APIs, and development commands.
 - [Demo and data](./ts/examples/README.md), [server](./ts/server/README.md), and [bootstrap snapshot](./ts/README.md#published-bootstrap-snapshot).
+- [Publish and serve live graph snapshots over Hashtree](./rust/crates/nostr-social-graph-server/SNAPSHOT_PUBLICATION.md).
 - [Private contact memory and sync](./guides/private-contact-memory.md): names, favorites, notes, mutes, and migration.
 - [Fact events](./nips/fact-events.md): draft protocol for identity and entity data.
 

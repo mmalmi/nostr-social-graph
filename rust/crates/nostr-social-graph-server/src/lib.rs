@@ -25,8 +25,11 @@ use tower_http::cors::{Any, CorsLayer};
 use tracing::{error, info, warn};
 
 mod forwarding;
+mod publisher;
 mod relay_mirror;
+mod snapshot_manifest;
 use forwarding::Forwarder;
+pub use snapshot_manifest::{SNAPSHOT_FILES, SnapshotFile, SnapshotManifest};
 
 pub use relay_mirror::{
     RelayMirrorConfig, allowed_pubkeys_from_graph, event_is_allowed, render_allowlist,
@@ -104,16 +107,21 @@ pub struct ProfileStore {
 
 impl ProfileStore {
     pub fn load_or_default(path: impl AsRef<Path>) -> Result<Self> {
-        let data_path = path.as_ref().to_path_buf();
-        let rows_by_pubkey = if data_path.exists() {
-            let rows = serde_json::from_slice::<Vec<Vec<String>>>(&fs::read(&data_path)?)?;
-            rows.into_iter()
-                .filter_map(|row| row.first().cloned().map(|pubkey| (pubkey, row)))
-                .collect()
+        let path = path.as_ref();
+        if path.exists() {
+            Self::from_snapshot_bytes(path, &fs::read(path)?)
         } else {
-            IndexMap::new()
-        };
+            Self::from_snapshot_bytes(path, b"[]")
+        }
+    }
 
+    pub fn from_snapshot_bytes(path: impl AsRef<Path>, bytes: &[u8]) -> Result<Self> {
+        let data_path = path.as_ref().to_owned();
+        let rows = serde_json::from_slice::<Vec<Vec<String>>>(bytes)?;
+        let rows_by_pubkey = rows
+            .into_iter()
+            .filter_map(|row| row.first().cloned().map(|pubkey| (pubkey, row)))
+            .collect();
         Ok(Self {
             data_path,
             rows_by_pubkey,
@@ -198,24 +206,30 @@ impl ProfileStore {
     }
 
     pub fn save(&self) -> Result<()> {
+        self.save_profile_rows().map(drop)
+    }
+
+    fn save_profile_rows(&self) -> Result<Vec<u8>> {
         if let Some(parent) = self.data_path.parent() {
             fs::create_dir_all(parent)?;
         }
         let rows = self.rows_by_pubkey.values().collect::<Vec<_>>();
-        fs::write(&self.data_path, serde_json::to_vec(&rows)?)?;
-        Ok(())
+        let bytes = serde_json::to_vec(&rows)?;
+        fs::write(&self.data_path, &bytes)?;
+        Ok(bytes)
     }
 
     pub fn write_profile_index(&self, path: impl AsRef<Path>) -> Result<()> {
-        let path = path.as_ref();
+        self.save_profile_index(path.as_ref()).map(drop)
+    }
+
+    fn save_profile_index(&self, path: &Path) -> Result<Vec<u8>> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        fs::write(
-            path,
-            serde_json::to_vec(&build_profile_index(self.rows_by_pubkey.values()))?,
-        )?;
-        Ok(())
+        let bytes = serde_json::to_vec(&build_profile_index(self.rows_by_pubkey.values()))?;
+        fs::write(path, &bytes)?;
+        Ok(bytes)
     }
 }
 
@@ -398,6 +412,10 @@ pub fn build_router(state: AppState) -> Router {
 }
 
 pub fn build_router_with_cors(state: AppState, allow_origin: Option<&str>) -> Router {
+    build_router(state).layer(graph_cors_layer(allow_origin))
+}
+
+pub fn graph_cors_layer(allow_origin: Option<&str>) -> CorsLayer {
     let cors = match allow_origin {
         Some("*") | None => CorsLayer::new().allow_origin(Any),
         Some(origin) => match HeaderValue::from_str(origin) {
@@ -406,10 +424,10 @@ pub fn build_router_with_cors(state: AppState, allow_origin: Option<&str>) -> Ro
         },
     };
 
-    build_router(state).layer(cors.expose_headers([
+    cors.expose_headers([
         axum::http::header::ETAG,
         axum::http::HeaderName::from_static("x-graph-root"),
-    ]))
+    ])
 }
 
 #[derive(Debug, Clone)]
@@ -550,7 +568,11 @@ pub fn persist_graph_snapshot(
     Ok(())
 }
 
-fn persist_graph_checkpoint(config: &ServerConfig, graph: &SocialGraph) -> Result<()> {
+fn persist_graph_checkpoint(
+    config: &ServerConfig,
+    graph: &SocialGraph,
+    retain_public_bytes: bool,
+) -> Result<Option<Vec<u8>>> {
     // Account for worst-case filesystem block amplification plus tree nodes.
     // Check before the checkpoint writer allocates any new blobs; preserve the
     // host reserve even while the old and rollback generations coexist.
@@ -560,7 +582,7 @@ fn persist_graph_checkpoint(config: &ServerConfig, graph: &SocialGraph) -> Resul
     let peak_growth = (bytes.len() as u64)
         .saturating_mul(5)
         .saturating_add(32 * 1024 * 1024);
-    drop(bytes);
+    let retained = retain_public_bytes.then_some(bytes);
     let reserve = std::env::var("GRAPH_CHECKPOINT_MIN_FREE_BYTES")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
@@ -575,7 +597,8 @@ fn persist_graph_checkpoint(config: &ServerConfig, graph: &SocialGraph) -> Resul
             "Graph checkpoint would consume host reserve: free={free}, reserve={reserve}, peak_growth={peak_growth}"
         ))));
     }
-    persist_graph_snapshot(&config.root, &config.graph_db_dir, graph)
+    persist_graph_snapshot(&config.root, &config.graph_db_dir, graph)?;
+    Ok(retained)
 }
 
 fn write_graph_freshness(config: &ServerConfig, status: &GraphFreshness) -> Result<()> {
@@ -897,6 +920,24 @@ struct MobileGraphQuery {
     root: Option<String>,
 }
 
+fn mobile_snapshot_bytes(graph: &SocialGraph, root: &str) -> std::io::Result<Vec<u8>> {
+    let budget = BinaryBudget {
+        max_nodes: Some(30_000),
+        max_edges: Some(180_000),
+        max_distance: Some(4),
+        max_edges_per_node: Some(500),
+    };
+    let bytes = graph
+        .to_binary_for_root_with_budget(root, budget)
+        .map_err(std::io::Error::other)?;
+    if bytes.len() > 4 * 1024 * 1024 {
+        return Err(std::io::Error::other(
+            "Mobile graph exceeds its byte budget",
+        ));
+    }
+    Ok(bytes)
+}
+
 async fn mobile_graph_binary(
     State(state): State<AppState>,
     Query(query): Query<MobileGraphQuery>,
@@ -927,14 +968,8 @@ async fn mobile_graph_binary(
         .is_none_or(|snapshot| now.saturating_sub(snapshot.generated_at) >= 60)
     {
         let graph = state.graph.read().expect("graph lock poisoned");
-        let budget = BinaryBudget {
-            max_nodes: Some(30_000),
-            max_edges: Some(180_000),
-            max_distance: Some(4),
-            max_edges_per_node: Some(500),
-        };
-        match graph.to_binary_for_root_with_budget(&root, budget) {
-            Ok(binary) if binary.len() <= 4 * 1024 * 1024 => {
+        match mobile_snapshot_bytes(&graph, &root) {
+            Ok(binary) => {
                 let etag =
                     HeaderValue::from_str(&format!("\"{}:{}\"", root, sha256::Hash::hash(&binary)))
                         .expect("hash header");
@@ -1018,17 +1053,21 @@ async fn social_graph_binary(
     }
 }
 
+fn allowlist_text(graph: &SocialGraph, max_distance: Option<u32>) -> String {
+    let mut body = String::new();
+    for pubkey in graph.users_in_distance_order(max_distance) {
+        body.push_str(&pubkey);
+        body.push('\n');
+    }
+    body
+}
+
 async fn allowlist(
     State(state): State<AppState>,
     Query(query): Query<SocialGraphQuery>,
 ) -> Response {
     let graph = state.graph.read().expect("graph lock poisoned");
-    let mut body = String::new();
-    for pubkey in graph.users_in_distance_order(query.max_distance) {
-        body.push_str(&pubkey);
-        body.push('\n');
-    }
-
+    let body = allowlist_text(&graph, query.max_distance);
     let mut response = body.into_response();
     response.headers_mut().insert(
         CONTENT_TYPE,
@@ -1225,6 +1264,10 @@ async fn sync_loop(
     freshness: Arc<RwLock<GraphFreshness>>,
     forwarder: Option<Forwarder>,
 ) -> Result<()> {
+    let mut publisher = publisher::SnapshotPublisher::from_env().unwrap_or_else(|error| {
+        error!("named snapshot publisher disabled: {error}");
+        None
+    });
     let mut graph_since = initial_graph_since;
     let mut profile_since = initial_profile_since;
     let mut last_full_reconciliation_at = 0;
@@ -1297,10 +1340,14 @@ async fn sync_loop(
 
         // A failed write ends only this cycle. Keep the last committed cursors,
         // in-memory graph and single worker alive for the normal interval retry.
+        let capture = graph_error.is_none() && publisher.as_ref().is_some_and(|p| p.due());
+        let mut committed_bytes = None;
+        let mut completed_at = 0;
         let graph_result: Result<()> = (|| {
             {
                 let graph_guard = graph.read().expect("graph lock poisoned");
-                persist_graph_checkpoint(&config, &graph_guard)?;
+                committed_bytes = persist_graph_checkpoint(&config, &graph_guard, capture)?
+                    .map(|graph| (graph, allowlist_text(&graph_guard, None)));
                 forwarding::refresh_allowlist(&graph_guard)?;
             }
             if let Some(error) = graph_error {
@@ -1330,12 +1377,14 @@ async fn sync_loop(
             }
             write_graph_freshness(&config, &committed)?;
             *status = committed;
+            completed_at = now;
             graph_since = next_since;
             last_full_reconciliation_at = next_full;
             Ok(())
         })();
         let graph_committed = graph_result.is_ok();
         if let Err(error) = graph_result {
+            committed_bytes = None;
             let mut status = freshness.write().expect("freshness lock poisoned");
             status.consecutive_graph_failures = status.consecutive_graph_failures.saturating_add(1);
             // The HTTP status remains honest even if this small diagnostic write
@@ -1367,10 +1416,26 @@ async fn sync_loop(
         }
         let profile_result: Result<()> = (|| {
             let profiles_guard = profiles.read().expect("profile lock poisoned");
-            profiles_guard.save()?;
-            profiles_guard.write_profile_index(&config.profile_index_path)?;
+            let retain = committed_bytes.is_some() && profile_error.is_none();
+            let rows = retain.then_some(profiles_guard.save_profile_rows()?);
+            let index =
+                retain.then_some(profiles_guard.save_profile_index(&config.profile_index_path)?);
             if let Some(error) = profile_error {
                 return Err(error);
+            }
+            if let (Some(publisher), Some((graph, allowlist)), Some(rows), Some(index)) =
+                (publisher.as_mut(), committed_bytes, rows, index)
+            {
+                publisher.submit(publisher::Snapshot {
+                    root: config.root.clone(),
+                    graph,
+                    allowlist,
+                    rows,
+                    index,
+                    graph_completed_at: completed_at,
+                    graph_since: graph_since.expect("committed graph cursor"),
+                    generated_at: unix_timestamp(),
+                });
             }
             Ok(())
         })();
@@ -1531,7 +1596,9 @@ async fn sync_graph_once(
             continue;
         }
 
-        for author_chunk in authors.chunks(config.crawl_batch_size.clamp(1, MAX_GRAPH_CRAWL_AUTHORS)) {
+        for author_chunk in
+            authors.chunks(config.crawl_batch_size.clamp(1, MAX_GRAPH_CRAWL_AUTHORS))
+        {
             freshness
                 .write()
                 .expect("freshness lock poisoned")
@@ -1558,7 +1625,7 @@ async fn sync_graph_once(
 
         {
             let guard = graph.read().expect("graph lock");
-            persist_graph_checkpoint(config, &guard)?;
+            persist_graph_checkpoint(config, &guard, false)?;
         }
         {
             let mut status = freshness.write().expect("freshness lock");
