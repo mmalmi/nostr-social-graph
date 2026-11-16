@@ -19,6 +19,7 @@ pub(super) struct GraphFiles {
     full_v3: Vec<u8>,
     full_v4: Vec<u8>,
     mobile: Vec<u8>,
+    discovery_mobile: Option<Vec<u8>>,
     allowlist: String,
 }
 
@@ -32,6 +33,9 @@ impl GraphFiles {
             .to_binary_with_budget_version(BinaryBudget::default(), 3)
             .map_err(io::Error::other)?;
         let mobile = mobile_snapshot_bytes(graph, graph.get_root())?;
+        let discovery_mobile = (graph.get_root() != super::MOBILE_DISCOVERY_ROOT)
+            .then(|| mobile_snapshot_bytes(graph, super::MOBILE_DISCOVERY_ROOT))
+            .transpose()?;
         let allowlist = allowlist_text(graph, None);
         tracing::info!(
             elapsed_ms = started.elapsed().as_millis() as u64,
@@ -45,6 +49,7 @@ impl GraphFiles {
             full_v3,
             full_v4,
             mobile,
+            discovery_mobile,
             allowlist,
         })
     }
@@ -73,7 +78,12 @@ impl Snapshot {
             &self.rows,
             &self.index,
         ];
-        let bytes = data.iter().map(|data| data.len() as u64).sum::<u64>();
+        let bytes = data.iter().map(|data| data.len() as u64).sum::<u64>()
+            + self
+                .graph
+                .discovery_mobile
+                .as_ref()
+                .map_or(0, |bytes| bytes.len() as u64);
         check_stage_capacity(&directory, bytes.saturating_add(4096))?;
         let mut files = std::collections::BTreeMap::new();
         for (name, bytes) in SNAPSHOT_FILES.into_iter().zip(data) {
@@ -86,6 +96,22 @@ impl Snapshot {
                 },
             );
         }
+        let mut mobile_roots = std::collections::BTreeMap::new();
+        if let Some(bytes) = &self.graph.discovery_mobile {
+            let root = super::MOBILE_DISCOVERY_ROOT;
+            let file = format!("mobile-{root}.bin");
+            fs::write(directory.join(&file), bytes)?;
+            mobile_roots.insert(
+                root.to_owned(),
+                super::snapshot_manifest::MobileProjection {
+                    file,
+                    metadata: SnapshotFile {
+                        size: bytes.len() as u64,
+                        sha256: sha256::Hash::hash(bytes).to_string(),
+                    },
+                },
+            );
+        }
         let manifest = SnapshotManifest {
             version: 1,
             root: self.root.clone(),
@@ -93,6 +119,7 @@ impl Snapshot {
             graph_since: self.graph_since,
             generated_at: self.generated_at,
             files,
+            mobile_roots,
         };
         fs::write(
             directory.join("manifest.json"),

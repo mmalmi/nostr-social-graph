@@ -34,6 +34,8 @@ Resolve the signed name for the pinned publisher and directory, retain the full 
 | `profile-index.json` | Matching public search index |
 | `manifest.json` | Checkpoint metadata and digests of the six files above |
 
+For the manifest’s scoring root, use `files["mobile.bin"]`. For another supported discovery root, look up its exact lowercase hex pubkey in `mobile_roots`. Each entry records `file` (`mobile-<root>.bin`), `size` and `sha256`. Fetch only that member from the same immutable tree, check its digest and the 4 MiB size limit, and keep the local graph when the requested projection is unavailable. Earlier manifests can omit `mobile_roots`.
+
 A resolver stages files in an immutable directory. Verify the signed publisher, manifest, scoring root, sizes, digests and freshness before switching the local `current` symlink atomically. Preserve the previous usable generation across download or verification failures.
 
 ## Read-only HTTP service
