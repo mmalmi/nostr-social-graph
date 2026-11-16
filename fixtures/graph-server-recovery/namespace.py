@@ -47,6 +47,16 @@ def remaining():
             if pid==0:break
         except ChildProcessError:break
     return sorted(int(p.name) for p in pathlib.Path('/proc').iterdir() if p.name.isdigit() and int(p.name)!=1)
+def process_detail(pid):
+    # Linux stat's comm is parenthesized and may itself contain spaces or ')'.
+    # Never include argv, environment, executable paths, or file descriptors.
+    try:
+        fields = pathlib.Path(f'/proc/{pid}/stat').read_text(errors='replace')
+        prefix, tail = fields.rsplit(')', 1)
+        return dict(pid=pid, comm=prefix.split('(', 1)[1], state=tail.split()[0])
+    except (FileNotFoundError, ProcessLookupError):
+        return dict(pid=pid, comm=None, state='exited')
+
 def run(name,args,seconds,cwd=None):
     assert time.monotonic()-START<840
     log=runtime/(name+'.log');assert not log.exists();start=time.monotonic();child=None;error=None;code=None
@@ -64,15 +74,16 @@ def run(name,args,seconds,cwd=None):
             except subprocess.TimeoutExpired:
                 os.killpg(child.pid,signal.SIGKILL);child.wait(timeout=5)
         extra=remaining()
+        leaked = [process_detail(pid) for pid in extra]
         if extra:
-            error=error or f'Fixture leaked processes:{extra}'
+            error=error or f'Fixture leaked processes:{leaked}'
             for pid in extra:
                 try:os.kill(pid,signal.SIGKILL)
                 except ProcessLookupError:pass
             end=time.monotonic()+5
             while remaining() and time.monotonic()<end:time.sleep(.05)
         record=dict(name=name,args=list(map(str,args)),exitCode=code,passed=error is None,error=error,
-                    elapsedSeconds=time.monotonic()-start,remainingProcesses=remaining(),logSha256=sha(log))
+                    elapsedSeconds=time.monotonic()-start,leakedProcesses=leaked,remainingProcesses=remaining(),logSha256=sha(log))
         results.append(record);write(runtime/(name+'.json'),record)
         print(json.dumps({k:record[k] for k in ['name','passed','exitCode','elapsedSeconds','error']}),flush=True)
     assert error is None,error

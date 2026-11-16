@@ -26,7 +26,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
-          ref: 16dbfde1ba69a3d4e152349dc41795496b784123
+          ref: c7bfd23132e8dc1c024cdc39e0b5ca00c7746c67
           path: candidate
           persist-credentials: false
           fetch-depth: 0
@@ -63,7 +63,7 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
-          ref: 16dbfde1ba69a3d4e152349dc41795496b784123
+          ref: c7bfd23132e8dc1c024cdc39e0b5ca00c7746c67
           path: candidate
           persist-credentials: false
       - name: Verify pinned transport tools
