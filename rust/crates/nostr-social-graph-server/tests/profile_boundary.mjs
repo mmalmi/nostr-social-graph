@@ -33,7 +33,8 @@ export async function runProfileBoundary(ctx, expectStall) {
   const timing = { PROFILE_CRAWL_DISTANCE: '1', PROFILE_CRAWL_LIMIT: '20', PROFILE_BATCH_SIZE: '1',
     SYNC_INTERVAL_MS: '1000', GRAPH_PUBLISH_INTERVAL_SECS: '1' };
   let worker, hold = 'all', phase = 'initial', graphCycles = 0, profileCycles = 0;
-  const requests = [], completeTimes = [], logs = [];
+  const requests = [], completeTimes = [], logs = [], completedSweeps = [];
+  let sweepStart = 0;
   upstream.onRequest = (id, filters, socket) => {
     const profile = filters.find(filter => filter.kinds?.length === 1 && filter.kinds[0] === 0 && filter.authors?.length);
     if (!profile) return;
@@ -49,7 +50,13 @@ export async function runProfileBoundary(ctx, expectStall) {
       const stamp = /\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z/.exec(line)?.[0];
       if (stamp) completeTimes.push(Math.floor(Date.parse(stamp) / 1000));
     }
-    if (line.includes('profile cycle finished: profiles_committed=true')) profileCycles++;
+    if (line.includes('profile cycle finished:')) {
+      if (line.includes('profiles_committed=true')) {
+        profileCycles++;
+        completedSweeps.push({ phase, authors: requests.slice(sweepStart).flatMap(r => r.filter.authors) });
+      }
+      sweepStart = requests.length;
+    }
   }
   async function wait(check, label, timeout = 20_000) {
     return ctx.until(async () => { worker?.check(); return check(); }, label, timeout);
@@ -127,7 +134,7 @@ export async function runProfileBoundary(ctx, expectStall) {
     assert(includesHeads(first.files, graphEvents));
     assert.equal(profileCycles, 0, 'Incomplete profile sweep was reported complete');
 
-    const changed = [sign(3, key, Math.floor(Date.now() / 1000), [early, late, stableFriend, newcomer]),
+    let changed = [sign(3, key, Math.floor(Date.now() / 1000), [early, late, stableFriend, newcomer]),
       sign(10000, key, Math.floor(Date.now() / 1000), [newcomer])];
     ctx.setEvents([...changed, ...history]);
     changed.forEach(upstream.broadcast);
@@ -157,6 +164,35 @@ export async function runProfileBoundary(ctx, expectStall) {
     assert(requests.some(r => r.phase === 'recovered' && r.filter.authors.includes(newcomer) && r.filter.since === undefined),
       'New author history must be fetched without a since cursor');
 
+    // The saved profile stays on disk while its author leaves the crawl scope.
+    phase = 'author-away';
+    changed = [sign(3, key, Math.max(Math.floor(Date.now() / 1000), changed[0].created_at + 1),
+      [late, stableFriend, newcomer]), changed[1]];
+    ctx.setEvents([...changed, ...history]);
+    upstream.broadcast(changed[0]);
+    await wait(async () => !(await worker.read('/allowlist?maxDistance=1')).toString().split('\n').includes(early),
+      'author leaves the profile crawl scope');
+    const beforeAbsentSweep = completedSweeps.length;
+    await wait(() => completedSweeps.slice(beforeAbsentSweep).some(sweep =>
+      sweep.phase === 'author-away' && sweep.authors.includes(root) && sweep.authors.includes(late)
+      && sweep.authors.includes(newcomer) && !sweep.authors.includes(early)),
+      'complete profile sweep without the departed author');
+    assert(readFileSync(profileFile, 'utf8').includes('Recovered Early'), 'Departed author retains its saved row');
+    const rejoinedProfile = sign(0, earlyKey, epoch - 900, [], 'Rejoined Historical Early');
+    history[1] = rejoinedProfile;
+    phase = 'author-rejoined';
+    changed = [sign(3, key, Math.max(Math.floor(Date.now() / 1000), changed[0].created_at + 1),
+      [early, late, stableFriend, newcomer]), changed[1]];
+    ctx.setEvents([...changed, ...history]);
+    upstream.broadcast(changed[0]);
+    const rejoined = await nextTree('rejoined-profile', files =>
+      includesHeads(files, changed) && hasNames(files, [[early, 'Rejoined Historical Early']]));
+    checkTree(rejoined, [[early, 'Rejoined Historical Early']]);
+    assert(requests.some(r => r.phase === 'author-rejoined' && r.filter.authors.includes(early)
+      && r.filter.since === undefined), 'Rejoined author needs history beyond the completed-sweep cursor');
+    assert(requests.some(r => r.phase === 'author-away' && r.filter.since > rejoinedProfile.created_at),
+      'Rejoined profile predates the active incremental cursor');
+
     phase = 'late-timeout';
     hold = 'late';
     const newerHistory = [sign(0, key, epoch - 100, [], 'Later Root'), sign(0, earlyKey, epoch - 100, [], 'Later Early'),
@@ -184,7 +220,7 @@ export async function runProfileBoundary(ctx, expectStall) {
     await ctx.readImmutable(ctx.htree, path.join(scratch, 'old-profile-generation'), naming, storage, first);
     assert.equal(upstream.writes, 0);
     assert.deepEqual(naming.errors, []);
-    for (const [label, generation] of [['initial', first], ['live', updated], ['recovered', recovered], ['restarted', restarted]]) {
+    for (const [label, generation] of [['initial', first], ['live', updated], ['recovered', recovered], ['rejoined', rejoined], ['restarted', restarted]]) {
       const destination = path.join(output, label);
       mkdirSync(destination);
       for (const [name, bytes] of Object.entries(generation.files)) writeFileSync(path.join(destination, name), bytes);
@@ -194,12 +230,12 @@ export async function runProfileBoundary(ctx, expectStall) {
       initialManifest: firstManifest, updatedManifest, profileRequests: requests,
       signedGenerations: names.map(e => ({ id: e.id, hash: tag(e, 'hash'), created_at: e.created_at })),
       followMuteIds: changed.map(e => e.id), independentProfileCursor: true, timeoutRetriesSameCursor: true,
-      restartRepairsHistoricalProfiles: true, coherentSevenMembers: true, oldImmutableRead: true,
+      restartRepairsHistoricalProfiles: true, rejoinedAuthorHistory: true, completedSweeps, coherentSevenMembers: true, oldImmutableRead: true,
       upstreamWrites: upstream.writes, elapsedMs: performance.now() - started };
     writeFileSync(path.join(output, 'receipt.json'), JSON.stringify(receipt, null, 2) + '\n');
   } catch (error) {
     writeFileSync(path.join(output, 'failure.json'), JSON.stringify({ reason: String(error), graphCycles,
-      profileCycles, requests, names: names.length, logs }, null, 2) + '\n');
+      profileCycles, requests, completedSweeps, names: names.length, logs }, null, 2) + '\n');
     throw error;
   } finally {
     if (worker) await worker.stop();

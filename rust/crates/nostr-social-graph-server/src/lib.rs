@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::io::Write;
 use std::net::{IpAddr, SocketAddr};
@@ -1499,13 +1499,22 @@ async fn sync_profile_loop(
     // A file timestamp cannot certify a finished relay sweep. Reconcile fully
     // after restart, including profiles saved during a previously failed sweep.
     let mut since = None;
+    let mut covered_authors = HashSet::new();
     loop {
         if forwarding_needs_repair(&freshness) {
             tokio::time::sleep(FORWARD_REPAIR_BACKOFF).await;
         }
         let started_at = unix_timestamp();
-        let fetched =
-            sync_profiles_once(&client, &config, &graph, &profiles, since, &freshness).await;
+        let fetched = sync_profiles_once(
+            &client,
+            &config,
+            &graph,
+            &profiles,
+            since,
+            &covered_authors,
+            &freshness,
+        )
+        .await;
         // Preserve received rows even when a later batch fails. Only a complete
         // sweep followed by both durable files can advance the in-memory cursor.
         let saved: Result<()> = (|| {
@@ -1514,10 +1523,13 @@ async fn sync_profile_loop(
             guard.save_profile_index(&config.profile_index_path)?;
             Ok(())
         })();
-        let committed = fetched.and(saved);
+        let committed = fetched.and_then(|authors| saved.map(|()| authors));
         let profiles_committed = committed.is_ok();
         match committed {
-            Ok(()) => since = Some(started_at.saturating_sub(300)),
+            Ok(authors) => {
+                since = Some(started_at.saturating_sub(300));
+                covered_authors = authors;
+            }
             Err(error) => {
                 warn!("profile cycle remains incomplete; retrying after sync interval: {error}")
             }
@@ -1672,6 +1684,8 @@ async fn sync_graph_once(
                 .write()
                 .expect("freshness lock poisoned")
                 .last_graph_progress_at = Some(unix_timestamp());
+            // A saved row is not proof that this author was covered by the last
+            // successful sweep. Newly reachable authors need their full history.
             let (new_authors, known_authors) = {
                 let guard = graph.read().expect("graph lock poisoned");
                 author_chunk
@@ -1883,8 +1897,9 @@ async fn sync_profiles_once(
     graph: &Arc<RwLock<SocialGraph>>,
     profiles: &Arc<RwLock<ProfileStore>>,
     since: Option<u64>,
+    covered_authors: &HashSet<String>,
     freshness: &Arc<RwLock<GraphFreshness>>,
-) -> Result<()> {
+) -> Result<HashSet<String>> {
     if forwarding_needs_repair(freshness) {
         return Err(std::io::Error::other("profile crawl deferred for forwarding repair").into());
     }
@@ -1897,19 +1912,22 @@ async fn sync_profiles_once(
     }
 
     for author_chunk in authors.chunks(config.profile_batch_size.max(1)) {
-        // Stop only at completed fetch boundaries: SDK fetch cleanup closes its
-        // actual subscription, rather than abandoning a cancelled REQ future.
+        // Stop only after fetch cleanup has closed its subscription.
         if forwarding_needs_repair(freshness) {
             return Err(
                 std::io::Error::other("profile crawl deferred for forwarding repair").into(),
             );
         }
+        // A saved row is not proof that this author was covered by the last
+        // successful sweep. Newly reachable authors need their full history.
         let (new_authors, known_authors) = {
             let guard = profiles.read().expect("profile lock poisoned");
             author_chunk
                 .iter()
                 .cloned()
-                .partition::<Vec<_>, _>(|author| !guard.rows_by_pubkey.contains_key(author))
+                .partition::<Vec<_>, _>(|author| {
+                    !guard.rows_by_pubkey.contains_key(author) || !covered_authors.contains(author)
+                })
         };
 
         if !new_authors.is_empty() {
@@ -1920,14 +1938,12 @@ async fn sync_profiles_once(
                 std::io::Error::other("profile crawl deferred for forwarding repair").into(),
             );
         }
-        if !known_authors.is_empty() && since.is_some() {
+        if !known_authors.is_empty() {
             fetch_profile_events(client, &known_authors, since, profiles).await?;
-        } else if !known_authors.is_empty() && since.is_none() {
-            fetch_profile_events(client, &known_authors, None, profiles).await?;
         }
     }
 
-    Ok(())
+    Ok(authors.into_iter().collect())
 }
 
 async fn fetch_profile_events(
