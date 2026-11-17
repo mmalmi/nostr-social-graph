@@ -77,7 +77,7 @@ def qualify():
         tracked = out(['git','ls-tree','-r','--name-only',COMPILED_SOURCE,'rust'], cwd=CANDIDATE).splitlines()
         assert not any(Path(path).name == 'build.rs' for path in tracked)
         metadata = subprocess.run(['git','grep','-n','-I','-E',
-            'git (describe|rev-parse)|VERGEN|GIT_(COMMIT|HASH|SHA)|git_version|option_env!|vergen|git-version|shadow-rs|^build[ ]*=',
+            'git (describe|rev-parse)|VERGEN|GIT_(COMMIT|HASH|SHA)|git_version|option_env!|(^|[^[:alnum:]_])vergen([^[:alnum:]_]|$)|git-version|shadow-rs|^build[ ]*=',
             COMPILED_SOURCE,'--','rust'], cwd=CANDIDATE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
         assert metadata.returncode == 1, 'Unexpected repository identity or explicit build metadata'
         result.update(sourceTree=source_tree,buildSourceTree=build_tree,buildInputsUnchanged=True,
