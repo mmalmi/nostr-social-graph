@@ -2,7 +2,7 @@ name: Graph server bounded recovery qualification
 on:
   workflow_dispatch:
   push:
-    branches: [codex/graph-profile-publication]
+    branches: [codex/graph-profile-qualification]
 permissions:
   contents: read
 concurrency:
