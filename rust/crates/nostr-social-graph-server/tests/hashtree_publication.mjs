@@ -260,7 +260,7 @@ async function launch(directory, env, upstream, storage, enabled, options = {}) 
     assert.equal(response.status, 200, route);
     return Buffer.from(await response.arrayBuffer());
   };
-  return { read, check, log: () => log,
+  return { pid: child.pid, read, check, log: () => log,
     async health() {
       try {
         const response = await fetch('http://127.0.0.1:' + port + '/healthz', { signal: AbortSignal.timeout(2000) });
@@ -465,15 +465,24 @@ try {
     initial = candidate;
     return true;
   }, 'first complete published tree with its fetched profile');
+  const initialAlternate = await worker.read('/social-graph/mobile?root=' + alternateRoot);
+  // A cold read can overlap another successful publication. Settle the initial
+  // producer before pinning the exact last-good alias for the upload fault.
+  await worker.stop();
+  worker = undefined;
+  initial = await readNamed(scratch, 'settled-first-reader', naming, storage);
   heldHash = initial.cid.split(':')[0];
+  assert.equal(tag(names.at(-1), 'hash'), heldHash);
   storage.fault = true;
   current = second;
   checkManifest(initial.files);
   checkConsumer(ordinary, initial.files, first);
-  assert.deepEqual(initial.files[alternateMobile], await worker.read('/social-graph/mobile?root=' + alternateRoot));
+  assert.deepEqual(initial.files[alternateMobile], initialAlternate);
   storage.checkEncrypted(initial.files, first);
   assert.equal(initial.cid.split(':')[0], heldHash);
 
+  worker = await launch(directory, env, upstream, storage, true);
+  const replacementPid = worker.pid;
   await waitForProfile(worker, second);
   await until(() => storage.denials && worker.log().includes('named snapshot publication failed') && writerClean(),
     'failed replacement upload and CAS cleanup');
@@ -497,6 +506,8 @@ try {
     recovered = candidate;
     return true;
   }, 'automatic replacement recovery', 90_000);
+  worker.check();
+  assert.equal(worker.pid, replacementPid, 'Upload failure and recovery must keep the same crawler process');
   assert.notEqual(recovered.cid, initial.cid);
   const previous = checkManifest(initial.files), updated = checkManifest(recovered.files);
   assert(updated.generated_at >= previous.generated_at);
