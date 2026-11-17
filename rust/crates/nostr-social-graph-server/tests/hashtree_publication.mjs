@@ -402,7 +402,7 @@ try {
 
   if (values['profile-boundary']) {
     await runProfileBoundary({ binary, scratch, output, root, key, publishKey, stableFriend, upstream, naming, storage,
-      names, tag, finalizeEvent, generateSecretKey, getPublicKey, Fuse, envFor, launch, readNamed, readImmutable,
+      names, tag, finalizeEvent, generateSecretKey, getPublicKey, Fuse, relay, envFor, launch, readNamed, readImmutable,
       checkManifest, hashFile, until, htree, setEvents: events => { current = { events }; }, track: value => { worker = value; } },
       !!values['expect-profile-stall']);
   } else {

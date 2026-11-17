@@ -1743,14 +1743,21 @@ async fn fetch_crawl_batch(
     use nostr_sdk::{RelayMessage, SubscriptionId};
     let id = SubscriptionId::new(format!("{kind}-crawl-{}", SubscriptionId::generate()));
     let mut notifications = client.notifications();
-    let subscribed = client
+    let subscribed = match client
         .subscribe_with_id(id.clone(), filter.clone(), None)
         .await
-        .map_err(|error| ServerError::Io(std::io::Error::other(error.to_string())))?;
-    if subscribed.success.is_empty() {
+    {
+        Ok(subscribed) => subscribed,
+        Err(error) => {
+            // The SDK saves the subscription before checking its relay targets.
+            client.unsubscribe(&id).await;
+            return Err(ServerError::Io(std::io::Error::other(error.to_string())));
+        }
+    };
+    if subscribed.success.is_empty() || (require_all_eose && !subscribed.failed.is_empty()) {
         client.unsubscribe(&id).await;
         return Err(ServerError::Io(std::io::Error::other(format!(
-            "No {kind} relay accepted the crawl subscription"
+            "Incomplete {kind} crawl subscription"
         ))));
     }
     let mut pending = subscribed.success;

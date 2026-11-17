@@ -24,16 +24,22 @@ export async function runProfileBoundary(ctx, expectStall) {
     sign(0, lateKey, epoch - 1800, [], 'Recovered Late'),
     sign(0, newcomerKey, epoch - 1800, [], 'Recovered Newcomer'),
   ];
-  ctx.setEvents([...graphEvents, ...history]);
+  let activeEvents;
+  const setEvents = events => { activeEvents = events; ctx.setEvents(events); };
+  setEvents([...graphEvents, ...history]);
+  // This relay completes each subscription immediately, but has no profile history.
+  // Its EOSE must not certify the other relay's incomplete profile response.
+  const fastRelay = await ctx.relay(() => activeEvents.filter(event => event.kind !== 0), () =>
+    assert.fail('The crawl-only auxiliary relay must not receive published events'));
   const directory = path.join(scratch, 'profile-boundary');
   const env = ctx.envFor(directory, naming, storage, publishKey);
   const profileFile = path.join(directory, 'profileData.large.json');
   writeFileSync(profileFile, JSON.stringify([[root, 'Retained Root'], [early, 'Retained Early'], [late, 'Retained Late']]));
   utimesSync(profileFile, epoch - 3600, epoch - 3600);
   const timing = { PROFILE_CRAWL_DISTANCE: '1', PROFILE_CRAWL_LIMIT: '20', PROFILE_BATCH_SIZE: '1',
-    SYNC_INTERVAL_MS: '1000', GRAPH_PUBLISH_INTERVAL_SECS: '1' };
+    SYNC_INTERVAL_MS: '1000', GRAPH_PUBLISH_INTERVAL_SECS: '1', RELAY_URLS: upstream.url + ',' + fastRelay.url };
   let worker, hold = 'all', phase = 'initial', graphCycles = 0, profileCycles = 0;
-  const requests = [], completeTimes = [], logs = [], completedSweeps = [];
+  const fastProfileReplies = [], requests = [], completeTimes = [], logs = [], completedSweeps = [];
   let sweepStart = 0;
   upstream.onRequest = (id, filters, socket) => {
     const profile = filters.find(filter => filter.kinds?.length === 1 && filter.kinds[0] === 0 && filter.authors?.length);
@@ -41,6 +47,10 @@ export async function runProfileBoundary(ctx, expectStall) {
     requests.push({ id, phase, atMs: performance.now() - started, filter: profile });
     const withheld = hold === 'all' || (hold === 'late' && profile.authors.includes(late));
     if (withheld) return false;
+  };
+  fastRelay.onRequest = (id, filters) => {
+    const profile = filters.find(filter => filter.kinds?.length === 1 && filter.kinds[0] === 0 && filter.authors?.length);
+    if (profile) fastProfileReplies.push({ id, phase, filter: profile });
   };
   function observe(line) {
     logs.push(line.slice(-500));
@@ -118,9 +128,9 @@ export async function runProfileBoundary(ctx, expectStall) {
       await sleep(8000);
       assert.equal(names.length, 0, 'Old producer unexpectedly publishes while profile responses are held');
       assert(existsSync(path.join(directory, 'graph', 'social-graph-root.json')));
-      assert(requests.length > 0 && (await worker.health()).healthy);
+      assert(requests.length > 0 && fastProfileReplies.length > 0 && (await worker.health()).healthy);
       const receipt = { passed: true, expectProfileStall: true, expectedOldFailure: true, binarySha256: await ctx.hashFile(binary),
-        graphCompletedAt: completed, profileRequests: requests, observationMs: performance.now() - beforePublication,
+        graphCompletedAt: completed, profileRequests: requests, fastProfileReplies, observationMs: performance.now() - beforePublication,
         reason: 'Completed graph remains unpublished while a profile fetch lacks EOSE' };
       writeFileSync(path.join(output, 'receipt.json'), JSON.stringify(receipt, null, 2) + '\n');
       return;
@@ -136,7 +146,7 @@ export async function runProfileBoundary(ctx, expectStall) {
 
     let changed = [sign(3, key, Math.floor(Date.now() / 1000), [early, late, stableFriend, newcomer]),
       sign(10000, key, Math.floor(Date.now() / 1000), [newcomer])];
-    ctx.setEvents([...changed, ...history]);
+    setEvents([...changed, ...history]);
     changed.forEach(upstream.broadcast);
     const graphCyclesAtChange = graphCycles;
     const liveAt = Math.floor(Date.now() / 1000);
@@ -151,6 +161,9 @@ export async function runProfileBoundary(ctx, expectStall) {
     assert(initialRetries.length >= 2);
     assert(initialRetries.every(r => r.filter.since === initialRetries[0].filter.since), 'Timeout advanced the profile cursor');
     assert.equal(profileCycles, 0);
+    assert(fastProfileReplies.length >= 2, 'The other connected relay completed its profile responses');
+    assert(initialRetries.some(request => fastProfileReplies.some(reply => reply.id === request.id)),
+      'The same profile subscription completed on one relay and remained incomplete on the other');
     const cyclesDuringProfileWait = graphCycles;
 
     phase = 'recovered';
@@ -168,7 +181,7 @@ export async function runProfileBoundary(ctx, expectStall) {
     phase = 'author-away';
     changed = [sign(3, key, Math.max(Math.floor(Date.now() / 1000), changed[0].created_at + 1),
       [late, stableFriend, newcomer]), changed[1]];
-    ctx.setEvents([...changed, ...history]);
+    setEvents([...changed, ...history]);
     upstream.broadcast(changed[0]);
     await wait(async () => !(await worker.read('/allowlist?maxDistance=1')).toString().split('\n').includes(early),
       'author leaves the profile crawl scope');
@@ -183,7 +196,7 @@ export async function runProfileBoundary(ctx, expectStall) {
     phase = 'author-rejoined';
     changed = [sign(3, key, Math.max(Math.floor(Date.now() / 1000), changed[0].created_at + 1),
       [early, late, stableFriend, newcomer]), changed[1]];
-    ctx.setEvents([...changed, ...history]);
+    setEvents([...changed, ...history]);
     upstream.broadcast(changed[0]);
     const rejoined = await nextTree('rejoined-profile', files =>
       includesHeads(files, changed) && hasNames(files, [[early, 'Rejoined Historical Early']]));
@@ -197,7 +210,7 @@ export async function runProfileBoundary(ctx, expectStall) {
     hold = 'late';
     const newerHistory = [sign(0, key, epoch - 100, [], 'Later Root'), sign(0, earlyKey, epoch - 100, [], 'Later Early'),
       sign(0, lateKey, epoch - 100, [], 'Later Late'), history[3]];
-    ctx.setEvents([...changed, ...newerHistory]);
+    setEvents([...changed, ...newerHistory]);
     await wait(() => requests.filter(r => r.phase === phase && r.filter.authors.includes(late)).length >= 2,
       'failed late profile batch retries the same completed-sweep cursor', 26_000);
     const lateRetries = requests.filter(r => r.phase === phase && r.filter.authors.includes(late));
@@ -219,6 +232,7 @@ export async function runProfileBoundary(ctx, expectStall) {
     assert(includesHeads(restarted.files, changed));
     await ctx.readImmutable(ctx.htree, path.join(scratch, 'old-profile-generation'), naming, storage, first);
     assert.equal(upstream.writes, 0);
+    assert.equal(fastRelay.writes, 0);
     assert.deepEqual(naming.errors, []);
     for (const [label, generation] of [['initial', first], ['live', updated], ['recovered', recovered], ['rejoined', rejoined], ['restarted', restarted]]) {
       const destination = path.join(output, label);
@@ -227,18 +241,19 @@ export async function runProfileBoundary(ctx, expectStall) {
     }
     const receipt = { passed: true, expectProfileStall: false, binarySha256: await ctx.hashFile(binary), firstPublicationMs,
       cyclesDuringProfileWait, cyclesBeforeRestart, graphCycles, profileCycles, graphCompletedAt: completed,
-      initialManifest: firstManifest, updatedManifest, profileRequests: requests,
+      initialManifest: firstManifest, updatedManifest, profileRequests: requests, fastProfileReplies,
       signedGenerations: names.map(e => ({ id: e.id, hash: tag(e, 'hash'), created_at: e.created_at })),
-      followMuteIds: changed.map(e => e.id), independentProfileCursor: true, timeoutRetriesSameCursor: true,
+      followMuteIds: changed.map(e => e.id), independentProfileCursor: true, timeoutRetriesSameCursor: true, allRelayEoseRequired: true,
       restartRepairsHistoricalProfiles: true, rejoinedAuthorHistory: true, completedSweeps, coherentSevenMembers: true, oldImmutableRead: true,
       upstreamWrites: upstream.writes, elapsedMs: performance.now() - started };
     writeFileSync(path.join(output, 'receipt.json'), JSON.stringify(receipt, null, 2) + '\n');
   } catch (error) {
     writeFileSync(path.join(output, 'failure.json'), JSON.stringify({ reason: String(error), graphCycles,
-      profileCycles, requests, completedSweeps, names: names.length, logs }, null, 2) + '\n');
+      profileCycles, requests, fastProfileReplies, completedSweeps, names: names.length, logs }, null, 2) + '\n');
     throw error;
   } finally {
     if (worker) await worker.stop();
     ctx.track(undefined);
+    await fastRelay.close();
   }
 }
