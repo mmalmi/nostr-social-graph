@@ -37,7 +37,7 @@ os.environ.clear();os.environ.update(PATH=config['path'],HOME=str(home),TMPDIR=s
     LANG='C.UTF-8',LC_ALL='C.UTF-8',TOKIO_WORKER_THREADS='2',RAYON_NUM_THREADS='1',
     WS_NO_BUFFER_UTIL='1',WS_NO_UTF_8_VALIDATE='1',CI='true')
 START=time.monotonic();results=[]
-BUDGET=(2 if config['mode']=='paired' else 1)*(1830 if config['tier']=='full' else 930)+20
+BUDGET=(2 if config['mode']=='paired-capped' else 1)*(1830 if config['tier']=='full' else 930)+20
 
 def sha(path):return hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
 def write(path,value):path.write_text(json.dumps(value,indent=2)+'\n')
@@ -82,17 +82,19 @@ def run(name,args,seconds,cwd=None):
 result=dict(passed=False,rootDropped=True,noNewPrivileges=True,capabilities=capabilities,netNamespace=os.readlink('/proc/self/ns/net'),pidNamespace=os.readlink('/proc/self/ns/pid'))
 try:
     run('network-boundary',[sys.executable,HERE/'network_proof.py',runtime/'network-boundary-proof.json'],15)
+    fixture_directory=HERE/('memory-capped' if config['mode']=='paired-capped' else 'memory')
     for label, executable in config['binaries'].items():
         assert sha(executable) == config['hashes'][label]
-        command=[config['node'],HERE/'memory/hashtree_publication.mjs',executable,
+        command=[config['node'],fixture_directory/'hashtree_publication.mjs',executable,
                  '--htree',stage/'htree','--legacy-htree',stage/'legacy-htree',
                  '--dependencies',source/'ts/package.json','--output',runtime/label,'--memory-seed',config['seed']]
+        if config['mode']=='paired-capped':command.extend(['--memory-arenas','2'])
         run('trial-'+label, command, 1800 if config['tier']=='full' else 900, cwd=source)
         trial=json.loads((runtime/label/'receipt.json').read_text())
         assert trial['passed'] and trial['binarySha256']==config['hashes'][label]
-    if config['mode']=='paired':
+    if config['mode']=='paired-capped':
         comparison=runtime/'comparison.json'
-        run('compare',[sys.executable,HERE/'memory/compare_memory.py',
+        run('compare',[sys.executable,fixture_directory/'compare_memory.py',
                        runtime/'baseline',runtime/'candidate',comparison],30)
         assert json.loads(comparison.read_text())['passed']
     assert not remaining()

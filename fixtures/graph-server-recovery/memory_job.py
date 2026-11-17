@@ -47,22 +47,24 @@ def resources():
     vm=dict(row.split() for row in Path('/proc/vmstat').read_text().splitlines())
     return dict(available=mem['MemAvailable'],swap=mem['SwapTotal']-mem['SwapFree'],swapout=int(vm['pswpout']),disk=shutil.disk_usage(STAGE).free)
 
-tier,mode=sys.argv[1:];assert tier in ('mobile','full') and mode in ('smoke','paired')
+tier,mode=sys.argv[1:];assert tier in ('mobile','full') and mode in ('candidate','paired-capped')
 head=os.environ['GITHUB_SHA'];run=os.environ['GITHUB_RUN_ID']
 assert subprocess.check_output(['git','rev-parse','HEAD'],text=True,cwd=SOURCE_DIR).strip()==SOURCE
 assert subprocess.check_output(['git','rev-parse','HEAD'],text=True,cwd=HERE).strip()==head
 assert subprocess.check_output(['node','--version'],text=True).strip()=='v22.23.4'
 assert subprocess.check_output(['pnpm','--version'],text=True).strip()=='10.28.2'
 subprocess.run(['pnpm','install','--frozen-lockfile','--ignore-scripts'],cwd=SOURCE_DIR,timeout=350,check=True)
-base_id=14219929990
-baseline,baseline_sha=executable(api('actions/artifacts/'+str(base_id)),BASE,BASE_CARRIER,BASE_ARCHIVE,BASE_ELF)
-binaries={'baseline':str(baseline)};hashes={'baseline':baseline_sha};provenance={'baseline':dict(artifactId=base_id,source=BASE,archiveSha256=BASE_ARCHIVE,elf=baseline_sha)}
-if mode=='paired':
-    artifacts=api('actions/runs/'+run+'/artifacts')['artifacts']
-    artifact,=[a for a in artifacts if a['name']=='graph-server-recovery-'+head]
-    candidate,candidate_sha=executable(artifact,SOURCE,head,artifact['digest'].removeprefix('sha256:'))
-    binaries['candidate']=str(candidate);hashes['candidate']=candidate_sha
-    provenance['candidate']=dict(artifactId=artifact['id'],source=SOURCE,archiveSha256=artifact['digest'][7:],elf=candidate_sha)
+binaries={};hashes={};provenance={}
+if mode=='paired-capped':
+    base_id=14219929990
+    baseline,base_sha=executable(api('actions/artifacts/'+str(base_id)),BASE,BASE_CARRIER,BASE_ARCHIVE,BASE_ELF)
+    binaries['baseline']=str(baseline);hashes['baseline']=base_sha
+    provenance['baseline']=dict(artifactId=base_id,source=BASE,archiveSha256=BASE_ARCHIVE,elf=base_sha)
+candidate_id=14302053669
+candidate_dig='1ee73132e5d61fc3435788765fda68a95ed615f26d2c95047930bc581d9e6c43'
+candidate,sha_candidate=executable(api('actions/artifacts/'+str(candidate_id)),SOURCE,'4e6cd43387f812c461b98c2553d08ea124f34841',candidate_dig,'0d6f48e05ca0c88dc530a0f4fbbb49223ed0b17c8eea81046a6a7b8ec3a99040')
+binaries['candidate']=str(candidate);hashes['candidate']=sha_candidate
+provenance['candidate']=dict(artifactId=candidate_id,source=SOURCE,archiveSha256=candidate_dig,elf=sha_candidate)
 seed=SOURCE_DIR/'ts/data/socialGraph.bin'
 if tier=='full':
     seed=STAGE/'full.bin'
@@ -82,7 +84,7 @@ try:
         for key in ('available','disk'):floor[key]=min(floor[key],now[key])
         assert now['available']>=2*GIB and now['disk']>=21*GIB and before['disk']-now['disk']<6*GIB, now
         assert now['swap']<=before['swap'] and now['swapout']==before['swapout'], now
-        assert time.monotonic()-started<((2 if mode=='paired' else 1)*(1830 if tier=='full' else 930)+30)
+        assert time.monotonic()-started<((2 if mode=='paired-capped' else 1)*(1830 if tier=='full' else 930)+30)
         time.sleep(.5)
     assert p.returncode==0, p.returncode
 except BaseException as exc:
