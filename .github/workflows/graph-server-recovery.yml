@@ -2,7 +2,7 @@ name: Graph server bounded recovery qualification
 on:
   workflow_dispatch:
   push:
-    branches: [codex/graph-server-recovery]
+    branches: [codex/graph-profile-publication]
 permissions:
   contents: read
 concurrency:
@@ -20,7 +20,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
-          ref: 83ca2e2a57e145193e0ee7d2273fa5c70457694d
+          ref: db950a076bf15067d55e7a813485021a34fb25a7
           path: candidate
           persist-credentials: false
           fetch-depth: 0
@@ -43,12 +43,13 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  baseline-smoke:
+
+  baseline-boundary:
     runs-on: ubuntu-22.04
     permissions:
       contents: read
       actions: read
-    timeout-minutes: 80
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -57,7 +58,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
-          ref: 83ca2e2a57e145193e0ee7d2273fa5c70457694d
+          ref: db950a076bf15067d55e7a813485021a34fb25a7
           path: candidate
           persist-credentials: false
           fetch-depth: 0
@@ -69,32 +70,28 @@ jobs:
         with:
           version: 10.28.2
           run_install: false
-      - name: Verify source, graph inputs and isolated process memory
+      - name: Qualify exact executable in isolated runtime
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python3 harness/fixtures/graph-server-recovery/memory_job.py mobile smoke
-      - name: Preserve measured gates and failure samples
+        run: python3 harness/fixtures/graph-server-recovery/runtime_job.py boundary-baseline
+      - name: Preserve runtime measurements and failure evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: graph-memory-smoke-mobile-${{ github.sha }}
+          name: graph-profile-boundary-baseline-${{ github.sha }}
           path: |
-            ${{ runner.temp }}/graph-server-alias-repair/evidence/memory
-            ${{ runner.temp }}/graph-server-alias-repair/evidence/memory-host.json
-          if-no-files-found: warn
+            ${{ runner.temp }}/graph-server-alias-repair/evidence/profile-boundary-baseline
+            ${{ runner.temp }}/graph-server-alias-repair/evidence/profile-host.json
+          if-no-files-found: error
           retention-days: 14
 
-  paired:
+  candidate-boundary:
     needs: qualify
-    strategy:
-      fail-fast: false
-      matrix:
-        tier: [mobile, full]
     runs-on: ubuntu-22.04
     permissions:
       contents: read
       actions: read
-    timeout-minutes: 80
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -103,7 +100,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
-          ref: 83ca2e2a57e145193e0ee7d2273fa5c70457694d
+          ref: db950a076bf15067d55e7a813485021a34fb25a7
           path: candidate
           persist-credentials: false
           fetch-depth: 0
@@ -115,17 +112,59 @@ jobs:
         with:
           version: 10.28.2
           run_install: false
-      - name: Verify source, graph inputs and isolated process memory
+      - name: Qualify exact executable in isolated runtime
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python3 harness/fixtures/graph-server-recovery/memory_job.py ${{ matrix.tier }} paired
-      - name: Preserve measured gates and failure samples
+        run: python3 harness/fixtures/graph-server-recovery/runtime_job.py boundary-candidate
+      - name: Preserve runtime measurements and failure evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: graph-memory-paired-${{ matrix.tier }}-${{ github.sha }}
+          name: graph-profile-boundary-candidate-${{ github.sha }}
           path: |
-            ${{ runner.temp }}/graph-server-alias-repair/evidence/memory
-            ${{ runner.temp }}/graph-server-alias-repair/evidence/memory-host.json
-          if-no-files-found: warn
+            ${{ runner.temp }}/graph-server-alias-repair/evidence/profile-boundary-candidate
+            ${{ runner.temp }}/graph-server-alias-repair/evidence/profile-host.json
+          if-no-files-found: error
+          retention-days: 14
+
+  memory:
+    needs: qualify
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      actions: read
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          path: harness
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: db950a076bf15067d55e7a813485021a34fb25a7
+          path: candidate
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Verify pinned Node and Hashtree tools
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 harness/fixtures/graph-server-recovery/controller.py bootstrap
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
+        with:
+          version: 10.28.2
+          run_install: false
+      - name: Qualify exact executable in isolated runtime
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 harness/fixtures/graph-server-recovery/runtime_job.py memory
+      - name: Preserve runtime measurements and failure evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: graph-profile-memory-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/graph-server-alias-repair/evidence/profile-memory
+            ${{ runner.temp }}/graph-server-alias-repair/evidence/profile-host.json
+          if-no-files-found: error
           retention-days: 14

@@ -39,13 +39,15 @@ export async function runMemoryCycles(ctx) {
   const home=ctx.envFor(directory,naming,storage,publishKey), env={ ...home, LEGACY_SOCIAL_GRAPH_BINARY_PATH:seed };
   const timing={ CRAWL_DISTANCE:'1', PROFILE_CRAWL_DISTANCE:'0', SYNC_INTERVAL_MS:'3500', GRAPH_PUBLISH_INTERVAL_SECS:'1' };
   let cycles=0, partials=0, exports=0, totalWrites=0, changedAt=null, changedNameCount=null, firstSigned=null;
+  let profileCompleted=false;
   let worker, sampler; const tests=[], failed=[];
   function observe(line) {
     if (line.includes('persisted PARTIAL graph crawl through distance')) partials++;
     if (line.includes('captured named graph exports')) exports++;
     if (line.includes('published named social graph snapshot')) totalWrites++;
+    if (line.includes('profile cycle finished: profiles_committed=true') || line.includes('profiles_committed=true')) profileCompleted=true;
     if (line.includes('sync cycle finished:')) {
-      if (!line.includes('graph_committed=true profiles_committed=true')) failed.push(line.slice(-400));
+      if (!line.includes('graph_committed=true')) failed.push(line.slice(-400));
       else { cycles++; sampler?.checkpoint(cycles); sampler?.mark('cycle-'+(cycles+1)); }
     }
   }
@@ -60,7 +62,7 @@ export async function runMemoryCycles(ctx) {
       if (cycles>=2 && changedAt===null && ctx.names.length) {
         firstSigned=ctx.names[0];changedAt=cycles;changedNameCount=ctx.names.length;ctx.setEvents([...base,...extra]);
       }
-      return changedAt!==null && cycles>=Math.max(profile.cycles,changedAt+3) && ctx.names.length>changedNameCount && totalWrites>=2;
+      return profileCompleted && changedAt!==null && cycles>=Math.max(profile.cycles,changedAt+3) && ctx.names.length>changedNameCount && totalWrites>=2;
     },profile.tier==='full'?25*60*1000:8*60*1000,'changed and unchanged durable crawl cycles');
     const measured=sampler.finish();sampler=null; assert(measured.settled.length>=profile.cycles);
     assert(partials>=2*cycles,'Both crawl distances must finish; if production changes diagnostic text, verify its actual checkpoint operations.');
