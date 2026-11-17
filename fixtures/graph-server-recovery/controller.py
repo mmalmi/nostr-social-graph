@@ -1,7 +1,7 @@
 """Task-only Linux producer. No deployment, signing, source push, or cache cleanup."""
 import hashlib, json, os, pathlib, re, shutil, signal, subprocess, sys, tarfile, time, urllib.request
 
-SOURCE = '65ddb3605221caff35bcb5e8d579aaca52bc3919'
+SOURCE = 'f0263c1f85db3ed779a6efd444e06d2008e94a70'
 NODE = '22.23.4'
 NODE_SHA = '1805bcd35e6815559bd2eb97db438d3fdb0eb3a5e6a977b7c1badca76337e9ce'
 NODE_URL = f'https://nodejs.org/dist/v{NODE}/node-v{NODE}-linux-x64.tar.xz'
@@ -137,7 +137,7 @@ def interrupted(signum, _frame):
 
 for signum in (signal.SIGTERM, signal.SIGINT): signal.signal(signum,interrupted)
 
-mode=sys.argv[1]; assert mode in ('bootstrap','qualify')
+mode=sys.argv[1]; assert mode in ('bootstrap','qualify','source-recert')
 if mode=='bootstrap':
     STAGE.mkdir(); EVIDENCE.mkdir(); BASELINE=sample()
     assert BASELINE['diskFree']>=LIMITS['entryDiskBytes'] and BASELINE['available']>=LIMITS['entryAvailableBytes']
@@ -205,6 +205,11 @@ assert out(['git','rev-parse','HEAD'],cwd=CANDIDATE)==SOURCE
 assert not out(['git','status','--porcelain','--untracked-files=no'],cwd=CANDIDATE)
 assert out(['node','--version'])=='v'+NODE and out(['pnpm','--version'])=='10.28.2'
 entry=sample();guard(entry);assert entry['available']>=LIMITS['entryAvailableBytes'] and entry['diskFree']>=LIMITS['entryDiskBytes']
+if mode == 'source-recert':
+    from recert import qualify
+    qualify()
+    sys.exit(0)
+
 result=dict(source=SOURCE,recipeCommit=out(['git','rev-parse','HEAD'],cwd=HERE),limits=LIMITS,passed=False)
 try:
     env=dict(os.environ,CARGO_TARGET_DIR=str(STAGE/'target'),CARGO_BUILD_JOBS='1',CARGO_INCREMENTAL='0',

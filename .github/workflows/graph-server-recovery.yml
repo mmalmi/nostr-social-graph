@@ -10,6 +10,9 @@ concurrency:
   cancel-in-progress: false
 jobs:
   qualify:
+    permissions:
+      contents: read
+      actions: read
     runs-on: ubuntu-22.04
     timeout-minutes: 60
     steps:
@@ -20,7 +23,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
-          ref: 65ddb3605221caff35bcb5e8d579aaca52bc3919
+          ref: f0263c1f85db3ed779a6efd444e06d2008e94a70
           path: candidate
           persist-credentials: false
           fetch-depth: 0
@@ -32,8 +35,10 @@ jobs:
         with:
           version: 10.28.2
           run_install: false
-      - name: Build once and qualify without external test traffic
-        run: python3 harness/fixtures/graph-server-recovery/controller.py qualify
+      - name: Requalify retained exact binaries without compilation
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 harness/fixtures/graph-server-recovery/controller.py source-recert
       - name: Preserve both binaries and qualification evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -58,7 +63,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
-          ref: 65ddb3605221caff35bcb5e8d579aaca52bc3919
+          ref: f0263c1f85db3ed779a6efd444e06d2008e94a70
           path: candidate
           persist-credentials: false
           fetch-depth: 0
@@ -100,7 +105,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
-          ref: 65ddb3605221caff35bcb5e8d579aaca52bc3919
+          ref: f0263c1f85db3ed779a6efd444e06d2008e94a70
           path: candidate
           persist-credentials: false
           fetch-depth: 0
@@ -142,7 +147,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
-          ref: 65ddb3605221caff35bcb5e8d579aaca52bc3919
+          ref: f0263c1f85db3ed779a6efd444e06d2008e94a70
           path: candidate
           persist-credentials: false
           fetch-depth: 0
