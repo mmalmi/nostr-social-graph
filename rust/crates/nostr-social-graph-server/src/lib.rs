@@ -17,8 +17,8 @@ use nostr_sdk::{
     Client as NostrClient, Filter, Keys, Kind, PublicKey, RelayPoolNotification, Timestamp,
     ToBech32,
 };
-use nostr_social_graph::{BinaryBudget, NostrEvent, SocialGraph, SocialGraphState};
-use nostr_social_graph_hashtree::HashtreeSocialGraph;
+use nostr_social_graph::{BinaryBudget, NostrEvent, SocialGraph};
+use nostr_social_graph_hashtree::GraphCheckpoint;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tower_http::cors::{Any, CorsLayer};
@@ -498,35 +498,59 @@ impl ServerConfig {
     }
 }
 
+fn checkpoint_error(error: impl std::fmt::Display) -> ServerError {
+    ServerError::Io(std::io::Error::other(error.to_string()))
+}
+
+fn legacy_bootstrap(
+    root: &str,
+    graph: &SocialGraph,
+    path: Option<&Path>,
+) -> Result<Option<SocialGraph>> {
+    let Some(path) = path.filter(|path| path.exists()) else {
+        return Ok(None);
+    };
+    let size = graph.size();
+    if size.follows != 0 || size.mutes != 0 {
+        return Ok(None);
+    }
+    // A saved graph can contain an explicitly empty relationship row.
+    // Preserve the historical bootstrap rule without exporting a populated graph.
+    let state = graph.export_state();
+    if !state.followed_by_user.is_empty() || !state.muted_by_user.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(
+        SocialGraph::from_binary(root, &fs::read(path)?).map_err(checkpoint_error)?,
+    ))
+}
+
+fn open_producer_graph(
+    root: &str,
+    directory: &Path,
+    legacy: Option<&Path>,
+) -> Result<(GraphCheckpoint, SocialGraph)> {
+    let (mut checkpoint, mut graph) =
+        GraphCheckpoint::open(directory, root).map_err(checkpoint_error)?;
+    if let Some(imported) = legacy_bootstrap(root, &graph, legacy)? {
+        graph = imported;
+        checkpoint
+            .commit(&graph, |_| Ok(()))
+            .map_err(checkpoint_error)?;
+        info!(
+            "imported graph snapshot into hashtree store {}",
+            directory.display()
+        );
+    }
+    Ok((checkpoint, graph))
+}
+
 pub fn load_or_bootstrap_graph(
     root: &str,
     graph_db_dir: impl AsRef<Path>,
     legacy_graph_binary_path: Option<&Path>,
 ) -> Result<SocialGraph> {
-    let graph_db_dir = graph_db_dir.as_ref();
-    let mut store = HashtreeSocialGraph::open(graph_db_dir, root)
-        .map_err(|error| ServerError::Io(std::io::Error::other(error.to_string())))?;
-    let state = store.export_state();
-
-    let graph_is_empty = state.followed_by_user.is_empty() && state.muted_by_user.is_empty();
-    if graph_is_empty
-        && let Some(graph_binary_path) = legacy_graph_binary_path.filter(|path| path.exists())
-    {
-        let graph = SocialGraph::from_binary(root, &fs::read(graph_binary_path)?)
-            .map_err(|error| ServerError::Io(std::io::Error::other(error.to_string())))?;
-        store
-            .replace_state(&graph.export_state())
-            .map_err(|error| ServerError::Io(std::io::Error::other(error.to_string())))?;
-        info!(
-            "imported graph snapshot from {} into hashtree store {}",
-            graph_binary_path.display(),
-            graph_db_dir.display()
-        );
-        return Ok(graph);
-    }
-
-    SocialGraph::from_state(state)
-        .map_err(|error| ServerError::Io(std::io::Error::other(error.to_string())))
+    Ok(open_producer_graph(root, graph_db_dir.as_ref(), legacy_graph_binary_path)?.1)
 }
 
 pub fn load_graph_read_only(
@@ -534,25 +558,15 @@ pub fn load_graph_read_only(
     graph_db_dir: impl AsRef<Path>,
     legacy_graph_binary_path: Option<&Path>,
 ) -> Result<SocialGraph> {
-    let graph_db_dir = graph_db_dir.as_ref();
-    let state = if path_has_entries(graph_db_dir) {
-        let store = HashtreeSocialGraph::open(graph_db_dir, root)
-            .map_err(|error| ServerError::Io(std::io::Error::other(error.to_string())))?;
-        store.export_state()
+    let directory = graph_db_dir.as_ref();
+    let graph = if path_has_entries(directory) {
+        GraphCheckpoint::open(directory, root)
+            .map_err(checkpoint_error)?
+            .1
     } else {
-        empty_graph_state(root)
+        SocialGraph::new(root)
     };
-
-    let graph_is_empty = state.followed_by_user.is_empty() && state.muted_by_user.is_empty();
-    if graph_is_empty
-        && let Some(graph_binary_path) = legacy_graph_binary_path.filter(|path| path.exists())
-    {
-        return SocialGraph::from_binary(root, &fs::read(graph_binary_path)?)
-            .map_err(|error| ServerError::Io(std::io::Error::other(error.to_string())));
-    }
-
-    SocialGraph::from_state(state)
-        .map_err(|error| ServerError::Io(std::io::Error::other(error.to_string())))
+    Ok(legacy_bootstrap(root, &graph, legacy_graph_binary_path)?.unwrap_or(graph))
 }
 
 pub fn persist_graph_snapshot(
@@ -560,47 +574,48 @@ pub fn persist_graph_snapshot(
     graph_db_dir: impl AsRef<Path>,
     graph: &SocialGraph,
 ) -> Result<()> {
-    let graph_db_dir = graph_db_dir.as_ref();
-    let mut store = HashtreeSocialGraph::open(graph_db_dir, root)
-        .map_err(|error| ServerError::Io(std::io::Error::other(error.to_string())))?;
-    store
-        .replace_state(&graph.export_state())
-        .map_err(|error| ServerError::Io(std::io::Error::other(error.to_string())))?;
-    info!("persisted graph snapshot to {}", graph_db_dir.display());
+    let (mut checkpoint, _) =
+        GraphCheckpoint::open(graph_db_dir, root).map_err(checkpoint_error)?;
+    checkpoint
+        .commit(graph, |_| Ok(()))
+        .map_err(checkpoint_error)?;
     Ok(())
 }
 
 fn persist_graph_checkpoint(
     config: &ServerConfig,
+    checkpoint: &mut GraphCheckpoint,
     graph: &SocialGraph,
     retain_public_bytes: bool,
 ) -> Result<Option<Vec<u8>>> {
-    // Account for worst-case filesystem block amplification plus tree nodes.
-    // Check before the checkpoint writer allocates any new blobs; preserve the
-    // host reserve even while the old and rollback generations coexist.
-    let bytes = graph
-        .to_binary()
-        .map_err(|error| ServerError::Io(std::io::Error::other(error.to_string())))?;
-    let peak_growth = (bytes.len() as u64)
+    let bytes = checkpoint
+        .commit(graph, |size| check_checkpoint_space(&config.data_dir, size))
+        .map_err(checkpoint_error)?;
+    info!(
+        "persisted graph snapshot to {}",
+        config.graph_db_dir.display()
+    );
+    Ok(retain_public_bytes.then_some(bytes))
+}
+
+fn check_checkpoint_space(data_dir: &Path, size: usize) -> std::io::Result<()> {
+    // Allow for filesystem block amplification while retaining both generations.
+    let peak_growth = (size as u64)
         .saturating_mul(5)
         .saturating_add(32 * 1024 * 1024);
-    let retained = retain_public_bytes.then_some(bytes);
     let reserve = std::env::var("GRAPH_CHECKPOINT_MIN_FREE_BYTES")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
         .unwrap_or(5 * 1024 * 1024 * 1024);
-    let free = forwarding::free_bytes(&config.data_dir).ok_or_else(|| {
-        ServerError::Io(std::io::Error::other(
-            "Cannot verify graph checkpoint filesystem capacity",
-        ))
+    let free = forwarding::free_bytes(data_dir).ok_or_else(|| {
+        std::io::Error::other("Cannot verify graph checkpoint filesystem capacity")
     })?;
     if free.saturating_sub(reserve) < peak_growth {
-        return Err(ServerError::Io(std::io::Error::other(format!(
+        return Err(std::io::Error::other(format!(
             "Graph checkpoint would consume host reserve: free={free}, reserve={reserve}, peak_growth={peak_growth}"
-        ))));
+        )));
     }
-    persist_graph_snapshot(&config.root, &config.graph_db_dir, graph)?;
-    Ok(retained)
+    Ok(())
 }
 
 fn write_graph_freshness(config: &ServerConfig, status: &GraphFreshness) -> Result<()> {
@@ -609,22 +624,6 @@ fn write_graph_freshness(config: &ServerConfig, status: &GraphFreshness) -> Resu
     fs::write(&temporary, serde_json::to_vec(status)?)?;
     fs::rename(temporary, status_path)?;
     Ok(())
-}
-
-fn empty_graph_state(root: &str) -> SocialGraphState {
-    SocialGraphState {
-        root: root.to_string(),
-        unique_ids: Vec::new(),
-        follow_distance_by_user: Vec::new(),
-        users_by_follow_distance: Vec::new(),
-        followed_by_user: Vec::new(),
-        followers_by_user: Vec::new(),
-        follow_list_created_at: Vec::new(),
-        muted_by_user: Vec::new(),
-        user_muted_by: Vec::new(),
-        mute_list_created_at: Vec::new(),
-        list_revisions: Vec::new(),
-    }
 }
 
 pub async fn run(config: ServerConfig) -> Result<()> {
@@ -648,7 +647,7 @@ pub async fn run(config: ServerConfig) -> Result<()> {
     let initial_profile_since = modified_unix_timestamp(&config.profile_data_path)
         .map(|timestamp| timestamp.saturating_sub(1));
 
-    let graph = load_or_bootstrap_graph(
+    let (checkpoint, graph) = open_producer_graph(
         &config.root,
         &config.graph_db_dir,
         config.legacy_graph_binary_path.as_deref(),
@@ -695,6 +694,7 @@ pub async fn run(config: ServerConfig) -> Result<()> {
         if let Err(error) = sync_loop(
             sync_client,
             sync_config,
+            checkpoint,
             sync_graph,
             sync_profiles,
             initial_graph_since,
@@ -1257,6 +1257,7 @@ async fn wait_for_sync_interval_or_repair(
 async fn sync_loop(
     client: NostrClient,
     config: ServerConfig,
+    mut checkpoint: GraphCheckpoint,
     graph: Arc<RwLock<SocialGraph>>,
     profiles: Arc<RwLock<ProfileStore>>,
     initial_graph_since: Option<u64>,
@@ -1307,6 +1308,7 @@ async fn sync_loop(
             sync_graph_once(
                 &client,
                 &config,
+                &mut checkpoint,
                 &graph,
                 requested_since,
                 &freshness,
@@ -1346,7 +1348,9 @@ async fn sync_loop(
         let graph_result: Result<()> = (|| {
             {
                 let graph_guard = graph.read().expect("graph lock poisoned");
-                if let Some(bytes) = persist_graph_checkpoint(&config, &graph_guard, capture)? {
+                if let Some(bytes) =
+                    persist_graph_checkpoint(&config, &mut checkpoint, &graph_guard, capture)?
+                {
                     match publisher::GraphFiles::capture(&graph_guard, bytes) {
                         Ok(files) => committed_bytes = Some(files),
                         Err(error) => warn!("could not capture named graph export: {error}"),
@@ -1561,6 +1565,7 @@ async fn notification_loop(
 async fn sync_graph_once(
     client: &NostrClient,
     config: &ServerConfig,
+    checkpoint: &mut GraphCheckpoint,
     graph: &Arc<RwLock<SocialGraph>>,
     since: Option<u64>,
     freshness: &Arc<RwLock<GraphFreshness>>,
@@ -1628,7 +1633,7 @@ async fn sync_graph_once(
 
         {
             let guard = graph.read().expect("graph lock");
-            persist_graph_checkpoint(config, &guard, false)?;
+            persist_graph_checkpoint(config, checkpoint, &guard, false)?;
         }
         {
             let mut status = freshness.write().expect("freshness lock");

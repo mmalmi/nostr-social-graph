@@ -2,7 +2,7 @@ use futures::executor::block_on;
 use hashtree_core::{HashTree, HashTreeConfig, Store, collect_hashes};
 use hashtree_fs::FsBlobStore;
 use nostr_social_graph::{NostrEvent, SocialGraph, SocialGraphBackend};
-use nostr_social_graph_hashtree::HashtreeSocialGraph;
+use nostr_social_graph_hashtree::{GraphCheckpoint, HashtreeSocialGraph};
 use std::collections::HashSet;
 use std::sync::Arc;
 use tempfile::TempDir;
@@ -149,4 +149,68 @@ fn chunked_checkpoints_and_rollback_survive_collection() {
     .unwrap();
     let rollback = HashtreeSocialGraph::open(dir.path(), ROOT).unwrap();
     assert!(rollback.is_following(ROOT, &format!("{:064x}", 3)).unwrap());
+}
+
+#[test]
+fn live_checkpoint_returns_exact_bytes_and_observes_external_pins() {
+    let dir = TempDir::new().unwrap();
+    let (mut checkpoint, mut graph) = GraphCheckpoint::open(dir.path(), ROOT).unwrap();
+    let blobs = Arc::new(FsBlobStore::new(dir.path().join("blobs")).unwrap());
+    let tree = HashTree::new(HashTreeConfig::new(blobs.clone()).public());
+    let (pinned, _) = block_on(tree.put(b"pinned after opening writer")).unwrap();
+    block_on(blobs.pin(&pinned.hash)).unwrap();
+
+    for revision in 1..=3_u64 {
+        for kind in [3, 10_000] {
+            graph.handle_event(
+                &NostrEvent {
+                    pubkey: ROOT.into(),
+                    kind,
+                    created_at: revision,
+                    tags: vec![vec!["p".into(), format!("{kind:064x}")]],
+                    id: format!("{:064x}", revision * 100_000 + u64::from(kind)),
+                    sig: String::new(),
+                    content: String::new(),
+                },
+                true,
+                f64::INFINITY,
+            );
+        }
+        let encoded = graph.to_binary().unwrap();
+        let manifest = dir.path().join("social-graph-root.json");
+        let prior = std::fs::read(&manifest).ok();
+        let denied =
+            checkpoint.commit(&graph, |_| Err(std::io::Error::other("insufficient space")));
+        assert!(denied.is_err());
+        assert_eq!(std::fs::read(&manifest).ok(), prior);
+        let published = checkpoint
+            .commit(&graph, |size| {
+                assert_eq!(size, encoded.len());
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(published, encoded);
+        if let Some(prior) = prior {
+            let rollback = dir.path().join("social-graph-root.previous.json");
+            assert_eq!(std::fs::read(&rollback).unwrap(), prior);
+            assert_eq!(checkpoint.commit(&graph, |_| Ok(())).unwrap(), published);
+            assert_eq!(std::fs::read(rollback).unwrap(), prior);
+        }
+        let (_, reader) = GraphCheckpoint::open(dir.path(), ROOT).unwrap();
+        assert!(reader.is_following(ROOT, &format!("{:064x}", 3)));
+        assert_eq!(reader.get_follow_distance(&format!("{:064x}", 3)), 1);
+        assert_eq!(
+            reader.get_muted_by_user(ROOT),
+            vec![format!("{:064x}", 10_000)]
+        );
+        for kind in [3, 10_000] {
+            assert_eq!(
+                reader.get_list_revision(ROOT, kind),
+                graph.get_list_revision(ROOT, kind)
+            );
+            assert!(reader.get_list_revision(ROOT, kind).unwrap().complete);
+        }
+        assert_eq!(reader.to_binary().unwrap(), published);
+        assert!(block_on(blobs.has(&pinned.hash)).unwrap());
+    }
 }

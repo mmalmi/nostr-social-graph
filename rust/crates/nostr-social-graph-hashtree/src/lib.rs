@@ -49,6 +49,8 @@ pub enum HashtreeSocialGraphError {
         expected: u64,
         actual: u64,
     },
+    #[error("social graph checkpoint readback differs from the encoded graph")]
+    CheckpointReadbackMismatch,
     #[error("social graph checkpoint changed since it was opened; reopen before writing")]
     StaleCheckpoint,
     #[error("snapshot blob failed hash verification: {0}")]
@@ -88,17 +90,17 @@ impl SnapshotManifest {
     }
 }
 
-pub struct HashtreeSocialGraph {
+/// Writer for one graph checkpoint directory. The server owns the loaded graph separately.
+pub struct GraphCheckpoint {
     manifest_path: PathBuf,
     store: Arc<FsBlobStore>,
     tree: HashTree<FsBlobStore>,
-    graph: SocialGraph,
     manifest: Option<SnapshotManifest>,
-    dirty: bool,
+    verified_rollback: Option<SnapshotManifest>,
 }
 
-impl HashtreeSocialGraph {
-    pub fn open<P: AsRef<Path>>(path: P, default_root: &str) -> Result<Self> {
+impl GraphCheckpoint {
+    pub fn open<P: AsRef<Path>>(path: P, default_root: &str) -> Result<(Self, SocialGraph)> {
         let path = path.as_ref();
         fs::create_dir_all(path)?;
         // Readers must finish loading a checkpoint before a writer can retire it.
@@ -131,28 +133,154 @@ impl HashtreeSocialGraph {
             None => SocialGraph::new(default_root),
         };
 
-        Ok(Self {
-            manifest_path,
-            store,
-            tree,
+        Ok((
+            Self {
+                manifest_path,
+                store,
+                tree,
+                manifest,
+                verified_rollback: None,
+            },
             graph,
-            manifest,
+        ))
+    }
+
+    /// Encode once and return those same v4 bytes after durable commit. The
+    /// preflight can reserve filesystem capacity before writing any blobs.
+    pub fn commit(
+        &mut self,
+        graph: &SocialGraph,
+        preflight: impl FnOnce(usize) -> std::io::Result<()>,
+    ) -> Result<Vec<u8>> {
+        let data = graph.to_binary()?;
+        preflight(data.len())?;
+        let directory = self.manifest_path.parent().expect("manifest parent");
+        let _lock = lock_store(directory, true)?;
+        let previous = read_manifest(&self.manifest_path)?;
+        if previous != self.manifest {
+            return Err(HashtreeSocialGraphError::StaleCheckpoint);
+        }
+        // Fail closed before publishing or removing anything if the durable
+        // checkpoint is incomplete. This also provides the rollback root.
+        let mut retained = HashSet::new();
+        if let Some(manifest) = &previous {
+            retained.extend(self.verified_snapshot_hashes(manifest, None)?);
+        }
+        let root = graph.get_root().to_string();
+        let (cid, size) = block_on(self.tree.put(&data))?;
+        let manifest = SnapshotManifest::new(root, &cid, size);
+        let current_hashes = self.verified_snapshot_hashes(&manifest, Some(&data))?;
+        retained.extend(current_hashes);
+        let previous_path = directory.join(PREVIOUS_MANIFEST_FILE);
+        if previous.as_ref() == Some(&manifest) {
+            if let Some(previous) = read_manifest(&previous_path)? {
+                // An unchanged flush must not discard the distinct rollback root.
+                retained.extend(self.verified_snapshot_hashes(&previous, None)?);
+                self.verified_rollback = Some(previous);
+            }
+        }
+        // Both generations, including checkpoints created by older writers,
+        // must be durable before either manifest is committed or GC starts.
+        sync_blob_files(directory, &retained)?;
+        if previous.as_ref() != Some(&manifest) {
+            if let Some(previous) = &previous {
+                write_manifest_atomic(&previous_path, previous)?;
+            }
+        }
+        write_manifest_atomic(&self.manifest_path, &manifest)?;
+        if previous.as_ref() != Some(&manifest) {
+            self.verified_rollback = previous;
+        }
+        self.manifest = Some(manifest);
+        // This directory is exclusively the graph's checkpoint store, not a
+        // shared Blossom cache. Retain both committed generations and all
+        // explicitly pinned blobs; only unreachable old snapshots are garbage.
+        // Another process may have pinned blobs since this writer was opened.
+        let gc_store = FsBlobStore::new(directory.join(BLOBS_DIR))?;
+        for hash in gc_store.list()? {
+            if !retained.contains(&hash) && gc_store.pin_count(&hash) == 0 {
+                gc_store.delete_sync(&hash)?;
+            }
+        }
+        Ok(data)
+    }
+
+    fn verified_snapshot_hashes(
+        &self,
+        manifest: &SnapshotManifest,
+        expected: Option<&[u8]>,
+    ) -> Result<HashSet<[u8; 32]>> {
+        let cid = manifest.validate()?;
+        let data = block_on(self.tree.get(&cid, Some(MAX_SNAPSHOT_BYTES)))?.ok_or_else(|| {
+            HashtreeSocialGraphError::MissingSnapshot {
+                cid: manifest.cid.clone(),
+            }
+        })?;
+        if data.len() as u64 != manifest.size {
+            return Err(HashtreeSocialGraphError::SnapshotSizeMismatch {
+                cid: manifest.cid.clone(),
+                expected: manifest.size,
+                actual: data.len() as u64,
+            });
+        }
+        // Check the stored bytes of a newly encoded graph. The two known
+        // manifests name immutable bytes already decoded at open or verified
+        // at commit. Only a previously unseen rollback needs another decode.
+        if let Some(expected) = expected {
+            if data != expected {
+                return Err(HashtreeSocialGraphError::CheckpointReadbackMismatch);
+            }
+        } else if self.manifest.as_ref() != Some(manifest)
+            && self.verified_rollback.as_ref() != Some(manifest)
+        {
+            SocialGraph::from_binary(&manifest.root_pubkey, &data)?;
+        }
+        drop(data);
+        // Keep the explicit hash checks: traversal alone tolerates missing blobs.
+        let hashes = block_on(collect_hashes(&self.tree, &cid, 1))?;
+        for hash in &hashes {
+            let blob = self.store.get_sync(hash)?.ok_or_else(|| {
+                HashtreeSocialGraphError::MissingSnapshot {
+                    cid: manifest.cid.clone(),
+                }
+            })?;
+            if sha256(&blob) != *hash {
+                return Err(HashtreeSocialGraphError::CorruptBlob(to_hex(hash)));
+            }
+        }
+        Ok(hashes)
+    }
+}
+
+pub struct HashtreeSocialGraph {
+    checkpoint: GraphCheckpoint,
+    graph: SocialGraph,
+    dirty: bool,
+}
+
+impl HashtreeSocialGraph {
+    pub fn open<P: AsRef<Path>>(path: P, default_root: &str) -> Result<Self> {
+        let (checkpoint, graph) = GraphCheckpoint::open(path, default_root)?;
+        Ok(Self {
+            checkpoint,
+            graph,
             dirty: false,
         })
     }
 
     pub fn latest_cid(&self) -> Option<Cid> {
-        self.manifest
+        self.checkpoint
+            .manifest
             .as_ref()
             .and_then(|manifest| Cid::parse(&manifest.cid).ok())
     }
 
     pub fn latest_manifest(&self) -> Option<&SnapshotManifest> {
-        self.manifest.as_ref()
+        self.checkpoint.manifest.as_ref()
     }
 
     pub fn snapshot_exists(&self, cid: &Cid) -> Result<bool> {
-        Ok(block_on(self.store.has(&cid.hash))?)
+        Ok(block_on(self.checkpoint.store.has(&cid.hash))?)
     }
 
     pub fn get_list_revision(&self, user: &str, kind: u32) -> Option<ListRevision> {
@@ -173,82 +301,9 @@ impl HashtreeSocialGraph {
     }
 
     fn write_snapshot(&mut self) -> Result<()> {
-        let directory = self.manifest_path.parent().expect("manifest parent");
-        let _lock = lock_store(directory, true)?;
-        let previous = read_manifest(&self.manifest_path)?;
-        if previous != self.manifest {
-            return Err(HashtreeSocialGraphError::StaleCheckpoint);
-        }
-        // Fail closed before publishing or removing anything if the durable
-        // checkpoint is incomplete. This also provides the rollback root.
-        let mut retained = HashSet::new();
-        if let Some(manifest) = &previous {
-            retained.extend(self.verified_snapshot_hashes(manifest)?);
-        }
-        let root = self.graph.get_root().to_string();
-        let data = self.graph.to_binary()?;
-        let (cid, size) = block_on(self.tree.put(&data))?;
-        let manifest = SnapshotManifest::new(root, &cid, size);
-        let current_hashes = self.verified_snapshot_hashes(&manifest)?;
-        retained.extend(current_hashes);
-        let previous_path = directory.join(PREVIOUS_MANIFEST_FILE);
-        if previous.as_ref() == Some(&manifest) {
-            if let Some(previous) = read_manifest(&previous_path)? {
-                // An unchanged flush must not discard the distinct rollback root.
-                retained.extend(self.verified_snapshot_hashes(&previous)?);
-            }
-        }
-        // Both generations, including checkpoints created by older writers,
-        // must be durable before either manifest is committed or GC starts.
-        sync_blob_files(directory, &retained)?;
-        if previous.as_ref() != Some(&manifest) {
-            if let Some(previous) = &previous {
-                write_manifest_atomic(&previous_path, previous)?;
-            }
-        }
-        write_manifest_atomic(&self.manifest_path, &manifest)?;
-        self.manifest = Some(manifest);
+        self.checkpoint.commit(&self.graph, |_| Ok(()))?;
         self.dirty = false;
-        // This directory is exclusively the graph's checkpoint store, not a
-        // shared Blossom cache. Retain both committed generations and all
-        // explicitly pinned blobs; only unreachable old snapshots are garbage.
-        for hash in self.store.list()? {
-            if !retained.contains(&hash) && self.store.pin_count(&hash) == 0 {
-                self.store.delete_sync(&hash)?;
-            }
-        }
         Ok(())
-    }
-
-    fn verified_snapshot_hashes(&self, manifest: &SnapshotManifest) -> Result<HashSet<[u8; 32]>> {
-        let cid = manifest.validate()?;
-        let data = block_on(self.tree.get(&cid, Some(MAX_SNAPSHOT_BYTES)))?.ok_or_else(|| {
-            HashtreeSocialGraphError::MissingSnapshot {
-                cid: manifest.cid.clone(),
-            }
-        })?;
-        if data.len() as u64 != manifest.size {
-            return Err(HashtreeSocialGraphError::SnapshotSizeMismatch {
-                cid: manifest.cid.clone(),
-                expected: manifest.size,
-                actual: data.len() as u64,
-            });
-        }
-        // Traversal alone tolerates missing blobs in the SDK. Full readback,
-        // graph decoding and explicit hash checks must precede any deletion.
-        SocialGraph::from_binary(&manifest.root_pubkey, &data)?;
-        let hashes = block_on(collect_hashes(&self.tree, &cid, 1))?;
-        for hash in &hashes {
-            let blob = self.store.get_sync(hash)?.ok_or_else(|| {
-                HashtreeSocialGraphError::MissingSnapshot {
-                    cid: manifest.cid.clone(),
-                }
-            })?;
-            if sha256(&blob) != *hash {
-                return Err(HashtreeSocialGraphError::CorruptBlob(to_hex(hash)));
-            }
-        }
-        Ok(hashes)
     }
 }
 
