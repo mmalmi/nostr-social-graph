@@ -1,0 +1,20 @@
+name: Cold source audit of the graph checkpoint release
+on:
+  push:
+    branches: [codex/graph-checkpoint-source-audit]
+permissions:
+  contents: read
+jobs:
+  source:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - run: python3 fixtures/graph-checkpoint-source-audit/audit.py
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: graph-checkpoint-public-source
+          path: ${{ runner.temp }}/source-audit.json
+          if-no-files-found: error
