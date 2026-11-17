@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { spawn, execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
+import { createInterface } from 'node:readline';
+import { runProfileBoundary } from './profile_boundary.mjs';
 import { createReadStream, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
@@ -13,6 +15,7 @@ import { parseArgs, promisify } from 'node:util';
 
 const { values, positionals } = parseArgs({ allowPositionals: true, options: {
   htree: { type: 'string' }, 'legacy-htree': { type: 'string' }, dependencies: { type: 'string' }, output: { type: 'string' },
+  'profile-boundary': { type: 'boolean' }, 'expect-profile-stall': { type: 'boolean' },
 } });
 assert.equal(positionals.length, 1, 'Pass the already built graph server');
 assert(values.htree && values['legacy-htree'] && values.dependencies && values.output, 'Pass --htree, --legacy-htree, --dependencies and --output');
@@ -70,16 +73,22 @@ async function relay(events, receive) {
   const ws = new WebSocketServer({ port: 0, host: '127.0.0.1' });
   await once(ws, 'listening');
   const state = { url: 'ws://127.0.0.1:' + ws.address().port, writes: 0, queries: 0, errors: [] };
+  const subscriptions = new Map();
   ws.on('connection', client => {
+    subscriptions.set(client, new Map());
+    client.on('close', () => subscriptions.delete(client));
     client.on('message', raw => {
       const [type, id, ...filters] = JSON.parse(raw.toString());
       if (type === 'REQ') {
         state.queries++;
-        state.onRequest?.(id);
+        subscriptions.get(client)?.set(id, filters);
+        if (state.onRequest?.(id, filters, client) === false) return;
         for (const event of events()) {
           if (filters.some(filter => matches(event, filter))) client.send(JSON.stringify(['EVENT', id, event]));
         }
         client.send(JSON.stringify(['EOSE', id]));
+      } else if (type === 'CLOSE') {
+        subscriptions.get(client)?.delete(id);
       } else if (type === 'EVENT') {
         state.writes++;
         try {
@@ -92,6 +101,18 @@ async function relay(events, receive) {
       }
     });
   });
+  state.broadcast = event => {
+    for (const [client, requests] of subscriptions) for (const [id, filters] of requests) {
+      if (filters.some(filter => matches(event, filter))) client.send(JSON.stringify(['EVENT', id, event]));
+    }
+  };
+  state.release = () => {
+    for (const [client, requests] of subscriptions) for (const [id, filters] of requests) {
+      if (!filters.some(filter => filter.kinds?.length === 1 && filter.kinds[0] === 0 && filter.authors?.length)) continue;
+      for (const event of events()) if (filters.some(filter => matches(event, filter))) client.send(JSON.stringify(['EVENT', id, event]));
+      client.send(JSON.stringify(['EOSE', id]));
+    }
+  };
   state.close = async () => {
     for (const socket of ws.clients) socket.terminate();
     await new Promise(resolve => ws.close(resolve));
@@ -213,7 +234,7 @@ async function waitBriefly(check, ms) {
   return check();
 }
 
-async function launch(directory, env, upstream, storage, enabled) {
+async function launch(directory, env, upstream, storage, enabled, options = {}) {
   const bound = createServer().listen(0, '127.0.0.1');
   await once(bound, 'listening');
   const port = bound.address().port;
@@ -224,12 +245,15 @@ async function launch(directory, env, upstream, storage, enabled) {
     RELAY_URLS: upstream.url, CRAWL_DISTANCE: '0', PROFILE_CRAWL_DISTANCE: '0', PROFILE_CRAWL_LIMIT: '1',
     SYNC_INTERVAL_MS: '1000', GRAPH_PUBLISH_NPUB: npub, GRAPH_PUBLISH_HTREE_BIN: htree,
     GRAPH_PUBLISH_BLOSSOM_URL: storage.url, GRAPH_PUBLISH_INTERVAL_SECS: '10',
-    ...(enabled ? { GRAPH_PUBLISH_HASHTREE: 'true' } : {}), RUST_LOG: 'info',
+    ...(enabled ? { GRAPH_PUBLISH_HASHTREE: 'true' } : {}), RUST_LOG: 'info', ...options.env,
   } });
   let closed = false;
   child.once('close', () => { closed = true; });
   let log = '';
-  for (const stream of [child.stdout, child.stderr]) stream.on('data', data => { log = (log + data.toString()).slice(-12000); });
+  for (const stream of [child.stdout, child.stderr]) {
+    stream.on('data', data => { log = (log + data.toString()).slice(-12000); });
+    if (options.onLine) createInterface({ input: stream }).on('line', options.onLine);
+  }
   const check = () => assert.equal(child.exitCode, null, 'Crawler exited: ' + log);
   const read = async route => {
     const response = await fetch('http://127.0.0.1:' + port + route, { signal: AbortSignal.timeout(2000) });
@@ -376,6 +400,12 @@ try {
     names.push(event);
   });
 
+  if (values['profile-boundary']) {
+    await runProfileBoundary({ binary, scratch, output, root, key, publishKey, stableFriend, upstream, naming, storage,
+      names, tag, finalizeEvent, generateSecretKey, getPublicKey, Fuse, envFor, launch, readNamed, readImmutable,
+      checkManifest, hashFile, until, htree, setEvents: events => { current = { events }; }, track: value => { worker = value; } },
+      !!values['expect-profile-stall']);
+  } else {
   // Even when valid credentials and routes are available, omission of the
   // opt-in should keep the default crawler completely local.
   const disabled = path.join(scratch, 'default-off');
@@ -423,11 +453,21 @@ try {
   worker = await launch(directory, env, upstream, storage, true);
   await waitForProfile(worker, first);
   const ordinary = await currentConsumerData(worker);
-  await until(() => { assert.deepEqual(naming.errors, []); return names.length; }, 'first complete published tree');
-  heldHash = tag(names.at(-1), 'hash');
+  let initial, initialSeen, initialProbe = 0;
+  await until(async () => {
+    worker.check();
+    assert.deepEqual(naming.errors, []);
+    const latest = names.length && tag(names.at(-1), 'hash');
+    if (!latest || latest === initialSeen) return false;
+    initialSeen = latest;
+    const candidate = await readNamed(scratch, 'first-reader-' + (++initialProbe), naming, storage);
+    if (!JSON.parse(candidate.files['profile-data.json']).some(row => row[0] === root && row[1] === first.name)) return false;
+    initial = candidate;
+    return true;
+  }, 'first complete published tree with its fetched profile');
+  heldHash = initial.cid.split(':')[0];
   storage.fault = true;
   current = second;
-  const initial = await readNamed(scratch, 'first-reader', naming, storage);
   checkManifest(initial.files);
   checkConsumer(ordinary, initial.files, first);
   assert.deepEqual(initial.files[alternateMobile], await worker.read('/social-graph/mobile?root=' + alternateRoot));
@@ -518,6 +558,7 @@ try {
     initialDirectory: 'initial', recoveredDirectory: 'recovered' };
   writeFileSync(path.join(output, 'receipt.json'), JSON.stringify(receipt, null, 2) + '\n', { flag: 'wx' });
   console.log('Named graph publication, cold reads, partial upload recovery and legacy decryption passed.');
+  }
 } catch (error) {
   // Emit bounded diagnostics in the synthetic namespace. Secret files never enter evidence.
   console.error('Recent synthetic Blossom requests:', storage?.recent, 'accepted uploads:', storage?.uploads, 'successful GETs:', storage?.reads);

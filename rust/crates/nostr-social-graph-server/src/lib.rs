@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::Write;
 use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
@@ -215,9 +216,8 @@ impl ProfileStore {
         if let Some(parent) = self.data_path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let rows = self.rows_by_pubkey.values().collect::<Vec<_>>();
-        let bytes = serde_json::to_vec(&rows)?;
-        fs::write(&self.data_path, &bytes)?;
+        let bytes = self.serialize_rows()?;
+        write_profile_atomic(&self.data_path, &bytes)?;
         Ok(bytes)
     }
 
@@ -229,10 +229,45 @@ impl ProfileStore {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let bytes = serde_json::to_vec(&build_profile_index(self.rows_by_pubkey.values()))?;
-        fs::write(path, &bytes)?;
+        let bytes = self.serialize_index()?;
+        write_profile_atomic(path, &bytes)?;
         Ok(bytes)
     }
+
+    fn serialize_rows(&self) -> Result<Vec<u8>> {
+        Ok(serde_json::to_vec(
+            &self.rows_by_pubkey.values().collect::<Vec<_>>(),
+        )?)
+    }
+
+    fn serialize_index(&self) -> Result<Vec<u8>> {
+        Ok(serde_json::to_vec(&build_profile_index(
+            self.rows_by_pubkey.values(),
+        ))?)
+    }
+}
+
+fn write_profile_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let parent = path
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let mut builder = tempfile::Builder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        builder.permissions(fs::Permissions::from_mode(0o666));
+    }
+    let mut stage = builder.tempfile_in(parent)?;
+    if let Ok(metadata) = fs::metadata(path) {
+        stage.as_file().set_permissions(metadata.permissions())?;
+    }
+    stage.write_all(bytes)?;
+    stage.as_file().sync_all()?;
+    stage.persist(path).map_err(|error| error.error)?;
+    #[cfg(unix)]
+    fs::File::open(parent)?.sync_all()?;
+    Ok(())
 }
 
 fn build_profile_index<'a>(rows: impl IntoIterator<Item = &'a Vec<String>>) -> FuseIndexJson {
@@ -644,8 +679,6 @@ pub async fn run(config: ServerConfig) -> Result<()> {
     // Filesystem modification time is not a successful crawl watermark. Always
     // repair all known lists on startup, also hydrating legacy revision IDs.
     let initial_graph_since = None;
-    let initial_profile_since = modified_unix_timestamp(&config.profile_data_path)
-        .map(|timestamp| timestamp.saturating_sub(1));
 
     let (checkpoint, graph) = open_producer_graph(
         &config.root,
@@ -698,7 +731,6 @@ pub async fn run(config: ServerConfig) -> Result<()> {
             sync_graph,
             sync_profiles,
             initial_graph_since,
-            initial_profile_since,
             Arc::clone(&sync_freshness),
             sync_forwarder,
         )
@@ -710,6 +742,25 @@ pub async fn run(config: ServerConfig) -> Result<()> {
                 .consecutive_graph_failures += 1;
             error!("background sync failed: {error}");
         }
+    });
+
+    // Profile relay latency must not delay the graph's next crawl or publication.
+    // This single worker owns durable profile files; graph publication only
+    // serializes the current rows/index under one shared read lock.
+    let profile_client = client.clone();
+    let profile_config = config.clone();
+    let profile_graph = Arc::clone(&graph);
+    let profile_store = Arc::clone(&profiles);
+    let profile_freshness = Arc::clone(&freshness);
+    tokio::spawn(async move {
+        sync_profile_loop(
+            profile_client,
+            profile_config,
+            profile_graph,
+            profile_store,
+            profile_freshness,
+        )
+        .await;
     });
 
     let live_graph = Arc::clone(&graph);
@@ -1261,7 +1312,6 @@ async fn sync_loop(
     graph: Arc<RwLock<SocialGraph>>,
     profiles: Arc<RwLock<ProfileStore>>,
     initial_graph_since: Option<u64>,
-    initial_profile_since: Option<u64>,
     freshness: Arc<RwLock<GraphFreshness>>,
     forwarder: Option<Forwarder>,
 ) -> Result<()> {
@@ -1270,7 +1320,6 @@ async fn sync_loop(
         None
     });
     let mut graph_since = initial_graph_since;
-    let mut profile_since = initial_profile_since;
     let mut last_full_reconciliation_at = 0;
     let mut maintenance = tokio::time::interval(LIVE_ALLOWLIST_INTERVAL);
     maintenance.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -1403,38 +1452,15 @@ async fn sync_loop(
             warn!("graph cycle remains incomplete; retrying after sync interval: {error}");
         }
 
-        // Profiles cannot delay persisting a successfully reconciled graph.
-        let profile_error = with_live_allowlist_maintenance(
-            sync_profiles_once(
-                &client,
-                &config,
-                &graph,
-                &profiles,
-                profile_since,
-                &freshness,
-            ),
-            &mut maintenance,
-            &graph,
-            forwarder.as_ref(),
-        )
-        .await
-        .err();
-        if let Some(error) = &profile_error {
-            warn!("profile sync failed: {error}");
-        }
-        let profile_result: Result<()> = (|| {
-            let profiles_guard = profiles.read().expect("profile lock poisoned");
-            let retain = committed_bytes.is_some() && profile_error.is_none();
-            let rows = retain.then_some(profiles_guard.save_profile_rows()?);
-            let index =
-                retain.then_some(profiles_guard.save_profile_index(&config.profile_index_path)?);
-            if let Some(error) = profile_error {
-                return Err(error);
-            }
-            if let (Some(publisher), Some(graph), Some(rows), Some(index)) =
-                (publisher.as_mut(), committed_bytes, rows, index)
-            {
-                publisher.submit(publisher::Snapshot {
+        if let (Some(publisher), Some(graph)) = (publisher.as_mut(), committed_bytes) {
+            // These files describe one profile view, which may be older than the
+            // completed graph. Capturing it never advances the profile cursor.
+            let captured: Result<_> = (|| {
+                let guard = profiles.read().expect("profile lock poisoned");
+                Ok((guard.serialize_rows()?, guard.serialize_index()?))
+            })();
+            match captured {
+                Ok((rows, index)) => publisher.submit(publisher::Snapshot {
                     root: config.root.clone(),
                     graph,
                     rows,
@@ -1442,24 +1468,15 @@ async fn sync_loop(
                     graph_completed_at: completed_at,
                     graph_since: graph_since.expect("committed graph cursor"),
                     generated_at: unix_timestamp(),
-                });
-            }
-            Ok(())
-        })();
-        let profiles_committed = profile_result.is_ok();
-        match profile_result {
-            Ok(()) => profile_since = Some(cycle_started_at.saturating_sub(300)),
-            Err(error) => {
-                warn!("profile cycle remains incomplete; retrying after sync interval: {error}")
+                }),
+                Err(error) => {
+                    warn!("could not capture profile files for graph publication: {error}")
+                }
             }
         }
         info!(
-            "sync cycle finished: graph_committed={graph_committed} profiles_committed={profiles_committed} users={} profiles={}",
-            graph.read().expect("graph lock poisoned").size().users,
-            profiles
-                .read()
-                .expect("profile lock poisoned")
-                .profile_count()
+            "sync cycle finished: graph_committed={graph_committed} users={}",
+            graph.read().expect("graph lock poisoned").size().users
         );
 
         with_live_allowlist_maintenance(
@@ -1469,6 +1486,50 @@ async fn sync_loop(
             forwarder.as_ref(),
         )
         .await;
+    }
+}
+
+async fn sync_profile_loop(
+    client: NostrClient,
+    config: ServerConfig,
+    graph: Arc<RwLock<SocialGraph>>,
+    profiles: Arc<RwLock<ProfileStore>>,
+    freshness: Arc<RwLock<GraphFreshness>>,
+) {
+    // A file timestamp cannot certify a finished relay sweep. Reconcile fully
+    // after restart, including profiles saved during a previously failed sweep.
+    let mut since = None;
+    loop {
+        if forwarding_needs_repair(&freshness) {
+            tokio::time::sleep(FORWARD_REPAIR_BACKOFF).await;
+        }
+        let started_at = unix_timestamp();
+        let fetched =
+            sync_profiles_once(&client, &config, &graph, &profiles, since, &freshness).await;
+        // Preserve received rows even when a later batch fails. Only a complete
+        // sweep followed by both durable files can advance the in-memory cursor.
+        let saved: Result<()> = (|| {
+            let guard = profiles.read().expect("profile lock poisoned");
+            guard.save_profile_rows()?;
+            guard.save_profile_index(&config.profile_index_path)?;
+            Ok(())
+        })();
+        let committed = fetched.and(saved);
+        let profiles_committed = committed.is_ok();
+        match committed {
+            Ok(()) => since = Some(started_at.saturating_sub(300)),
+            Err(error) => {
+                warn!("profile cycle remains incomplete; retrying after sync interval: {error}")
+            }
+        }
+        info!(
+            "profile cycle finished: profiles_committed={profiles_committed} profiles={}",
+            profiles
+                .read()
+                .expect("profile lock poisoned")
+                .profile_count()
+        );
+        wait_for_sync_interval_or_repair(config.sync_interval, &freshness).await;
     }
 }
 
@@ -1656,8 +1717,17 @@ async fn sync_graph_once(
 // The SDK convenience fetch returns Ok(empty) even if every relay is offline.
 // A crawl watermark requires an actual EOSE, not merely a completed timeout.
 async fn fetch_graph_batch(client: &NostrClient, filter: Filter) -> Result<Vec<nostr_sdk::Event>> {
+    fetch_crawl_batch(client, filter, "graph", false).await
+}
+
+async fn fetch_crawl_batch(
+    client: &NostrClient,
+    filter: Filter,
+    kind: &str,
+    require_all_eose: bool,
+) -> Result<Vec<nostr_sdk::Event>> {
     use nostr_sdk::{RelayMessage, SubscriptionId};
-    let id = SubscriptionId::new(format!("graph-crawl-{}", SubscriptionId::generate()));
+    let id = SubscriptionId::new(format!("{kind}-crawl-{}", SubscriptionId::generate()));
     let mut notifications = client.notifications();
     let subscribed = client
         .subscribe_with_id(id.clone(), filter.clone(), None)
@@ -1665,9 +1735,9 @@ async fn fetch_graph_batch(client: &NostrClient, filter: Filter) -> Result<Vec<n
         .map_err(|error| ServerError::Io(std::io::Error::other(error.to_string())))?;
     if subscribed.success.is_empty() {
         client.unsubscribe(&id).await;
-        return Err(ServerError::Io(std::io::Error::other(
-            "No graph relay accepted the crawl subscription",
-        )));
+        return Err(ServerError::Io(std::io::Error::other(format!(
+            "No {kind} relay accepted the crawl subscription"
+        ))));
     }
     let mut pending = subscribed.success;
     let mut completed = false;
@@ -1703,8 +1773,8 @@ async fn fetch_graph_batch(client: &NostrClient, filter: Filter) -> Result<Vec<n
                     }
                     _ => {}
                 },
-                Ok(RelayPoolNotification::Shutdown) => return Err("Graph relay pool shut down"),
-                Err(_) => return Err("Graph crawl notification stream lost messages"),
+                Ok(RelayPoolNotification::Shutdown) => return Err("Crawl relay pool shut down"),
+                Err(_) => return Err("Crawl notification stream lost messages"),
                 _ => {}
             }
         }
@@ -1714,10 +1784,10 @@ async fn fetch_graph_batch(client: &NostrClient, filter: Filter) -> Result<Vec<n
     if let Ok(Err(error)) = result {
         return Err(ServerError::Io(std::io::Error::other(error)));
     }
-    if !completed {
-        return Err(ServerError::Io(std::io::Error::other(
-            "Graph crawl timed out without EOSE",
-        )));
+    if !completed || (require_all_eose && !pending.is_empty()) {
+        return Err(ServerError::Io(std::io::Error::other(format!(
+            "{kind} crawl timed out without completed EOSE"
+        ))));
     }
     Ok(winners.into_values().collect())
 }
@@ -1872,10 +1942,7 @@ async fn fetch_profile_events(
     }
 
     let filter = profile_filter(pubkeys, since);
-    let events = client
-        .fetch_events(filter, Duration::from_secs(10))
-        .await
-        .map_err(|error| ServerError::Io(std::io::Error::other(error.to_string())))?;
+    let events = fetch_crawl_batch(client, filter, "profile", true).await?;
 
     let mut guard = profiles.write().expect("profile lock poisoned");
     let mut applied = 0usize;
@@ -2011,16 +2078,6 @@ fn path_has_entries(path: &Path) -> bool {
         .is_some()
 }
 
-fn modified_unix_timestamp(path: &Path) -> Option<u64> {
-    fs::metadata(path)
-        .ok()?
-        .modified()
-        .ok()?
-        .duration_since(UNIX_EPOCH)
-        .ok()
-        .map(|duration| duration.as_secs())
-}
-
 fn unix_timestamp() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -2122,5 +2179,37 @@ mod graph_crawl_tests {
             None,
         );
         assert!(fetch_graph_batch(&client, filter).await.is_err());
+        let filter = profile_filter(
+            vec![PublicKey::from_hex(DEFAULT_SOCIAL_GRAPH_ROOT).unwrap()],
+            None,
+        );
+        assert!(
+            fetch_crawl_batch(&client, filter, "profile", true)
+                .await
+                .is_err()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_profile_save_preserves_permissions_and_last_good_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("profiles.json");
+        fs::write(&path, b"old").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o640)).unwrap();
+        write_profile_atomic(&path, b"new").unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"new");
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o640
+        );
+
+        let obstruction = dir.path().join("index.json");
+        fs::create_dir(&obstruction).unwrap();
+        assert!(write_profile_atomic(&obstruction, b"bad").is_err());
+        assert!(obstruction.is_dir());
+        assert_eq!(fs::read(&path).unwrap(), b"new");
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 2);
     }
 }
