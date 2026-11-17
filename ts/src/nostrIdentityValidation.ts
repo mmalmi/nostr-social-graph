@@ -1,8 +1,8 @@
 import type { Event } from 'nostr-tools';
-import type { SignedNostrIdentityRosterOp } from './nostrIdentity';
-import { stableStringify } from './nostrIdentityJson';
-import { parseNostrIdentityRosterOpEvent } from './nostrIdentityEvents';
-import { normalizeNostrIdentityRosterOpContent } from './nostrIdentityNormalize';
+import type { SignedNostrIdentityRosterOp } from './nostrIdentity.js';
+import { stableStringify } from './nostrIdentityJson.js';
+import { parseNostrIdentityRosterOpEvent } from './nostrIdentityEvents.js';
+import { normalizeNostrIdentityRosterOpContent } from './nostrIdentityNormalize.js';
 
 export interface NostrIdentityRosterOpsContainer {
   roster_ops?: SignedNostrIdentityRosterOp[];

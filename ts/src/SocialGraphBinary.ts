@@ -1,6 +1,6 @@
-import { canonicalizeGraphNodes } from './SocialGraphAliases';
-import { canonicalNodeId } from './UniqueIds';
-import { SocialGraph } from './SocialGraph';
+import { canonicalizeGraphNodes } from './SocialGraphAliases.js';
+import { canonicalNodeId } from './UniqueIds.js';
+import { SocialGraph } from './SocialGraph.js';
 
 export const BINARY_FORMAT_VERSION = 4;
 const BINARY_FORMAT_VERSION_V2 = 2;

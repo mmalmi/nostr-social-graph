@@ -1,5 +1,5 @@
-import type { NostrIdentityId } from './nostrIdentity';
-import { isUuid } from './nostrIdentityJson';
+import type { NostrIdentityId } from './nostrIdentity.js';
+import { isUuid } from './nostrIdentityJson.js';
 
 export function nostrIdentityRosterOpDTag(profileId: NostrIdentityId, clientNonce: string): string {
   return `nostrIdentity-profile/${profileId}/roster-op/${clientNonce}`;

@@ -1,6 +1,6 @@
 import { verifyEvent, type Event } from 'nostr-tools';
-import { SocialGraph } from './SocialGraph';
-import { openGraphSnapshot, mobileGraphFile, MOBILE_GRAPH_MAX_BYTES, type GraphSnapshotOptions } from './hashtreeSnapshot';
+import { SocialGraph } from './SocialGraph.js';
+import { openGraphSnapshot, mobileGraphFile, MOBILE_GRAPH_MAX_BYTES, type GraphSnapshotOptions } from './hashtreeSnapshot.js';
 import { Negentropy, NegentropyStorageVector } from './vendor/negentropy.js';
 
 export interface GraphSyncStats {

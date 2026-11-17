@@ -1,7 +1,7 @@
 import { HashTree, LinkType, MemoryStore, fromHex, sha256, toHex } from '@hashtree/core';
 import { finalizeEvent, generateSecretKey, getPublicKey, nip19 } from 'nostr-tools';
-import { SocialGraph } from '../SocialGraph';
-import { toBinary } from '../SocialGraphBinary';
+import { SocialGraph } from '../SocialGraph.js';
+import { toBinary } from '../SocialGraphBinary.js';
 
 /** Synthetic signed publication and encrypted block store for a consumer's isolated tests. */
 export async function createNamedGraphFixture(root: string, mobile: Uint8Array) {

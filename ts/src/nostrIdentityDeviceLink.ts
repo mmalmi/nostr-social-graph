@@ -1,11 +1,11 @@
 import { sha256 } from '@noble/hashes/sha2.js';
 import { finalizeEvent, generateSecretKey, getPublicKey, nip19, nip44, type Event, type Filter } from 'nostr-tools';
-import { FACT_OP_KIND } from './factEvents';
+import { FACT_OP_KIND } from './factEvents.js';
 import {
   buildIdentityLinkRequestEvent,
   parseIdentityLinkRequestEvent,
   normalizeHexPubkey,
-} from './identityGraph';
+} from './identityGraph.js';
 import {
   APP_KEY_WRITER_CAPABILITIES,
   createAddAppKeyRosterOp,
@@ -15,10 +15,10 @@ import {
   type NostrIdentityRosterProjection,
   type NostrIdentityRosterOpContent,
   type SignedNostrIdentityRosterOp,
-} from './nostrIdentity';
-import { parseNostrIdentityRosterOpEvent } from './nostrIdentityEvents';
-import { requireValidSignature } from './nostrIdentityJson';
-import { nostrIdentityRosterParentIds, projectNostrIdentityRoster } from './nostrIdentityProjection';
+} from './nostrIdentity.js';
+import { parseNostrIdentityRosterOpEvent } from './nostrIdentityEvents.js';
+import { requireValidSignature } from './nostrIdentityJson.js';
+import { nostrIdentityRosterParentIds, projectNostrIdentityRoster } from './nostrIdentityProjection.js';
 
 export const NOSTR_IDENTITY_DEVICE_LINK_INVITE_PREFIX = 'nostr-identity://device-link/';
 export const NOSTR_IDENTITY_DEVICE_APPROVAL_BOOTSTRAP_PREFIX = 'nostr-identity://device-approval/';

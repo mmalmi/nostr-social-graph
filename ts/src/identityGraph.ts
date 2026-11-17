@@ -7,8 +7,8 @@ import {
   type Fact,
   type FactEventDraft,
   type FactOp,
-} from './factEvents';
-import type { NostrEvent } from './utils';
+} from './factEvents.js';
+import type { NostrEvent } from './utils.js';
 import { finalizeEvent, getPublicKey, nip44, verifyEvent, type Event } from 'nostr-tools';
 
 export const IDENTITY_GRAPH_ROSTER_SCHEMA = 1;

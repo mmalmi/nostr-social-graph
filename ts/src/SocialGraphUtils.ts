@@ -1,5 +1,5 @@
-import { SocialGraph } from './SocialGraph';
-import { UID } from './UniqueIds';
+import { SocialGraph } from './SocialGraph.js';
+import { UID } from './UniqueIds.js';
 
 export class SocialGraphUtils {
 

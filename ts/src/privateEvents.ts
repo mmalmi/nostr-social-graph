@@ -1,4 +1,4 @@
-import { buildFactOpDraft } from './factEvents';
+import { buildFactOpDraft } from './factEvents.js';
 import { getEventHash, verifyEvent, type Event, type UnsignedEvent } from 'nostr-tools';
 
 /** An ordinary Nostr event without a signature. Transport must authenticate admission. */

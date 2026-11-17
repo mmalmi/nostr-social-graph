@@ -22,8 +22,8 @@ import {
   type IdentityRosterOp,
   type IdentityRosterOpContent,
   type SignedIdentityRosterOp,
-} from './identityGraph';
-import { fact } from './factEvents';
+} from './identityGraph.js';
+import { fact } from './factEvents.js';
 import {
   NOSTR_IDENTITY_ENCRYPTED_DEVICE_LABELS_FACT,
   NOSTR_IDENTITY_FACET_ACCEPTANCE_SCHEMA,
@@ -42,13 +42,13 @@ import {
   type SignedNostrIdentityFacetAcceptance,
   type SignedNostrIdentityRosterOp,
   normalizeCapabilities,
-} from './nostrIdentity';
+} from './nostrIdentity.js';
 import {
   currentUnixSeconds,
   randomClientNonce,
   requireValidSignature,
-} from './nostrIdentityJson';
-import { normalizeRosterOp, sortPurposes } from './nostrIdentityNormalize';
+} from './nostrIdentityJson.js';
+import { normalizeRosterOp, sortPurposes } from './nostrIdentityNormalize.js';
 
 export function buildNostrIdentityRosterOpEventDraft(
   options: BuildNostrIdentityRosterOpEventDraftOptions,
