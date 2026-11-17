@@ -21,7 +21,8 @@ from __main__ import (CANDIDATE, EVIDENCE, HERE, HTREE_BINARY_SHA, LEGACY_HTREE_
 RUN = 44154914886
 RECIPE = 'a9534934bd97eeb1473e0cc334fbd4eef8388080'
 COMPILED_SOURCE = '65ddb3605221caff35bcb5e8d579aaca52bc3919'
-ALLOWED_CHANGE = 'rust/crates/nostr-social-graph-server/tests/sync_recovery.mjs'
+ALLOWED_CHANGES = {'rust/crates/nostr-social-graph-server/tests/sync_recovery.mjs',
+                   'rust/crates/nostr-social-graph-server/tests/hashtree_publication.mjs'}
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -70,8 +71,8 @@ def qualify():
                   compilationPerformed=False, releaseQualification=True, passed=False, limits=LIMITS)
     try:
         diff = out(['git', 'diff', '--name-status', '--no-renames', COMPILED_SOURCE, SOURCE], cwd=CANDIDATE)
-        assert diff in ['', 'M\t' + ALLOWED_CHANGE], f'Compiled source changed outside fixture: {diff}'
-        assert diff == 'M\t' + ALLOWED_CHANGE
+        changes = diff.splitlines()
+        assert changes and set(changes) <= {'M\t'+path for path in ALLOWED_CHANGES}, diff
         source_tree = out(['git','rev-parse', SOURCE+'^{tree}'], cwd=CANDIDATE)
         build_tree = out(['git','rev-parse', COMPILED_SOURCE+'^{tree}'], cwd=CANDIDATE)
         tracked = out(['git','ls-tree','-r','--name-only',COMPILED_SOURCE,'rust'], cwd=CANDIDATE).splitlines()
@@ -81,7 +82,8 @@ def qualify():
             COMPILED_SOURCE,'--','rust'], cwd=CANDIDATE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
         assert metadata.returncode == 1, 'Unexpected repository identity or explicit build metadata'
         result.update(sourceTree=source_tree,buildSourceTree=build_tree,buildInputsUnchanged=True,
-                      gitIdentityMetadataAbsent=True,fixtureChanges=[ALLOWED_CHANGE], fixtureSha256=sha(CANDIDATE / ALLOWED_CHANGE))
+                      gitIdentityMetadataAbsent=True,fixtureChanges=[line[2:] for line in changes],
+                      fixtureSha256={line[2:]:sha(CANDIDATE/line[2:]) for line in changes})
         run('source-history', ['git','fsck','--full','--strict'], 120, cwd=CANDIDATE,
             env={k:v for k,v in os.environ.items() if k!='GH_TOKEN'})
         archive = restore_archive(pin)

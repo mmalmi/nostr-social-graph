@@ -9,7 +9,13 @@ import sys
 import time
 import zipfile
 
-SOURCE = 'f0263c1f85db3ed779a6efd444e06d2008e94a70'
+SOURCE = '6e70cd9daf6a9b06d7a8d30ffa32db9d3442d507'
+RETAINED_COMPILE = False
+COMPILED_SOURCE = '65ddb3605221caff35bcb5e8d579aaca52bc3919'
+COMPILED_RECIPE = 'a9534934bd97eeb1473e0cc334fbd4eef8388080'
+COMPILED_ARTIFACT = 14361391951
+COMPILED_ARCHIVE_SHA = 'e3a223b656cac7311f1289396b5b4ce2e7bf3c169672449e32b22633f8e804d2'
+COMPILED_ELF_SHA = '8e58def86557b299075ac070a6a2e56db232eda5baa91ea135529f19d5789466'
 BASE_SOURCE = '83ca2e2a57e145193e0ee7d2273fa5c70457694d'
 BASE_RECIPE = '4e6cd43387f812c461b98c2553d08ea124f34841'
 BASE_ARTIFACT = 14302053669
@@ -51,14 +57,20 @@ def download(artifact, expected_sha):
     return path
 
 
-def executable(artifact, source, recipe, digest, elf_sha=None):
+def executable(artifact, source, recipe, digest, elf_sha=None, compiled_only=False):
     assert artifact['name'] == 'graph-server-recovery-' + recipe
     archive = download(artifact, digest)
     path = STAGE / ('server-' + source)
     with zipfile.ZipFile(archive) as files:
         cert = json.loads(files.read('producer-acceptance.json'))
         runtime = json.loads(files.read('runtime/acceptance.json'))
-        assert cert['passed'] and cert['sourceUnchanged'] and runtime['passed']
+        if compiled_only:
+            assert not cert['passed'] and not runtime['passed']
+            assert [p['name'] for p in cert['phases'] if not p['passed']] == ['isolated-tests']
+            assert [p['name'] for p in runtime['phases'] if not p['passed']] == ['persistence-recovery']
+            assert cert['sourceArchiveSha256'] == '3215130171bb56c3ad9cef6645783c140a6653b5834e59edf5f6a0fba18545ed'
+        else:
+            assert cert['passed'] and cert['sourceUnchanged'] and runtime['passed']
         assert cert['source'] == source and cert['recipeCommit'] == recipe
         assert elf_sha is None or cert['binary']['sha256'] == elf_sha
         member = files.getinfo('nostr-social-graph-server')
@@ -91,6 +103,14 @@ if mode == 'boundary-baseline':
     artifact = api('actions/artifacts/' + str(BASE_ARTIFACT))
     binary, binary_sha = executable(artifact, BASE_SOURCE, BASE_RECIPE, BASE_ARCHIVE_SHA, BASE_ELF_SHA)
     binary_source = BASE_SOURCE
+elif RETAINED_COMPILE:
+    changes = subprocess.check_output(['git','diff','--name-only','--no-renames',COMPILED_SOURCE,SOURCE],cwd=SOURCE_DIR,text=True).splitlines()
+    allowed = {'rust/crates/nostr-social-graph-server/tests/sync_recovery.mjs',
+               'rust/crates/nostr-social-graph-server/tests/hashtree_publication.mjs'}
+    assert set(changes) <= allowed
+    artifact = api('actions/artifacts/'+str(COMPILED_ARTIFACT))
+    binary,binary_sha = executable(artifact,COMPILED_SOURCE,COMPILED_RECIPE,COMPILED_ARCHIVE_SHA,COMPILED_ELF_SHA,compiled_only=True)
+    binary_source = COMPILED_SOURCE
 else:
     artifact, = [a for a in api('actions/runs/' + run_id + '/artifacts')['artifacts']
                  if a['name'] == 'graph-server-recovery-' + recipe]

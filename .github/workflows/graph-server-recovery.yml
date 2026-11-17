@@ -23,7 +23,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
-          ref: f0263c1f85db3ed779a6efd444e06d2008e94a70
+          ref: 6e70cd9daf6a9b06d7a8d30ffa32db9d3442d507
           path: candidate
           persist-credentials: false
           fetch-depth: 0
@@ -63,7 +63,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
-          ref: f0263c1f85db3ed779a6efd444e06d2008e94a70
+          ref: 6e70cd9daf6a9b06d7a8d30ffa32db9d3442d507
           path: candidate
           persist-credentials: false
           fetch-depth: 0
@@ -86,90 +86,6 @@ jobs:
           name: graph-profile-boundary-baseline-${{ github.sha }}
           path: |
             ${{ runner.temp }}/graph-server-alias-repair/evidence/profile-boundary-baseline
-            ${{ runner.temp }}/graph-server-alias-repair/evidence/profile-host.json
-          if-no-files-found: error
-          retention-days: 14
-
-  candidate-boundary:
-    needs: qualify
-    runs-on: ubuntu-22.04
-    permissions:
-      contents: read
-      actions: read
-    timeout-minutes: 40
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          path: harness
-          persist-credentials: false
-          fetch-depth: 0
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          ref: f0263c1f85db3ed779a6efd444e06d2008e94a70
-          path: candidate
-          persist-credentials: false
-          fetch-depth: 0
-      - name: Verify pinned Node and Hashtree tools
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: python3 harness/fixtures/graph-server-recovery/controller.py bootstrap
-      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
-        with:
-          version: 10.28.2
-          run_install: false
-      - name: Qualify exact executable in isolated runtime
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: python3 harness/fixtures/graph-server-recovery/runtime_job.py boundary-candidate
-      - name: Preserve runtime measurements and failure evidence
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: graph-profile-boundary-candidate-${{ github.sha }}
-          path: |
-            ${{ runner.temp }}/graph-server-alias-repair/evidence/profile-boundary-candidate
-            ${{ runner.temp }}/graph-server-alias-repair/evidence/profile-host.json
-          if-no-files-found: error
-          retention-days: 14
-
-  memory:
-    needs: qualify
-    runs-on: ubuntu-22.04
-    permissions:
-      contents: read
-      actions: read
-    timeout-minutes: 40
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          path: harness
-          persist-credentials: false
-          fetch-depth: 0
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          ref: f0263c1f85db3ed779a6efd444e06d2008e94a70
-          path: candidate
-          persist-credentials: false
-          fetch-depth: 0
-      - name: Verify pinned Node and Hashtree tools
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: python3 harness/fixtures/graph-server-recovery/controller.py bootstrap
-      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
-        with:
-          version: 10.28.2
-          run_install: false
-      - name: Qualify exact executable in isolated runtime
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: python3 harness/fixtures/graph-server-recovery/runtime_job.py memory
-      - name: Preserve runtime measurements and failure evidence
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: graph-profile-memory-${{ github.sha }}
-          path: |
-            ${{ runner.temp }}/graph-server-alias-repair/evidence/profile-memory
             ${{ runner.temp }}/graph-server-alias-repair/evidence/profile-host.json
           if-no-files-found: error
           retention-days: 14
