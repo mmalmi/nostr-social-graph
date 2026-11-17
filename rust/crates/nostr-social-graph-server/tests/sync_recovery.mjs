@@ -195,6 +195,10 @@ try {
     upstream.state.events = fresh;
     await until(async () => (await health(server))?.healthy && snapshotHas(storedSnapshot(path.join(directory, 'graph')), fresh) &&
       contentsContain(path.join(directory, 'profileData.large.json'), `after-${fault}`) && contentsContain(path.join(directory, 'profileIndex.json'), `after-${fault}`), `${fault} automatic durable recovery`);
+    // Profiles and graph recovery complete independently. Observe the original
+    // minimum graph retry count before checking its bounded cadence below.
+    await until(() => graphRequests(upstream).length >= (fault === 'allowlist' ? 2 : 3),
+      `${fault} independent graph recovery cycles`);
     const recovered = await health(server);
     // Query mobile v4 only now: the endpoint intentionally caches each root for60s.
     assert(snapshotHas(await server.request('/social-graph/mobile'), fresh), 'Recovered mobile snapshot lacks signed IDs');
