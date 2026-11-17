@@ -5,7 +5,7 @@ import {
   seedPrivateContact, stagePrivateContactDocument, rememberPrivateContactEvent,
   type PrivateContactDocument, type PrivateContactPatch,
   type PrivateContactSigner, type PrivateContactSyncState,
-} from './privateContactSync';
+} from './privateContactSync.js';
 
 export type PrivateContactSyncStatus = 'local-only' | 'loading' | 'pending' | 'syncing' | 'synced' | 'error';
 export interface PrivateContactSyncChange {

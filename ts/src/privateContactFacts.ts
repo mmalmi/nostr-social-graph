@@ -2,9 +2,9 @@
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
 import { getEventHash, type UnsignedEvent } from 'nostr-tools';
-import { buildFactOpDraft, type FactEventDraft } from './factEvents';
+import { buildFactOpDraft, type FactEventDraft } from './factEvents.js';
 import { validatePrivateContactDocument, mergePrivateContactFields,
-  restorePrivateContactSync, migratePrivateContactSync, privateContactDocuments, type PrivateContactSyncState, type PrivateContactDocument, type PrivateContactField, type PrivateContactRegister } from './privateContactSyncV2';
+  restorePrivateContactSync, migratePrivateContactSync, privateContactDocuments, type PrivateContactSyncState, type PrivateContactDocument, type PrivateContactField, type PrivateContactRegister } from './privateContactSyncV2.js';
 
 export const PRIVATE_CONTACT_FACTS_VERSION = 2;
 export const PRIVATE_CONTACT_FACT_CONTROL_KIND = 10456;

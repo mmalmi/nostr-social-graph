@@ -1,4 +1,4 @@
-import type { NostrEvent } from './utils';
+import type { NostrEvent } from './utils.js';
 
 export const FACT_OP_KIND = 7368;
 export const FACT_SNAPSHOT_KIND = 37368;

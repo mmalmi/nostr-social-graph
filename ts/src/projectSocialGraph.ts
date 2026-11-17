@@ -1,4 +1,4 @@
-import {SocialGraph} from "./SocialGraph"
+import {SocialGraph} from "./SocialGraph.js"
 
 // Aggregate snapshots can assign several numeric IDs to the same public key.
 // Resolve lists by public identity before traversing, then allocate fresh IDs.

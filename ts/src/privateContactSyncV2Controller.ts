@@ -2,7 +2,7 @@ import {
   acknowledgePrivateContactDocument, editPrivateContact, mergePrivateContactDocument,
   pendingPrivateContacts, queuePrivateContactSnapshot, seedPrivateContact,
   type PrivateContactDocument, type PrivateContactPatch, type PrivateContactSyncState,
-} from './privateContactSyncV2';
+} from './privateContactSyncV2.js';
 
 /** Ready means handed to a durable sibling outbox, never confirmed on every device. */
 export type PrivateContactSyncStatus = 'local-only' | 'pending' | 'queueing' | 'ready' | 'error';

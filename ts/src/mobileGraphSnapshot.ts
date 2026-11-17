@@ -1,7 +1,7 @@
 import { sha256, toHex } from '@hashtree/core';
 import { nip19 } from 'nostr-tools';
-import { SocialGraph } from './SocialGraph';
-import { MOBILE_GRAPH_MAX_BYTES, mobileGraphFile, openGraphSnapshot, type GraphSnapshot, type GraphSnapshotOptions } from './hashtreeSnapshot';
+import { SocialGraph } from './SocialGraph.js';
+import { MOBILE_GRAPH_MAX_BYTES, mobileGraphFile, openGraphSnapshot, type GraphSnapshot, type GraphSnapshotOptions } from './hashtreeSnapshot.js';
 
 interface RevisionCounts { ids: number; complete: number }
 interface MobileGraphCounts {

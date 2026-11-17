@@ -1,16 +1,16 @@
-import { projectIdentityRoster, type SignedIdentityRosterOp } from './identityGraph';
+import { projectIdentityRoster, type SignedIdentityRosterOp } from './identityGraph.js';
 import type {
   NostrIdentityId,
   NostrIdentityRosterProjection,
   NostrIdentityTombstone,
   SignedNostrIdentityRosterOp,
-} from './nostrIdentity';
+} from './nostrIdentity.js';
 import {
   identityRosterProjectionToNostrIdentity,
   signedNostrIdentityRosterOpToIdentity,
-} from './nostrIdentityEvents';
-import { normalizeRosterOp } from './nostrIdentityNormalize';
-import { signedNostrIdentityRosterOpIsValid } from './nostrIdentityValidation';
+} from './nostrIdentityEvents.js';
+import { normalizeRosterOp } from './nostrIdentityNormalize.js';
+import { signedNostrIdentityRosterOpIsValid } from './nostrIdentityValidation.js';
 
 export function nostrIdentityRosterParentIds(ops: SignedNostrIdentityRosterOp[]): string[] {
   const profileId = ops[0]?.content.profile_id;

@@ -1,7 +1,7 @@
-import { UniqueIds, canonicalNodeId } from './UniqueIds';
-import { isValidPubKey, NostrEvent } from './utils';
-import * as Binary from './SocialGraphBinary';
-import { SocialGraphUtils } from './SocialGraphUtils';
+import { UniqueIds, canonicalNodeId } from './UniqueIds.js';
+import { isValidPubKey, NostrEvent } from './utils.js';
+import * as Binary from './SocialGraphBinary.js';
+import { SocialGraphUtils } from './SocialGraphUtils.js';
 
 export interface ListRevision { id: string; created_at: number; complete: boolean }
 export interface GraphListRevision extends ListRevision { pubkey: string; kind: 3 | 10000 }

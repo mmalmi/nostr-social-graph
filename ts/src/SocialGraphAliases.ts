@@ -1,4 +1,4 @@
-import { canonicalNodeId } from './UniqueIds';
+import { canonicalNodeId } from './UniqueIds.js';
 
 type List = [number, number[], number];
 type Revision = [number, number, string, number, boolean];

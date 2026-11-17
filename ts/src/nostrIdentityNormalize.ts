@@ -3,9 +3,9 @@ import type {
   NostrIdentityKeyPurpose,
   NostrIdentityRosterOp,
   NostrIdentityRosterOpContent,
-} from './nostrIdentity';
-import { normalizeCapabilities } from './nostrIdentity';
-import { sortRecord } from './nostrIdentityJson';
+} from './nostrIdentity.js';
+import { normalizeCapabilities } from './nostrIdentity.js';
+import { sortRecord } from './nostrIdentityJson.js';
 
 export function normalizeNostrIdentityRosterOpContent(
   content: NostrIdentityRosterOpContent,
