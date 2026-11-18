@@ -159,9 +159,27 @@ was uploaded or replaced.
 These are application bytes in both directions, including event bodies.
 All 32 authors completed each pass within budget. Four signed events returned
 on the repeat had timestamps older than the corresponding local lists, which
-lacked revision IDs. The client retained the newer local state. Subsequent
-passes can request those bodies again until a matching or newer signed revision
+lacked revision IDs. The client retained the newer local state. Clients without a known winning revision ID
+can request those bodies again until a matching or newer signed revision
 is available. Snapshot age alone does not predict catch-up traffic.
+
+### Repeated obsolete bodies (4.2.4)
+
+On November 18, 2026, both SDK versions started from the same signed mobile
+snapshot and queried the same 24 nearest authors on the public graph relay.
+Both first passes downloaded 15 events, applied eight and used 551,128
+application bytes. Starting empty took 787,626 bytes for 34 events.
+
+| SDK | Bytes on the next pass | Events downloaded | Events applied |
+| --- | ---: | ---: | ---: |
+| 4.2.3 | 343,991 | 7 | 0 |
+| 4.2.4 | 6,663 | 1 | 0 |
+
+The relay still advertised six verified events older than known local winners.
+The bounded in-memory cache avoided downloading those bodies again. A second
+repeat transferred the same number of bytes. These counts include event bodies
+and exclude transport framing. The result varies with relay contents and the
+revisions held by the client.
 
 ### Event-response caps (4.0.3)
 
