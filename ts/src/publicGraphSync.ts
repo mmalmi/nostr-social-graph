@@ -1,6 +1,7 @@
 import { verifyEvent, type Event } from 'nostr-tools';
 import { SocialGraph } from './SocialGraph.js';
-import { openGraphSnapshot, mobileGraphFile, MOBILE_GRAPH_MAX_BYTES, type GraphSnapshotOptions } from './hashtreeSnapshot.js';
+import { fromBinary } from './SocialGraphBinary.js';
+import { checkMobileGraphCoverage, openGraphSnapshot, mobileGraphFile, MOBILE_GRAPH_MAX_BYTES, type GraphSnapshotOptions } from './hashtreeSnapshot.js';
 import { Negentropy, NegentropyStorageVector } from './vendor/negentropy.js';
 
 export interface GraphSyncStats {
@@ -195,23 +196,25 @@ export function startGraphSync(options:GraphSyncLifecycleOptions):()=>void {
 /** Fresh discovery bootstrap only. Caller decides whether local state is absent.
  * This unsigned projection is not evidence of an event signature or ownership.
  */
-export async function loadGraphBootstrap(options:{root:string;url?:string;signal?:AbortSignal;maxBytes?:number;snapshot?:GraphSnapshotOptions}):Promise<SocialGraph> {
+export async function loadGraphBootstrap(options:{root:string;url?:string;signal?:AbortSignal;maxBytes?:number;minUsers?:number;snapshot?:GraphSnapshotOptions}):Promise<SocialGraph> {
   if(!hex.test(options.root))throw new Error('Invalid public graph root');
   const maxBytes=bounded(options.maxBytes??MOBILE_GRAPH_MAX_BYTES,1024,MOBILE_GRAPH_MAX_BYTES);
   const timeout=AbortSignal.timeout(8000);
   const signal=options.signal?AbortSignal.any([options.signal,timeout]):timeout;
-  let data: Uint8Array;
+  let graph: SocialGraph;
   if (options.url !== undefined) {
-    data = await readCustomBootstrap(options.url, options.root, maxBytes, signal);
+    const data = await readCustomBootstrap(options.url, options.root, maxBytes, signal);
+    graph = await SocialGraph.fromBinary(options.root, data);
+    if (options.minUsers !== undefined) checkMobileGraphCoverage(graph.size().users, '', '', options.minUsers);
   } else {
     const snapshot = await openGraphSnapshot({...options.snapshot, signal});
-    data = await snapshot.readFile(mobileGraphFile(snapshot.manifest, options.root), {signal, maxBytes});
-    if (data[0] !== 4) throw new Error('Invalid mobile graph binary version');
+    const data = await snapshot.readFile(mobileGraphFile(snapshot.manifest, options.root), {signal, maxBytes});
+    graph = await fromBinary(options.root, data, true);
+    checkMobileGraphCoverage(graph.size().users, snapshot.publisher, snapshot.treeName, options.minUsers);
   }
-  const graph=await SocialGraph.fromBinary(options.root,data);
   const size=graph.size();
   if(!graph.getListRevision(options.root,3)&&!graph.getFollowedByUser(options.root).size)throw new Error('Graph bootstrap has no discovery root list');
-  if(Array.from(graph.getInternalData().ids).length>30000||size.users>30000||size.follows+size.mutes>180000)throw new Error('Graph bootstrap node limit');
+  if(graph.getInternalData().ids.size>30000||size.users>30000||size.follows+size.mutes>180000)throw new Error('Graph bootstrap node limit');
   return graph;
 }
 

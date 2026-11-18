@@ -71,9 +71,13 @@ snapshot; preserve empty lists and private node identity boundaries.
 through a signed kind-30064 event. It pins that immutable CID, reads its manifest,
 and downloads only the bounded v4 file for the requested discovery root. Each
 ciphertext block is checked against its address. The decrypted file is checked
-against its signed directory's manifest size and SHA-256. If the directory has
-no projection for the requested root, the call rejects and the app can use its
-bundled graph and ordinary relay catch-up.
+against its signed directory's manifest size and SHA-256. The standard public
+directory must cover at least 10,000 users reachable from the requested root.
+The reader rejects malformed lists, missing identities and trailing bytes before
+returning a graph. Show the embedded graph immediately and keep it if the signed
+read fails. Merge a successful result only while the original cache and relay
+policy still permit it. A custom publisher or tree supports smaller communities.
+Set `minUsers` to require a higher floor for an application.
 
 To read other public data from the same generation, import `openGraphSnapshot`
 from `nostr-social-graph/hashtreeSnapshot`. Call `const snapshot = await

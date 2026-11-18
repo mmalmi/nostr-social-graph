@@ -48,6 +48,18 @@ export interface GraphSnapshot {
 const HEX = /^[0-9a-f]{64}$/;
 const MANIFEST_LIMIT = 64 * 1024;
 export const MOBILE_GRAPH_MAX_BYTES = 4 * 1024 * 1024;
+export const PUBLIC_MOBILE_MIN_USERS = 10_000;
+
+/** Apply a public discovery floor only to named snapshots, never to retained personal graphs. */
+export function checkMobileGraphCoverage(users: number, publisher: string, treeName: string, minUsers?: number) {
+  const standard = publisher === DEFAULT_GRAPH_SNAPSHOT.publisher && treeName === DEFAULT_GRAPH_SNAPSHOT.treeName;
+  if (minUsers !== undefined && (!Number.isSafeInteger(minUsers) || minUsers < 0 || minUsers > 30_000)) {
+    throw new Error('Invalid mobile graph coverage minimum');
+  }
+  const minimum = Math.max(standard ? PUBLIC_MOBILE_MIN_USERS : 0, minUsers ?? 0);
+  if (users < minimum) throw new Error('Insufficient mobile graph discovery coverage');
+}
+
 
 function deadline(signal: AbortSignal | undefined, milliseconds: number) {
   const timeout = AbortSignal.timeout(milliseconds);
