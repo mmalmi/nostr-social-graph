@@ -1,7 +1,8 @@
 import { sha256, toHex } from '@hashtree/core';
 import { nip19 } from 'nostr-tools';
 import { SocialGraph } from './SocialGraph.js';
-import { MOBILE_GRAPH_MAX_BYTES, mobileGraphFile, openGraphSnapshot, type GraphSnapshot, type GraphSnapshotOptions } from './hashtreeSnapshot.js';
+import { fromBinary } from './SocialGraphBinary.js';
+import { checkMobileGraphCoverage, MOBILE_GRAPH_MAX_BYTES, mobileGraphFile, openGraphSnapshot, type GraphSnapshot, type GraphSnapshotOptions } from './hashtreeSnapshot.js';
 
 interface RevisionCounts { ids: number; complete: number }
 interface MobileGraphCounts {
@@ -44,15 +45,9 @@ function checkBytes(root: string, bytes: Uint8Array) {
 
 async function inspect(root: string, bytes: Uint8Array) {
   checkBytes(root, bytes);
-  const graph = await SocialGraph.fromBinary(root, bytes);
-  const {ids, mutedByUser, str} = graph.getInternalData();
-  const identities = new Set<string>();
-  for (const [, key] of ids) {
-    if (identities.has(key)) throw new Error('Duplicate mobile graph identity');
-    identities.add(key);
-  }
+  const graph = await fromBinary(root, bytes, true);
+  const {mutedByUser, str} = graph.getInternalData();
   const {users, follows, mutes, sizeByDistance} = graph.size();
-  if (identities.size > 30_000 || users > 30_000 || follows + mutes > 180_000) throw new Error('Mobile graph exceeds row limits');
   const directFollows = graph.getFollowedByUser(root).size;
   if (!graph.getListRevision(root, 3) && !directFollows) throw new Error('Mobile graph has no discovery root list');
   for (const [owner, targets] of mutedByUser) {
@@ -91,6 +86,7 @@ export async function verifyMobileGraphSnapshot(bytes: Uint8Array, receipt: Mobi
     throw new Error('Mobile graph does not match its pinned checksum');
   }
   const {graph, counts} = await inspect(receipt.root, bytes);
+  checkMobileGraphCoverage(counts.users, receipt.source.publisher, receipt.source.treeName);
   for (const field of ['users','follows','mutes','directFollows','secondDegree'] as const) {
     if (counts[field] !== receipt[field]) throw new Error('Mobile graph row count mismatch: ' + field);
   }
@@ -103,7 +99,7 @@ export async function verifyMobileGraphSnapshot(bytes: Uint8Array, receipt: Mobi
 }
 
 /** Read one signed generation's selected mobile member. Pass an open snapshot to reuse a preview. */
-export async function readMobileGraphSnapshot(root: string, options: GraphSnapshotOptions & {snapshot?: GraphSnapshot} = {}) {
+export async function readMobileGraphSnapshot(root: string, options: GraphSnapshotOptions & {snapshot?: GraphSnapshot; minUsers?: number} = {}) {
   if (!hex.test(root)) throw new Error('Invalid graph discovery root');
   const snapshot = options.snapshot ?? await openGraphSnapshot(options);
   if ((options.publisher !== undefined && options.publisher !== snapshot.publisher) ||
@@ -114,6 +110,7 @@ export async function readMobileGraphSnapshot(root: string, options: GraphSnapsh
   const bytes = await snapshot.readFile(file, {signal: options.signal, maxBytes: MOBILE_GRAPH_MAX_BYTES});
   const {graph, counts} = await inspect(root, bytes);
   const {publisher, treeName, eventId, directoryHash} = snapshot;
+  checkMobileGraphCoverage(counts.users, publisher, treeName, options.minUsers);
   const receipt: MobileGraphReceipt = {
     version: 2, root, bytes: member.size, sha256: member.sha256, ...counts,
     source: {url: `htree://${publisher}/${treeName}/${file}`, publisher, treeName, eventId, directoryHash,

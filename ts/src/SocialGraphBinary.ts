@@ -359,13 +359,16 @@ export async function toBinary(graph: SocialGraph, maxNodes?: number, maxEdges?:
     return out;
 }
 
-export async function fromBinary(root: string, data: Uint8Array): Promise<SocialGraph> {
+// Public mobile files have a fixed v4 schema and bounded rows. Saved and
+// imported graphs retain the compatibility rules for older binary versions.
+export async function fromBinary(root: string, data: Uint8Array, publicMobile = false): Promise<SocialGraph> {
     let offset = 0;
     
     // Read version
     const version = decodeVarint(data, offset);
     offset += version.bytesRead;
     
+    if (publicMobile && version.value !== BINARY_FORMAT_VERSION) throw new Error('Invalid mobile graph binary version');
     if (version.value !== BINARY_FORMAT_VERSION && version.value !== 3 && version.value !== BINARY_FORMAT_VERSION_V2) {
         throw new Error(`Invalid binary version: ${version.value}`);
     }
@@ -383,6 +386,8 @@ export async function fromBinary(root: string, data: Uint8Array): Promise<Social
     const idsCount = decodeVarint(data, offset);
     offset += idsCount.bytesRead;
     
+    if (publicMobile && idsCount.value > 30_000) throw new Error('Mobile graph node limit');
+    let edgesLeft = 180_000;
     const uniqueIds: [string, number][] = [];
     
     for (let i = 0; i < idsCount.value; i++) {
@@ -431,6 +436,7 @@ export async function fromBinary(root: string, data: Uint8Array): Promise<Social
     // Read follow lists
     const followListsCount = decodeVarint(data, offset);
     offset += followListsCount.bytesRead;
+    if (publicMobile && followListsCount.value > idsCount.value) throw new Error('Mobile graph row limit');
     
     const followLists: [number, number[], number][] = [];
     
@@ -444,6 +450,10 @@ export async function fromBinary(root: string, data: Uint8Array): Promise<Social
         readRevision(user.value, 3, timestamp.value);
         const followedCount = decodeVarint(data, offset);
         offset += followedCount.bytesRead;
+        if (publicMobile) {
+            edgesLeft -= followedCount.value;
+            if (edgesLeft < 0) throw new Error('Mobile graph edge limit');
+        }
         
         const followedUsers: number[] = [];
         
@@ -459,6 +469,7 @@ export async function fromBinary(root: string, data: Uint8Array): Promise<Social
     // Read mute lists
     const muteListsCount = decodeVarint(data, offset);
     offset += muteListsCount.bytesRead;
+    if (publicMobile && muteListsCount.value > idsCount.value) throw new Error('Mobile graph row limit');
     
     const muteLists: [number, number[], number][] = [];
     
@@ -472,6 +483,10 @@ export async function fromBinary(root: string, data: Uint8Array): Promise<Social
         readRevision(user.value, 10000, timestamp.value);
         const mutedCount = decodeVarint(data, offset);
         offset += mutedCount.bytesRead;
+        if (publicMobile) {
+            edgesLeft -= mutedCount.value;
+            if (edgesLeft < 0) throw new Error('Mobile graph edge limit');
+        }
         
         const mutedUsers: number[] = [];
         
@@ -484,6 +499,22 @@ export async function fromBinary(root: string, data: Uint8Array): Promise<Social
         muteLists.push([user.value, mutedUsers, timestamp.value]);
     }
     
+    if (publicMobile) {
+        if (offset !== data.length) throw new Error('Unexpected trailing mobile graph data');
+        const ids = new Set(uniqueIds.map(([, id]) => id));
+        const keys = new Set(uniqueIds.map(([key]) => canonicalNodeId(key)));
+        if (ids.size !== uniqueIds.length || keys.size !== uniqueIds.length || !keys.has(root)) {
+            throw new Error('Invalid mobile graph identities or discovery root');
+        }
+        for (const lists of [followLists, muteLists]) {
+            const owners = new Set<number>();
+            for (const [owner, targets] of lists) {
+                if (!ids.has(owner) || owners.has(owner) || targets.some(id => !ids.has(id)) ||
+                    new Set(targets).size !== targets.length) throw new Error('Invalid mobile graph list');
+                owners.add(owner);
+            }
+        }
+    }
     const canonical = canonicalizeGraphNodes(uniqueIds, followLists, muteLists, revisions);
     root = canonicalNodeId(root);
 
