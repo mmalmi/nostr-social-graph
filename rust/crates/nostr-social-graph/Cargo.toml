@@ -1,6 +1,6 @@
 [package]
 name = "nostr-social-graph"
-version = "0.2.2"
+version = "0.2.3"
 description = "Core Nostr social graph library, binary format, and shared runtime trait"
 edition.workspace = true
 license.workspace = true
@@ -9,7 +9,18 @@ homepage = "https://github.com/mmalmi/nostr-social-graph"
 readme = "../../README.md"
 exclude = ["tests/repository_interop.rs"]
 
+[features]
+public-snapshot = ["dep:async-trait", "dep:futures-util", "dep:hashtree-core", "dep:nostr", "dep:reqwest", "dep:serde_json", "dep:tokio", "dep:tokio-tungstenite"]
+
 [dependencies]
+async-trait = { version = "0.1", optional = true }
+futures-util = { version = "0.3", features = ["sink"], optional = true }
+hashtree-core = { version = "0.3", optional = true }
+nostr = { version = "0.44.7", default-features = false, features = ["std"], optional = true }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"], optional = true }
+serde_json = { workspace = true, optional = true }
+tokio = { version = "1", features = ["time"], optional = true }
+tokio-tungstenite = { version = "0.26.2", features = ["rustls-tls-webpki-roots"], optional = true }
 hex.workspace = true
 indexmap.workspace = true
 serde.workspace = true
@@ -17,5 +28,6 @@ thiserror.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }
 serde_json.workspace = true
 tempfile.workspace = true
