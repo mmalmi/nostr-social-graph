@@ -40,6 +40,8 @@ def inner(config):
             commands = [
                 ['pnpm', '--filter', 'nostr-social-graph', 'exec', 'vitest', 'run'],
                 ['cargo', 'test', '--manifest-path', 'rust/Cargo.toml', '--locked', '--offline',
+                 '-j1', '-p', 'nostr-social-graph', '--features', 'public-snapshot', '--lib'],
+                ['cargo', 'test', '--manifest-path', 'rust/Cargo.toml', '--locked', '--offline',
                  '-j1', '-p', 'nostr-social-graph-hashtree', '-p', 'nostr-social-graph-server'],
             ]
         else:

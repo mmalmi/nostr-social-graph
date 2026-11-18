@@ -13,6 +13,11 @@ mod alias_tests;
 mod aliases;
 pub use aliases::canonical_node_id;
 
+mod mobile;
+pub use mobile::{MOBILE_MAX_BYTES, MOBILE_MIN_USERS, MobileGraphError};
+#[cfg(feature = "public-snapshot")]
+pub mod public_snapshot;
+
 mod revision;
 pub use revision::*;
 

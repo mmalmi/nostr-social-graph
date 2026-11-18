@@ -59,6 +59,22 @@ Common commands:
 
 For repo-wide context and the TypeScript package, see the [root README](../README.md).
 
+## Signed mobile bootstrap
+
+For public discovery, enable the optional `public-snapshot` Cargo feature and
+call `nostr_social_graph::public_snapshot::fetch(discovery_root, 10_000).await`
+in the background on a first run with the app's default network policy. Render
+the embedded graph immediately. Keep it if loading or validation fails. A
+successful result provides a strictly decoded graph, the original v4 bytes,
+the signed directory announcement ID and the crawl completion timestamp.
+
+The reader requests the same public directory on anonymous sockets for every
+visitor. It verifies the publisher, the manifest and content hashes, and limits
+the transfer, graph size and reachable coverage. Follow and mute list revision
+IDs and their completeness flags survive import. Restore existing local graphs
+using the application's normal importer. Use a public projection for discovery.
+Account authorization and private message policies need verified evidence.
+
 ## Server upgrades
 
 The server stores its graph in `DATA_DIR/socialGraph.hashtree`. Configure
