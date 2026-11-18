@@ -18,6 +18,11 @@ const stop = startGraphSync({
 The helper compares both kind 3 follow lists and kind 10000 public mute tags,
 fetches missing full events, verifies signatures, and applies winning revisions.
 It never publishes local records, decrypts mute content, or replaces the graph.
+During the life of a graph, the helper remembers up to 2,048 verified obsolete
+revision IDs. It rechecks the local winner before skipping a repeated body.
+This cache contains event headers only and is discarded when the graph is
+released. A projected list remains eligible for its complete signed body.
+
 It uses direct configured public relays; do not route these author queries over
 private-account or peer-scoped transports. `syncGraphLists` provides a one-shot
 variant, AbortSignal, byte/time budgets and transfer statistics. Partial failures
