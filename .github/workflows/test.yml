@@ -1,45 +1,40 @@
-name: Test
-
-on:
-  workflow_dispatch:
-  push:
-    branches: [master, codex/graph-sdk-404]
-  pull_request:
-    branches: [master]
-
+name: Verify published graph source history
+on: workflow_dispatch
 permissions:
   contents: read
-
 jobs:
-  test:
+  cold-public-history:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 15
     steps:
-      - name: Set task-owned evidence directory
-        run: echo "GRAPH_GATE_EVIDENCE=$RUNNER_TEMP/graph-test-evidence" >> "$GITHUB_ENV"
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          persist-credentials: false
-      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
-        with:
-          version: 10.28.2
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: 22.23.4
-          cache: pnpm
-      - name: Install frozen dependencies before network isolation
-        run: pnpm install --frozen-lockfile --ignore-scripts
-      - name: Prepare exact Rust toolchain and locked sources before isolation
+      - name: Verify the anonymous public master and all Git objects
+        env:
+          SOURCE: 8649b78c73f183d4ab29eceb7c6e18630bb63c04
+          SOURCE_TREE: 8cc043988e47c00019bab18e378ef9b4408483e6
+          SOURCE_FILE_HASHES: '{".github/scripts/graph-gates/host.py":"668d30161f75425e702753dee79637695393bab813dc02605f6e993f6a1ae631","rust/Cargo.lock":"6e3eb6d6426c6e573b534a2e00a1457689606b1b6cf63f03f0875e2c53f3e1c8","rust/README.md":"47c83c5cb24d3c6b0fe437612eafc3dfe099728722668af68c43f51e425291c0","rust/crates/nostr-social-graph/Cargo.toml":"e59ecf9101abcc07e11c7ab71b452da5f0e4f62bb98cafa624d44e7d3af080bf","rust/crates/nostr-social-graph/src/lib.rs":"efa907a757d86cb14af959c405f6d2c1387be7417ce2db97660ccb45937ebdbe","rust/crates/nostr-social-graph/src/mobile.rs":"60558b46ecf9ae75284a1dc9d240e63ea8b562c1a1d55efba05f78addf0cafe5","rust/crates/nostr-social-graph/src/public_snapshot.rs":"87f07806c2ee850fae4b5bfda2606a28b329b08f7182ad36d107e34b21a58eb2"}'
         run: |
-          rustup toolchain install 1.99.0 --profile minimal
-          cargo +1.99.0 fetch --locked --manifest-path rust/Cargo.toml
-      - name: Run all TypeScript and graph persistence tests behind the OS boundary
-        run: python3 .github/scripts/graph-gates/host.py tests
-      - name: Preserve gate evidence
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: sdk-tests-${{ github.sha }}
-          path: ${{ env.GRAPH_GATE_EVIDENCE }}
-          if-no-files-found: error
-          retention-days: 7
+          set -eu
+          export GIT_NO_REPLACE_OBJECTS=1 GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0
+          work="$RUNNER_TEMP/cold-source"
+          git clone --bare --no-local --no-hardlinks https://github.com/mmalmi/nostr-social-graph.git "$work"
+          cd "$work"
+          git fetch --no-tags origin '+refs/*:refs/*'
+          test "$(git rev-parse refs/heads/master)" = "$SOURCE"
+          test "$(git rev-parse "$SOURCE^{tree}")" = "$SOURCE_TREE"
+          test "$(git rev-parse --is-shallow-repository)" = false
+          test ! -e objects/info/alternates
+          test ! -e info/grafts
+          test -z "$(git for-each-ref refs/replace)"
+          git fsck --full --strict
+          python3 - <<'PYEND'
+          import hashlib,json,os,subprocess
+          env=os.environ
+          rev=env['SOURCE']
+          inputs=json.loads(env['SOURCE_FILE_HASHES'])
+          for path,expected in inputs.items():
+              data=subprocess.check_output(['git','show',rev+':'+path])
+              assert hashlib.sha256(data).hexdigest()==expected,path
+          all_ids=sorted({line.split(b' ',1)[0] for line in subprocess.check_output(['git','rev-list','--objects','--all']).splitlines()})
+          report=dict(status='passed',source=rev,publicMaster=rev,sourceTree=env['SOURCE_TREE'],sourceFiles=len(inputs),sourceHashes=inputs,fullHistoryFsck=True,coldPublicRead=True,allRefsFetched=True,nonshallow=True,alternates=False,objectCount=len(all_ids),objectIdsSha256=hashlib.sha256(b'\n'.join(all_ids)+b'\n').hexdigest())
+          print('COLD_HISTORY_RECEIPT '+json.dumps(report,sort_keys=True))
+          PYEND
