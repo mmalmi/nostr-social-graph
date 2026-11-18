@@ -163,23 +163,35 @@ lacked revision IDs. The client retained the newer local state. Clients without 
 can request those bodies again until a matching or newer signed revision
 is available. Snapshot age alone does not predict catch-up traffic.
 
-### Repeated obsolete bodies (4.2.4)
+### Repeated obsolete bodies
 
-On November 18, 2026, both SDK versions started from the same signed mobile
+On November 18, 2026, all three SDK versions started from the same signed mobile
 snapshot and queried the same 24 nearest authors on the public graph relay.
-Both first passes downloaded 15 events, applied eight and used 551,128
+All three first passes downloaded 15 events, applied eight and used 551,128
 application bytes. Starting empty took 787,626 bytes for 34 events.
 
 | SDK | Bytes on the next pass | Events downloaded | Events applied |
 | --- | ---: | ---: | ---: |
 | 4.2.3 | 343,991 | 7 | 0 |
 | 4.2.4 | 6,663 | 1 | 0 |
+| 4.2.5 | 5,749 | 0 | 0 |
 
-The relay still advertised six verified events older than known local winners.
-The bounded in-memory cache avoided downloading those bodies again. A second
-repeat transferred the same number of bytes. These counts include event bodies
+The relay still advertised six verified events older than known local winners
+and one event older than a retained list with only a timestamp. Version 4.2.5
+recognizes both cases. A signed event at the same timestamp can still repair a
+list with a missing ID. A second repeat transferred the same number of bytes.
+These counts include event bodies
 and exclude transport framing. The result varies with relay contents and the
 revisions held by the client.
+
+A larger test fixed the first 500-author lifecycle window (250 near, 250
+far) until it finished on one relay. The 4.2.4 mobile-seeded run transferred
+15,855,020 bytes over eight passes. An offline replay of the captured relay
+responses reproduced that byte count. With 4.2.5 the same replay transferred
+10,787,451 bytes over six passes. Both applied 271 updates, including 68
+partial-list repairs, with identical final relationships and revisions.
+Starting empty on the live relay took 12,813,007 bytes over seven passes
+and applied 521 events. Each pass used the default 2 MiB application budget.
 
 ### Event-response caps (4.0.3)
 

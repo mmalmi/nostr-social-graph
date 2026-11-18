@@ -32,9 +32,13 @@ const obsoleteRevisions = new WeakMap<SocialGraph, Map<string, RevisionHeader>>(
 const MAX_OBSOLETE_REVISIONS = 2048;
 
 function supersededByGraph(graph: SocialGraph, id: string, header: RevisionHeader): boolean {
-  const current = graph.getListRevision(header.pubkey, header.kind);
-  return current !== undefined && (current.created_at > header.created_at
-    || (current.created_at === header.created_at && current.id < id));
+  const timestamp = header.kind === 3
+    ? graph.getFollowListCreatedAt(header.pubkey)
+    : graph.getMuteListCreatedAt(header.pubkey);
+  if (timestamp !== header.created_at) return timestamp !== undefined && timestamp > header.created_at;
+  // Timestamp-only rows can still acquire their signed winner at the same time.
+  const winner = graph.getListRevision(header.pubkey, header.kind);
+  return winner !== undefined && winner.id < id;
 }
 
 function rememberObsolete(graph: SocialGraph, event: Event): void {
