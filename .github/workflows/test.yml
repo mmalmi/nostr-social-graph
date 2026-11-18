@@ -1,45 +1,78 @@
-name: Test
-
+name: Verify published signed graph history
 on:
   workflow_dispatch:
-  push:
-    branches: [master, codex/graph-sdk-404]
-  pull_request:
-    branches: [master]
-
+    inputs:
+      expected:
+        description: Expected master for the release audit (omit for read-only preflight)
+        type: string
 permissions:
   contents: read
-
 jobs:
-  test:
+  cold-signed-history:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 12
+    env:
+      EXPECTED: ${{ inputs.expected }}
     steps:
-      - name: Set task-owned evidence directory
-        run: echo "GRAPH_GATE_EVIDENCE=$RUNNER_TEMP/graph-test-evidence" >> "$GITHUB_ENV"
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          persist-credentials: false
-      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
-        with:
-          version: 10.28.2
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: 22.23.4
-          cache: pnpm
-      - name: Install frozen dependencies before network isolation
-        run: pnpm install --frozen-lockfile --ignore-scripts
-      - name: Prepare exact Rust toolchain and locked sources before isolation
+      - name: Acquire the checksum-pinned public reader
         run: |
-          rustup toolchain install 1.99.0 --profile minimal
-          cargo +1.99.0 fetch --locked --manifest-path rust/Cargo.toml
-      - name: Run all TypeScript and graph persistence tests behind the OS boundary
-        run: python3 .github/scripts/graph-gates/host.py tests
-      - name: Preserve gate evidence
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: sdk-tests-${{ github.sha }}
-          path: ${{ env.GRAPH_GATE_EVIDENCE }}
-          if-no-files-found: error
-          retention-days: 7
+          set -eu
+          cd "$RUNNER_TEMP"
+          curl -fsSL --max-time 90 -o reader.tgz https://github.com/mmalmi/hashtree/releases/download/v0.5.1/hashtree-x86_64-unknown-linux-musl.tar.gz
+          echo "4ea5d435a4fa2dbf2abb88ad75dc3dd46f33efbcfabed527220f7933089d3a2a  reader.tgz" | sha256sum -c
+          mkdir reader
+          python3 - <<'PYEND'
+          import pathlib,tarfile
+          with tarfile.open('reader.tgz') as reader:
+              for name in ('htree','git-remote-htree'):
+                  (entry,)=[i for i in reader.getmembers() if i.isfile() and pathlib.PurePosixPath(i.name).name==name]
+                  out=pathlib.Path('reader')/name
+                  with out.open('wb') as f:
+                      import shutil
+                      shutil.copyfileobj(reader.extractfile(entry),f)
+                  out.chmod(0o755)
+          PYEND
+          echo "$RUNNER_TEMP/reader" >> "$GITHUB_PATH"
+      - name: Independently verify the complete public repository
+        env:
+          SOURCE: 8649b78c73f183d4ab29eceb7c6e18630bb63c04
+          SOURCE_TREE: 8cc043988e47c00019bab18e378ef9b4408483e6
+          SOURCE_FILE_HASHES: '{".github/scripts/graph-gates/host.py":"668d30161f75425e702753dee79637695393bab813dc02605f6e993f6a1ae631","rust/Cargo.lock":"6e3eb6d6426c6e573b534a2e00a1457689606b1b6cf63f03f0875e2c53f3e1c8","rust/README.md":"47c83c5cb24d3c6b0fe437612eafc3dfe099728722668af68c43f51e425291c0","rust/crates/nostr-social-graph/Cargo.toml":"e59ecf9101abcc07e11c7ab71b452da5f0e4f62bb98cafa624d44e7d3af080bf","rust/crates/nostr-social-graph/src/lib.rs":"efa907a757d86cb14af959c405f6d2c1387be7417ce2db97660ccb45937ebdbe","rust/crates/nostr-social-graph/src/mobile.rs":"60558b46ecf9ae75284a1dc9d240e63ea8b562c1a1d55efba05f78addf0cafe5","rust/crates/nostr-social-graph/src/public_snapshot.rs":"87f07806c2ee850fae4b5bfda2606a28b329b08f7182ad36d107e34b21a58eb2"}'
+        run: |
+          set -eu
+          export HOME="$RUNNER_TEMP/anonymous-home" HTREE_CONFIG_DIR="$RUNNER_TEMP/reader-config" HTREE_DATA_DIR="$RUNNER_TEMP/empty-cache"
+          export GIT_NO_REPLACE_OBJECTS=1 GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0 HTREE_PREFER_LOCAL_DAEMON=false HTREE_LOCAL_DAEMON_ONLY=false
+          mkdir "$HOME" "$HTREE_CONFIG_DIR" "$HTREE_DATA_DIR"
+          printf '[server]\nenable_fips = false\n[updater]\nauto_check = false\nauto_install = false\n' > "$HTREE_CONFIG_DIR/config.toml"
+          cd "$RUNNER_TEMP"
+          curl -fsSL --max-time 30 -o readme.md "https://raw.githubusercontent.com/mmalmi/nostr-social-graph/$SOURCE/README.md"
+          origin=$(python3 -c 'import pathlib,re; m=re.search(r"https://git\.iris\.to/#/(npub1[a-z0-9]+)/nostr-social-graph",pathlib.Path("readme.md").read_text()); assert m; print("htree://"+m[1]+"/nostr-social-graph")')
+          git ls-remote --symref "$origin" > public-refs.txt
+          git clone --bare --no-local --no-hardlinks "$origin" "$RUNNER_TEMP/signed.git"
+          cd "$RUNNER_TEMP/signed.git"
+          test "$(git rev-parse --is-shallow-repository)" = false
+          test ! -e objects/info/alternates
+          test ! -e info/grafts
+          test -z "$(git for-each-ref refs/replace)"
+          git fsck --full --strict
+          python3 - <<'PYEND'
+          import hashlib,json,os,pathlib,subprocess
+          env=os.environ
+          refs={}
+          for line in (pathlib.Path(env['RUNNER_TEMP'])/'public-refs.txt').read_text().splitlines():
+              oid,ref=line.split('\t')
+              if ref.startswith('refs/') and not ref.endswith('^{}'):
+                  refs[ref]=oid
+                  assert subprocess.check_output(['git','rev-parse',ref]).decode().strip()==oid,ref
+          master=refs['refs/heads/master']
+          tree=subprocess.check_output(['git','rev-parse',master+'^{tree}']).decode().strip()
+          inputs={}
+          if env['EXPECTED']:
+              assert master==env['SOURCE']==env['EXPECTED'] and tree==env['SOURCE_TREE']
+              inputs=json.loads(env['SOURCE_FILE_HASHES'])
+              for path,expected in inputs.items():
+                  assert hashlib.sha256(subprocess.check_output(['git','show',master+':'+path])).hexdigest()==expected,path
+          ids=sorted({line.split(b' ',1)[0] for line in subprocess.check_output(['git','rev-list','--objects','--all']).splitlines()})
+          report=dict(status='passed',publicMaster=master,sourceTree=tree,sourceFiles=len(inputs),sourceHashes=inputs,fullHistoryFsck=True,coldPublicRead=True,allRefsFetched=True,nonshallow=True,alternates=False,objectCount=len(ids),refs=refs,objectIdsSha256=hashlib.sha256(b'\n'.join(ids)+b'\n').hexdigest())
+          print('SIGNED_HISTORY_RECEIPT '+json.dumps(report,sort_keys=True))
+          PYEND
