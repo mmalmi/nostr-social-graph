@@ -119,6 +119,24 @@ describe('optional public graph reconciliation',()=>{
     expect((await sync(new SocialGraph(pubkey))).receivedEvents).toBe(2);
   } finally { await server.close(); }
  });
+ it('remembers older bodies for timestamp-only lists and still repairs equal timestamps', async () => {
+  const legacy = new SocialGraph(pubkey);
+  const follow = event(3, 200), mute = event(10000, 300, [pubkey]);
+  legacy.handleEvent([{...follow, id: ''}, {...mute, id: ''}]);
+  const graph = await SocialGraph.fromBinary(pubkey, await legacy.toBinary());
+  expect(graph.getListRevisions()).toEqual([]);
+  const records = [event(3, 199), event(10000, 299)];
+  const server = await relay(records);
+  const sync = () => syncGraphLists({graph, authors: [pubkey], relays: [server.url], webSocket: WebSocket as any});
+  try {
+    expect(await sync()).toMatchObject({receivedEvents: 2, appliedEvents: 0});
+    expect(await sync()).toMatchObject({receivedEvents: 0, appliedEvents: 0});
+    records.push(follow, mute);
+    expect(await sync()).toMatchObject({receivedEvents: 2, appliedEvents: 2});
+    expect(graph.getListRevision(pubkey, 3)?.id).toBe(follow.id);
+    expect(graph.getListRevision(pubkey, 10000)?.id).toBe(mute.id);
+  } finally { await server.close(); }
+ });
  it('honors a transfer budget and aborts promptly',async()=>{
   const graph=new SocialGraph(pubkey),server=await relay([event(3,100,Array(100).fill(pubkey))]);
   try{const stats=await syncGraphLists({graph,authors:[pubkey],relays:[server.url],webSocket:WebSocket as any,maxBytes:1024});expect(stats.limited).toBe(true);expect(stats.appliedEvents).toBe(0);
