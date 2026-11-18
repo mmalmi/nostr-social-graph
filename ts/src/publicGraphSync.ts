@@ -25,6 +25,33 @@ export interface GraphSyncOptions {
   /** Injection for Node and deterministic protocol tests. */
   webSocket?: typeof WebSocket;
 }
+type RevisionHeader = Pick<Event, 'pubkey' | 'kind' | 'created_at'>;
+
+// Remember only signature-verified obsolete metadata. A fresh graph starts with its own cache.
+const obsoleteRevisions = new WeakMap<SocialGraph, Map<string, RevisionHeader>>();
+const MAX_OBSOLETE_REVISIONS = 2048;
+
+function supersededByGraph(graph: SocialGraph, id: string, header: RevisionHeader): boolean {
+  const current = graph.getListRevision(header.pubkey, header.kind);
+  return current !== undefined && (current.created_at > header.created_at
+    || (current.created_at === header.created_at && current.id < id));
+}
+
+function rememberObsolete(graph: SocialGraph, event: Event): void {
+  if (!supersededByGraph(graph, event.id, event)) return;
+  let records = obsoleteRevisions.get(graph);
+  if (!records) {
+    records = new Map();
+    obsoleteRevisions.set(graph, records);
+  }
+  if (records.size >= MAX_OBSOLETE_REVISIONS) {
+    const oldest = records.keys().next();
+    if (!oldest.done) records.delete(oldest.value);
+  }
+  const { pubkey, kind, created_at } = event;
+  records.set(event.id, { pubkey, kind, created_at });
+}
+
 const hex = /^[0-9a-f]{64}$/;
 const bytes = (s:string) => new TextEncoder().encode(s).byteLength;
 const bounded = (n:number, min:number, max:number) => {
@@ -117,6 +144,15 @@ export async function syncGraphLists(options:GraphSyncOptions):Promise<GraphSync
           }
           send(['NEG-CLOSE',id]);
           stats.batches++;
+          // The relay may still have old winners, even after the next crawl. Recheck
+          // the current revision so a restored or changed graph can still fetch the body.
+          const obsolete = obsoleteRevisions.get(options.graph);
+          if (obsolete) {
+            for (const eventId of needed) {
+              const header = obsolete.get(eventId);
+              if (header && supersededByGraph(options.graph, eventId, header)) needed.delete(eventId);
+            }
+          }
           const requests=Array.from(needed).reduce<{ids:string[]}[]>((all,eventId,i)=>{if(i%64===0)all.push({ids:[]});all[all.length-1].ids.push(eventId);return all;},[]);
           for(const request of requests){
             const pending=new Set(request.ids);
@@ -139,6 +175,7 @@ export async function syncGraphLists(options:GraphSyncOptions):Promise<GraphSync
                   // newer local list wins. Invalid or missing bodies do not.
                   pending.delete(event.id);
                   applied=options.graph.handleEvent(event,true);
+                  if (!applied) rememberObsolete(options.graph, event);
                 }
               }catch{/* invalid event */}
               if(applied){stats.appliedEvents++;options.onEvent?.(event);}

@@ -94,6 +94,31 @@ describe('optional public graph reconciliation',()=>{
    expect(graph.getListRevision(pubkey,3)?.id).toBe(current.id);
   }finally{await server.close();}
  });
+ it('skips verified obsolete IDs on repeat but still repairs partial lists and applies newer events', async () => {
+  const graph = new SocialGraph(pubkey);
+  const retained = event(3, 200), stale = event(3, 100);
+  const retainedMute = event(10000, 201, [pubkey]), staleMute = event(10000, 101);
+  graph.handleEvent([retained, retainedMute]);
+  graph.markListIncomplete(pubkey, 3);
+  const records = [stale, staleMute];
+  const server = await relay(records);
+  const sync = (target: SocialGraph) => syncGraphLists({
+    graph: target, authors: [pubkey], relays: [server.url], webSocket: WebSocket as any,
+  });
+  try {
+    expect((await sync(graph)).receivedEvents).toBe(2);
+    expect((await sync(graph)).receivedEvents).toBe(0);
+    records.push(retained);
+    expect((await sync(graph)).appliedEvents).toBe(1);
+    expect(graph.getListRevision(pubkey, 3)?.complete).toBe(true);
+    const updatedMute = event(10000, 300, [pubkey]);
+    records.push(updatedMute);
+    expect((await sync(graph)).appliedEvents).toBe(1);
+    expect(graph.getListRevision(pubkey, 10000)?.id).toBe(updatedMute.id);
+    records.splice(0, records.length, stale, staleMute);
+    expect((await sync(new SocialGraph(pubkey))).receivedEvents).toBe(2);
+  } finally { await server.close(); }
+ });
  it('honors a transfer budget and aborts promptly',async()=>{
   const graph=new SocialGraph(pubkey),server=await relay([event(3,100,Array(100).fill(pubkey))]);
   try{const stats=await syncGraphLists({graph,authors:[pubkey],relays:[server.url],webSocket:WebSocket as any,maxBytes:1024});expect(stats.limited).toBe(true);expect(stats.appliedEvents).toBe(0);
