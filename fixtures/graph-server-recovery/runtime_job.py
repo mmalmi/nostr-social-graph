@@ -9,20 +9,7 @@ import sys
 import time
 import zipfile
 
-SOURCE = '6e70cd9daf6a9b06d7a8d30ffa32db9d3442d507'
-RETAINED_COMPILE = False
-COMPILED_SOURCE = '65ddb3605221caff35bcb5e8d579aaca52bc3919'
-COMPILED_RECIPE = 'a9534934bd97eeb1473e0cc334fbd4eef8388080'
-COMPILED_ARTIFACT = 14361391951
-COMPILED_ARCHIVE_SHA = 'e3a223b656cac7311f1289396b5b4ce2e7bf3c169672449e32b22633f8e804d2'
-COMPILED_ELF_SHA = '8e58def86557b299075ac070a6a2e56db232eda5baa91ea135529f19d5789466'
-BASE_SOURCE = '83ca2e2a57e145193e0ee7d2273fa5c70457694d'
-BASE_RECIPE = '4e6cd43387f812c461b98c2553d08ea124f34841'
-BASE_ARTIFACT = 14302053669
-BASE_ARCHIVE_SHA = '1ee73132e5d61fc3435788765fda68a95ed615f26d2c95047930bc581d9e6c43'
-BASE_ELF_SHA = '0d6f48e05ca0c88dc530a0f4fbbb49223ed0b17c8eea81046a6a7b8ec3a99040'
-DEFAULT_ARTIFACT = 14302419939
-DEFAULT_ARCHIVE_SHA = '2bdb7dbc14ebb1c43ff54b248115726baa21340b12bf4606313af9ff3c65ff16'
+SOURCE = '5cd34a0eafc991186d194f23a72f667702e106a7'
 HERE = Path(__file__).resolve().parent
 STAGE = Path(os.environ['RUNNER_TEMP']) / 'graph-server-alias-repair'
 SOURCE_DIR = Path(os.environ['GITHUB_WORKSPACE']) / 'candidate'
@@ -57,20 +44,14 @@ def download(artifact, expected_sha):
     return path
 
 
-def executable(artifact, source, recipe, digest, elf_sha=None, compiled_only=False):
+def executable(artifact, source, recipe, digest, elf_sha=None):
     assert artifact['name'] == 'graph-server-recovery-' + recipe
     archive = download(artifact, digest)
     path = STAGE / ('server-' + source)
     with zipfile.ZipFile(archive) as files:
         cert = json.loads(files.read('producer-acceptance.json'))
         runtime = json.loads(files.read('runtime/acceptance.json'))
-        if compiled_only:
-            assert not cert['passed'] and not runtime['passed']
-            assert [p['name'] for p in cert['phases'] if not p['passed']] == ['isolated-tests']
-            assert [p['name'] for p in runtime['phases'] if not p['passed']] == ['persistence-recovery']
-            assert cert['sourceArchiveSha256'] == '3215130171bb56c3ad9cef6645783c140a6653b5834e59edf5f6a0fba18545ed'
-        else:
-            assert cert['passed'] and cert['sourceUnchanged'] and runtime['passed']
+        assert cert['passed'] and cert['sourceUnchanged'] and runtime['passed']
         assert cert['source'] == source and cert['recipeCommit'] == recipe
         assert elf_sha is None or cert['binary']['sha256'] == elf_sha
         member = files.getinfo('nostr-social-graph-server')
@@ -91,7 +72,7 @@ def resources():
 
 
 mode = sys.argv[1]
-assert mode in ('boundary-baseline', 'boundary-candidate', 'memory')
+assert mode == 'full-daily'
 recipe = os.environ['GITHUB_SHA']
 run_id = os.environ['GITHUB_RUN_ID']
 assert subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=SOURCE_DIR, text=True).strip() == SOURCE
@@ -99,42 +80,24 @@ assert subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=HERE, text=True
 assert subprocess.check_output(['node', '--version'], text=True).strip() == 'v22.23.4'
 assert subprocess.check_output(['pnpm', '--version'], text=True).strip() == '10.28.2'
 subprocess.run(['pnpm', 'install', '--frozen-lockfile', '--ignore-scripts'], cwd=SOURCE_DIR, timeout=350, check=True)
-if mode == 'boundary-baseline':
-    artifact = api('actions/artifacts/' + str(BASE_ARTIFACT))
-    binary, binary_sha = executable(artifact, BASE_SOURCE, BASE_RECIPE, BASE_ARCHIVE_SHA, BASE_ELF_SHA)
-    binary_source = BASE_SOURCE
-elif RETAINED_COMPILE:
-    changes = subprocess.check_output(['git','diff','--name-only','--no-renames',COMPILED_SOURCE,SOURCE],cwd=SOURCE_DIR,text=True).splitlines()
-    allowed = {'rust/crates/nostr-social-graph-server/tests/sync_recovery.mjs',
-               'rust/crates/nostr-social-graph-server/tests/hashtree_publication.mjs'}
-    assert set(changes) <= allowed
-    artifact = api('actions/artifacts/'+str(COMPILED_ARTIFACT))
-    binary,binary_sha = executable(artifact,COMPILED_SOURCE,COMPILED_RECIPE,COMPILED_ARCHIVE_SHA,COMPILED_ELF_SHA,compiled_only=True)
-    binary_source = COMPILED_SOURCE
-else:
-    artifact, = [a for a in api('actions/runs/' + run_id + '/artifacts')['artifacts']
-                 if a['name'] == 'graph-server-recovery-' + recipe]
-    binary, binary_sha = executable(artifact, SOURCE, recipe, artifact['digest'][7:])
-    binary_source = SOURCE
+assert api('actions/runs/'+run_id)['head_sha'] == recipe
+artifact = api('actions/artifacts/14740288959')
+assert artifact['id'] == 14740288959 and artifact['size_in_bytes'] == 44178083
+assert artifact['workflow_run']['id'] == 44987924457 and artifact['workflow_run']['head_sha'] == 'f7754b70a09fb8a8c86a1aa53a1fc570961eec9a'
+binary, binary_sha = executable(artifact, SOURCE, 'f7754b70a09fb8a8c86a1aa53a1fc570961eec9a', '00d89d5ad9d374bdcee88616a90a8fc8ae4347480dcb0e6aced8dde42cc59f12', '6bc1b160b6e987264b44f7e8cb567fc7519214b1d499c455665c81d80db432a1')
+binary_source = SOURCE
 inputs = dict(artifactId=artifact['id'], archiveSha256=artifact['digest'][7:], source=binary_source, binarySha256=binary_sha)
 config = dict(source=str(SOURCE_DIR), stage=str(STAGE), evidence=str(EVIDENCE), path=os.environ['PATH'],
               uid=os.getuid(), gid=os.getgid(), hostNet=os.readlink('/proc/self/ns/net'), hostPid=os.readlink('/proc/self/ns/pid'),
               binary=str(binary), binarySha256=binary_sha, inputs=inputs, node=shutil.which('node'), mode=mode,
               runtimeName='profile-' + mode)
-if mode == 'memory':
-    seed = STAGE / 'full.bin'
-    subprocess.run(['node', '--experimental-import-meta-resolve', HERE/'fetch-full.mjs', SOURCE_DIR/'ts/package.json', seed],
-                   check=True, timeout=260)
-    assert seed.stat().st_size == 55750905 and sha(seed) == 'aeae583ae888f7fec2052f678ff30ae2b031ed4e8d77d0fe0c644e35c2bd6fc0'
-    old = api('actions/artifacts/' + str(DEFAULT_ARTIFACT))
-    with zipfile.ZipFile(download(old, DEFAULT_ARCHIVE_SHA)) as files:
-        baseline = json.loads(files.read('memory/candidate/receipt.json'))
-        assert baseline['passed'] and baseline['binarySha256'] == BASE_ELF_SHA and baseline['cycles'] >= 5
-        for member in ['receipt.json', 'crawler-memory.json', 'restart-memory.json']:
-            (STAGE/('baseline-' + member)).write_bytes(files.read('memory/candidate/' + member))
-    config.update(seed=str(seed), baseline=str(STAGE))
+if mode == 'paired-daily':
+    prior = api('actions/artifacts/14362023642')
+    assert prior['id'] == 14362023642 and prior['workflow_run']['id'] == 44159503711
+    old_binary, old_sha = executable(prior, '6e70cd9daf6a9b06d7a8d30ffa32db9d3442d507', '0c1a8a06f40f476f768ae954366f26fa418dd1ec', '4b0d7f8f27f2c60199d9990e523d03eff4cf3659f4b922bdeff86acfb5a29974', '8e58def86557b299075ac070a6a2e56db232eda5baa91ea135529f19d5789466')
+    config.update(oldBinary=str(old_binary), oldSha=old_sha, oldArtifact=prior['id'])
 before = resources()
-assert before['available'] >= (14 if mode == 'memory' else 5)*GIB and before['disk'] >= 26*GIB, before
+assert before['available'] >= (14 if mode in ('memory','full-daily') else 5)*GIB and before['disk'] >= (30 if mode == 'full-daily' else 26)*GIB, before
 for name, digest in [('htree', '67306642b1c581d73e89f2d533724f24b877a2b9d5bd59557d522b6f93232850'),
                      ('legacy-htree', 'f3471a3f29d5169cb4e0929cd5554dad9f1b86dabed5b9c3ea3b51b0d071923e')]:
     assert sha(STAGE/name) == digest
@@ -150,9 +113,9 @@ try:
         now = resources()
         for key in ('available', 'disk'):
             floor[key] = min(floor[key], now[key])
-        assert now['available'] >= 2*GIB and now['disk'] >= 21*GIB and before['disk']-now['disk'] < 6*GIB, now
+        assert now['available'] >= 2*GIB and now['disk'] >= 21*GIB and before['disk']-now['disk'] < (8 if mode == 'full-daily' else 6)*GIB, now
         assert now['swap'] <= before['swap'] and now['swapouts'] == before['swapouts'], now
-        assert time.monotonic()-started < (1900 if mode == 'memory' else 900)
+        assert time.monotonic()-started < (9700 if mode == 'full-daily' else 1900 if mode == 'memory' else 900)
         time.sleep(.5)
     assert process.returncode == 0, process.returncode
 except BaseException as exception:
