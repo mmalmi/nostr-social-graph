@@ -1,0 +1,28 @@
+{
+  "source": "6e70cd9daf6a9b06d7a8d30ffa32db9d3442d507",
+  "members": {
+    "social-graph-v4.bin": {
+      "size": 55750905,
+      "sha256": "aeae583ae888f7fec2052f678ff30ae2b031ed4e8d77d0fe0c644e35c2bd6fc0"
+    },
+    "profile-data.json": {
+      "size": 26833179,
+      "sha256": "66dd586d871663a1ae2162039ad719fbe4f8840dbe4ef058a04bb771f6f9f66f"
+    },
+    "profile-index.json": {
+      "size": 26356229,
+      "sha256": "67b9aca2a1adcec4335456a7e67ca01abcd15437e73ff4f44345a4a5d1fcaf42"
+    }
+  },
+  "binaries": {
+    "incumbent": {
+      "source": "6e70cd9daf6a9b06d7a8d30ffa32db9d3442d507",
+      "recipe": "0c1a8a06f40f476f768ae954366f26fa418dd1ec",
+      "run": 44159503711,
+      "archiveId": 14362023642,
+      "archiveBytes": 47005459,
+      "archiveSha256": "4b0d7f8f27f2c60199d9990e523d03eff4cf3659f4b922bdeff86acfb5a29974",
+      "binarySha256": "8e58def86557b299075ac070a6a2e56db232eda5baa91ea135529f19d5789466"
+    }
+  }
+}

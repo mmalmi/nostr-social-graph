@@ -9,12 +9,14 @@ import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { createInterface } from 'node:readline';
 import { runMemoryCycles } from './server_memory.mjs';
+import { runProfileMemory } from './profile_memory_trial.mjs';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { parseArgs, promisify } from 'node:util';
 
 const { values, positionals } = parseArgs({ allowPositionals: true, options: {
   htree: { type: 'string' }, 'legacy-htree': { type: 'string' }, dependencies: { type: 'string' }, output: { type: 'string' }, 'memory-seed': { type: 'string' },
+  'profile-rows': { type: 'string' }, 'profile-index': { type: 'string' },
 } });
 assert.equal(positionals.length, 1, 'Pass the already built graph server');
 assert(values.htree && values['legacy-htree'] && values.dependencies && values.output, 'Pass --htree, --legacy-htree, --dependencies and --output');
@@ -83,6 +85,7 @@ async function relay(events, receive) {
           if (filters.some(filter => matches(event, filter))) client.send(JSON.stringify(['EVENT', id, event]));
         }
         client.send(JSON.stringify(['EOSE', id]));
+        state.afterEose?.(id);
       } else if (type === 'EVENT') {
         state.writes++;
         try {
@@ -221,7 +224,11 @@ async function launch(directory, env, upstream, storage, enabled, options = {}) 
   await once(bound, 'listening');
   const port = bound.address().port;
   await new Promise(resolve => bound.close(resolve));
-  const child = spawn(binary, [], { detached: true, stdio: ['ignore', 'pipe', 'pipe'], env: {
+  const cgroup = values['profile-rows'] && process.env.PROFILE_MEMORY_CGROUP;
+  // The shell moves itself before exec; every native helper inherits the same cgroup.
+  const command = cgroup ? '/bin/sh' : binary;
+  const argv = cgroup ? ['-ec', 'echo "$$" > "$1/cgroup.procs"; exec "$2"', 'profile-memory', cgroup, binary] : [];
+  const child = spawn(command, argv, { detached: true, stdio: ['ignore', 'pipe', 'pipe'], env: {
     ...env, BIND_ADDRESS: '127.0.0.1', PORT: String(port), DATA_DIR: directory, SOCIAL_GRAPH_ROOT: root,
     SOCIAL_GRAPH_DB_DIR: path.join(directory, 'graph'), GRAPH_FORWARD_ALLOWLIST_PATH: path.join(directory, 'allowlist'),
     RELAY_URLS: upstream.url, CRAWL_DISTANCE: '0', PROFILE_CRAWL_DISTANCE: '0', PROFILE_CRAWL_LIMIT: '1',
@@ -285,7 +292,7 @@ async function readNamed(scratch, phase, naming, storage, verifyLarge = false) {
   assert.deepEqual(readdirSync(env.HTREE_DATA_DIR), []);
   const location = path.join(home, 'download');
   const beforeQueries = naming.queries, beforeReads = storage.suffixedReads;
-  const opts = { env, encoding: 'buffer', timeout: 40_000, maxBuffer: 2 * 1024 * 1024 };
+  const opts = { env, encoding: 'buffer', timeout: values['profile-rows'] ? 180_000 : 40_000, maxBuffer: (values['profile-rows'] ? 40 : 2) * 1024 * 1024 };
   const { stderr } = await run(htree, ['--data-dir', env.HTREE_DATA_DIR, 'get', uri, '--non-interactive', '-o', location], opts);
   const resolvedHash = /Resolved to: ([a-f0-9]{64})/.exec(stderr.toString())?.[1];
   const signed = names.find(event => tag(event, 'hash') === resolvedHash);
@@ -297,7 +304,8 @@ async function readNamed(scratch, phase, naming, storage, verifyLarge = false) {
   // Read the same files by immutable CID once a consumer has resolved the name.
   for (const filename of (verifyLarge ? ['profile-index.json'] : ['social-graph.bin', 'profile-index.json', 'allowlist.txt'])) {
     const { stdout } = await run(htree, ['--data-dir', env.HTREE_DATA_DIR, 'cat', cid + '/' + filename], opts);
-    assert.deepEqual(stdout, files[filename], filename + ' immutable read');
+    if (values['profile-rows']) assert.equal(digest(stdout), digest(files[filename]), 'Verified immutable file');
+    else assert.deepEqual(stdout, files[filename], filename + ' immutable read');
   }
   assert(!existsSync(path.join(env.HTREE_DATA_DIR, 'last-update-check')), 'Reader launched a background update check');
   return { files, cid };
@@ -384,7 +392,9 @@ try {
   // Even when valid credentials and routes are available, omission of the
   // opt-in should keep the default crawler completely local.
   if (values['memory-seed']) {
-    await runMemoryCycles({ binary, htree, seed: path.resolve(values['memory-seed']), output, scratch, naming, storage, upstream, names, root, key, publishKey, stableFriend, testKey, getPublicKey, finalizeEvent, verifyEvent, envFor, launch, checkManifest, readNamed, run, hashFile, digest, setEvents: events => { current = { events }; }, track: value => { worker = value; } });
+    const runTrial = values['profile-rows'] ? runProfileMemory : runMemoryCycles;
+    assert.equal(Boolean(values['profile-rows']), Boolean(values['profile-index']));
+    await runTrial({ profileRows: values['profile-rows'], profileIndex: values['profile-index'], binary, htree, seed: path.resolve(values['memory-seed']), output, scratch, naming, storage, upstream, names, root, key, publishKey, stableFriend, testKey, getPublicKey, finalizeEvent, verifyEvent, envFor, launch, checkManifest, readNamed, run, hashFile, digest, setEvents: events => { current = { events }; }, track: value => { worker = value; } });
   } else {
   const disabled = path.join(scratch, 'default-off');
   const defaultEnv = envFor(disabled, naming, storage, publishKey);
@@ -529,8 +539,11 @@ try {
   }
 } catch (error) {
   // Emit bounded diagnostics in the synthetic namespace. Secret files never enter evidence.
-  console.error('Recent synthetic Blossom requests:', storage?.recent, 'accepted uploads:', storage?.uploads, 'successful GETs:', storage?.reads);
-  console.error((worker?.log() || '').replace(/nsec1[023456789acdefghjklmnpqrstuvwxyz]+/g, '[redacted]'));
+  if (!values['profile-rows']) console.error('Recent synthetic Blossom requests:', storage?.recent, 'accepted uploads:', storage?.uploads, 'successful GETs:', storage?.reads);
+  if (!values['profile-rows']) console.error((worker?.log() || '').replace(/nsec1[023456789acdefghjklmnpqrstuvwxyz]+/g, '[redacted]'));
+  if (values['profile-rows'] && (error.stdout !== undefined || error.stderr !== undefined || error instanceof SyntaxError)) {
+    throw new Error('Profile qualification failed in a native command or JSON parser');
+  }
   throw error;
 } finally {
   if (worker) await worker.stop();
