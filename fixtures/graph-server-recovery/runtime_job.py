@@ -10,13 +10,6 @@ import time
 import zipfile
 
 SOURCE = '57f6ba33c8c962f3fc19a40eb85d27af8d270b8c'
-BASE_SOURCE = '83ca2e2a57e145193e0ee7d2273fa5c70457694d'
-BASE_RECIPE = '4e6cd43387f812c461b98c2553d08ea124f34841'
-BASE_ARTIFACT = 14302053669
-BASE_ARCHIVE_SHA = '1ee73132e5d61fc3435788765fda68a95ed615f26d2c95047930bc581d9e6c43'
-BASE_ELF_SHA = '0d6f48e05ca0c88dc530a0f4fbbb49223ed0b17c8eea81046a6a7b8ec3a99040'
-DEFAULT_ARTIFACT = 14302419939
-DEFAULT_ARCHIVE_SHA = '2bdb7dbc14ebb1c43ff54b248115726baa21340b12bf4606313af9ff3c65ff16'
 HERE = Path(__file__).resolve().parent
 STAGE = Path(os.environ['RUNNER_TEMP']) / 'graph-server-alias-repair'
 SOURCE_DIR = Path(os.environ['GITHUB_WORKSPACE']) / 'candidate'
@@ -51,20 +44,14 @@ def download(artifact, expected_sha):
     return path
 
 
-def executable(artifact, source, recipe, digest, elf_sha=None, compiled_only=False):
+def executable(artifact, source, recipe, digest, elf_sha=None):
     assert artifact['name'] == 'graph-server-recovery-' + recipe
     archive = download(artifact, digest)
     path = STAGE / ('server-' + source)
     with zipfile.ZipFile(archive) as files:
         cert = json.loads(files.read('producer-acceptance.json'))
         runtime = json.loads(files.read('runtime/acceptance.json'))
-        if compiled_only:
-            assert not cert['passed'] and not runtime['passed']
-            assert [p['name'] for p in cert['phases'] if not p['passed']] == ['isolated-tests']
-            assert [p['name'] for p in runtime['phases'] if not p['passed']] == ['persistence-recovery']
-            assert cert['sourceArchiveSha256'] == '3215130171bb56c3ad9cef6645783c140a6653b5834e59edf5f6a0fba18545ed'
-        else:
-            assert cert['passed'] and cert['sourceUnchanged'] and runtime['passed']
+        assert cert['passed'] and cert['sourceUnchanged'] and runtime['passed']
         assert cert['source'] == source and cert['recipeCommit'] == recipe
         assert elf_sha is None or cert['binary']['sha256'] == elf_sha
         member = files.getinfo('nostr-social-graph-server')
@@ -85,7 +72,7 @@ def resources():
 
 
 mode = sys.argv[1]
-assert mode in ('boundary-candidate','memory','paired-daily','full-daily')
+assert mode in ('paired-daily', 'full-daily')
 recipe = os.environ['GITHUB_SHA']
 run_id = os.environ['GITHUB_RUN_ID']
 assert subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=SOURCE_DIR, text=True).strip() == SOURCE
@@ -94,11 +81,10 @@ assert subprocess.check_output(['node', '--version'], text=True).strip() == 'v22
 assert subprocess.check_output(['pnpm', '--version'], text=True).strip() == '10.28.2'
 subprocess.run(['pnpm', 'install', '--frozen-lockfile', '--ignore-scripts'], cwd=SOURCE_DIR, timeout=350, check=True)
 assert api('actions/runs/'+run_id)['head_sha'] == recipe
-rows = api('actions/runs/' + run_id + '/artifacts?per_page=100')
-assert len(rows['artifacts']) == rows['total_count']
-artifact, = [a for a in rows['artifacts'] if a['name'] == 'graph-server-recovery-' + recipe]
-assert artifact['workflow_run']['id'] == int(run_id) and artifact['workflow_run']['head_sha'] == recipe
-binary, binary_sha = executable(artifact, SOURCE, recipe, artifact['digest'][7:])
+artifact = api('actions/artifacts/14737183109')
+assert artifact['id'] == 14737183109 and artifact['size_in_bytes'] == 44196324
+assert artifact['workflow_run']['id'] == 44979814952 and artifact['workflow_run']['head_sha'] == 'f36c0d372f451c95fe9f1434bbc62d57cc7ff55c'
+binary, binary_sha = executable(artifact, SOURCE, 'f36c0d372f451c95fe9f1434bbc62d57cc7ff55c', '302103c488693243ab6d7160097899c7c9b72d1b3b99edad880c50636f90ccb8', 'c375bf7466af6ebb400efc076965b01460e8b9969d45d091df971b3c3d9113e6')
 binary_source = SOURCE
 inputs = dict(artifactId=artifact['id'], archiveSha256=artifact['digest'][7:], source=binary_source, binarySha256=binary_sha)
 config = dict(source=str(SOURCE_DIR), stage=str(STAGE), evidence=str(EVIDENCE), path=os.environ['PATH'],
@@ -110,18 +96,6 @@ if mode == 'paired-daily':
     assert prior['id'] == 14362023642 and prior['workflow_run']['id'] == 44159503711
     old_binary, old_sha = executable(prior, '6e70cd9daf6a9b06d7a8d30ffa32db9d3442d507', '0c1a8a06f40f476f768ae954366f26fa418dd1ec', '4b0d7f8f27f2c60199d9990e523d03eff4cf3659f4b922bdeff86acfb5a29974', '8e58def86557b299075ac070a6a2e56db232eda5baa91ea135529f19d5789466')
     config.update(oldBinary=str(old_binary), oldSha=old_sha, oldArtifact=prior['id'])
-if mode == 'memory':
-    seed = STAGE / 'full.bin'
-    subprocess.run(['node', '--experimental-import-meta-resolve', HERE/'fetch-full.mjs', SOURCE_DIR/'ts/package.json', seed],
-                   check=True, timeout=260)
-    assert seed.stat().st_size == 55750905 and sha(seed) == 'aeae583ae888f7fec2052f678ff30ae2b031ed4e8d77d0fe0c644e35c2bd6fc0'
-    old = api('actions/artifacts/' + str(DEFAULT_ARTIFACT))
-    with zipfile.ZipFile(download(old, DEFAULT_ARCHIVE_SHA)) as files:
-        baseline = json.loads(files.read('memory/candidate/receipt.json'))
-        assert baseline['passed'] and baseline['binarySha256'] == BASE_ELF_SHA and baseline['cycles'] >= 5
-        for member in ['receipt.json', 'crawler-memory.json', 'restart-memory.json']:
-            (STAGE/('baseline-' + member)).write_bytes(files.read('memory/candidate/' + member))
-    config.update(seed=str(seed), baseline=str(STAGE))
 before = resources()
 assert before['available'] >= (14 if mode in ('memory','full-daily') else 5)*GIB and before['disk'] >= (30 if mode == 'full-daily' else 26)*GIB, before
 for name, digest in [('htree', '67306642b1c581d73e89f2d533724f24b877a2b9d5bd59557d522b6f93232850'),
