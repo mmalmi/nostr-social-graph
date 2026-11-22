@@ -1,20 +1,20 @@
-name: Graph server bounded recovery qualification
+name: Graph and profile memory measurement
 on:
   workflow_dispatch:
   push:
-    branches: [codex/graph-profile-qualification]
+    branches: [codex/graph-profile-memory-paired]
 permissions:
   contents: read
 concurrency:
   group: graph-server-recovery-${{ github.ref }}
   cancel-in-progress: false
 jobs:
-  qualify:
+  profile-memory-paired:
+    runs-on: ubuntu-22.04
     permissions:
       contents: read
       actions: read
-    runs-on: ubuntu-22.04
-    timeout-minutes: 60
+    timeout-minutes: 76
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -23,47 +23,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
-          ref: 6e70cd9daf6a9b06d7a8d30ffa32db9d3442d507
-          path: candidate
-          persist-credentials: false
-          fetch-depth: 0
-      - name: Verify pinned Node and Hashtree tools
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: python3 harness/fixtures/graph-server-recovery/controller.py bootstrap
-      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
-        with:
-          version: 10.28.2
-          run_install: false
-      - name: Requalify retained exact binaries without compilation
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: python3 harness/fixtures/graph-server-recovery/controller.py source-recert
-      - name: Preserve both binaries and qualification evidence
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: graph-server-recovery-${{ github.sha }}
-          path: ${{ runner.temp }}/graph-server-alias-repair/evidence
-          if-no-files-found: error
-          retention-days: 14
-
-
-  baseline-boundary:
-    runs-on: ubuntu-22.04
-    permissions:
-      contents: read
-      actions: read
-    timeout-minutes: 40
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          path: harness
-          persist-credentials: false
-          fetch-depth: 0
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          ref: 6e70cd9daf6a9b06d7a8d30ffa32db9d3442d507
+          ref: 5cd34a0eafc991186d194f23a72f667702e106a7
           path: candidate
           persist-credentials: false
           fetch-depth: 0
@@ -78,14 +38,12 @@ jobs:
       - name: Qualify exact executable in isolated runtime
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python3 harness/fixtures/graph-server-recovery/runtime_job.py boundary-baseline
+        run: python3 harness/fixtures/graph-server-recovery/profile_memory_job.py
       - name: Preserve runtime measurements and failure evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: graph-profile-boundary-baseline-${{ github.sha }}
-          path: |
-            ${{ runner.temp }}/graph-server-alias-repair/evidence/profile-boundary-baseline
-            ${{ runner.temp }}/graph-server-alias-repair/evidence/profile-host.json
+          name: profile-memory-paired-${{ github.sha }}
+          path: ${{ runner.temp }}/graph-server-alias-repair/evidence/profile-memory-aggregate
           if-no-files-found: error
           retention-days: 14

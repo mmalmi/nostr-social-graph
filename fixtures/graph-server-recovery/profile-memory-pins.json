@@ -1,0 +1,37 @@
+{
+  "source": "5cd34a0eafc991186d194f23a72f667702e106a7",
+  "members": {
+    "social-graph-v4.bin": {
+      "size": 55750905,
+      "sha256": "aeae583ae888f7fec2052f678ff30ae2b031ed4e8d77d0fe0c644e35c2bd6fc0"
+    },
+    "profile-data.json": {
+      "size": 26833179,
+      "sha256": "66dd586d871663a1ae2162039ad719fbe4f8840dbe4ef058a04bb771f6f9f66f"
+    },
+    "profile-index.json": {
+      "size": 26356229,
+      "sha256": "67b9aca2a1adcec4335456a7e67ca01abcd15437e73ff4f44345a4a5d1fcaf42"
+    }
+  },
+  "binaries": {
+    "reference": {
+      "source": "57f6ba33c8c962f3fc19a40eb85d27af8d270b8c",
+      "recipe": "f36c0d372f451c95fe9f1434bbc62d57cc7ff55c",
+      "run": 44979814952,
+      "archiveId": 14737183109,
+      "archiveBytes": 44196324,
+      "archiveSha256": "302103c488693243ab6d7160097899c7c9b72d1b3b99edad880c50636f90ccb8",
+      "binarySha256": "c375bf7466af6ebb400efc076965b01460e8b9969d45d091df971b3c3d9113e6"
+    },
+    "candidate": {
+      "source": "5cd34a0eafc991186d194f23a72f667702e106a7",
+      "run": 44987924457,
+      "archiveId": 14740288959,
+      "archiveBytes": 44178083,
+      "archiveSha256": "00d89d5ad9d374bdcee88616a90a8fc8ae4347480dcb0e6aced8dde42cc59f12",
+      "recipe": "f7754b70a09fb8a8c86a1aa53a1fc570961eec9a",
+      "binarySha256": "6bc1b160b6e987264b44f7e8cb567fc7519214b1d499c455665c81d80db432a1"
+    }
+  }
+}
