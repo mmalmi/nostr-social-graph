@@ -26,6 +26,7 @@ use tower_http::cors::{Any, CorsLayer};
 use tracing::{error, info, warn};
 
 mod forwarding;
+mod graph_crawl;
 mod publisher;
 mod relay_mirror;
 mod snapshot_manifest;
@@ -1677,34 +1678,16 @@ async fn sync_graph_once(
             continue;
         }
 
-        for author_chunk in
-            authors.chunks(config.crawl_batch_size.clamp(1, MAX_GRAPH_CRAWL_AUTHORS))
-        {
-            freshness
-                .write()
-                .expect("freshness lock poisoned")
-                .last_graph_progress_at = Some(unix_timestamp());
-            // A saved row is not proof that this author was covered by the last
-            // successful sweep. Newly reachable authors need their full history.
-            let (new_authors, known_authors) = {
-                let guard = graph.read().expect("graph lock poisoned");
-                author_chunk
-                    .iter()
-                    .cloned()
-                    .partition::<Vec<_>, _>(|author| {
-                        guard.get_follow_list_created_at(author).is_none()
-                    })
-            };
-
-            if !new_authors.is_empty() {
-                fetch_graph_events(client, &new_authors, None, graph, forwarder).await?;
-            }
-            if !known_authors.is_empty() && since.is_some() {
-                fetch_graph_events(client, &known_authors, since, graph, forwarder).await?;
-            } else if !known_authors.is_empty() && since.is_none() {
-                fetch_graph_events(client, &known_authors, None, graph, forwarder).await?;
-            }
-        }
+        graph_crawl::fetch_distance(
+            client,
+            &authors,
+            config.crawl_batch_size.clamp(1, MAX_GRAPH_CRAWL_AUTHORS),
+            since,
+            graph,
+            freshness,
+            forwarder,
+        )
+        .await?;
 
         {
             let guard = graph.read().expect("graph lock");
@@ -1830,6 +1813,16 @@ async fn fetch_graph_events(
         events.extend(fetch_graph_batch(client, graph_filter(chunk.to_vec(), since)).await?);
     }
 
+    apply_graph_events(events, authors.len(), graph, forwarder).await;
+    Ok(())
+}
+
+async fn apply_graph_events(
+    events: Vec<nostr_sdk::Event>,
+    author_count: usize,
+    graph: &Arc<RwLock<SocialGraph>>,
+    forwarder: Option<&Forwarder>,
+) {
     let mut forward = Vec::new();
     let mut applied = 0usize;
     {
@@ -1853,12 +1846,8 @@ async fn fetch_graph_events(
         }
     }
     if applied > 0 {
-        info!(
-            "applied {applied} graph events for {} authors",
-            authors.len()
-        );
+        info!("applied {applied} graph events for {author_count} authors");
     }
-    Ok(())
 }
 
 fn handle_live_event(
