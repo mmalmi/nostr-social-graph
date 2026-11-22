@@ -20,7 +20,7 @@ use nostr_sdk::{
 };
 use nostr_social_graph::{BinaryBudget, NostrEvent, SocialGraph};
 use nostr_social_graph_hashtree::GraphCheckpoint;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Serializer};
 use serde_json::Value;
 use tower_http::cors::{Any, CorsLayer};
 use tracing::{error, info, warn};
@@ -61,9 +61,10 @@ pub enum ServerError {
 pub type Result<T> = std::result::Result<T, ServerError>;
 
 #[derive(Debug, Serialize)]
-struct FuseIndexJson {
-    keys: Vec<FuseIndexKey>,
-    records: Vec<FuseIndexRecord>,
+struct FuseIndexJson<'a> {
+    keys: [FuseIndexKey; 3],
+    #[serde(serialize_with = "serialize_profile_records")]
+    records: &'a IndexMap<String, Vec<String>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -75,23 +76,25 @@ struct FuseIndexKey {
 }
 
 #[derive(Debug, Serialize)]
-struct FuseIndexRecord {
+struct FuseIndexRecord<'a> {
     i: usize,
     #[serde(rename = "$")]
-    fields: BTreeMap<String, FuseIndexField>,
+    fields: FuseIndexFields<'a>,
 }
 
 #[derive(Debug, Serialize)]
-#[serde(untagged)]
-enum FuseIndexField {
-    Single(FuseIndexValue),
+struct FuseIndexFields<'a> {
+    #[serde(rename = "0", skip_serializing_if = "Option::is_none")]
+    name: Option<FuseIndexValue<'a>>,
+    #[serde(rename = "1", skip_serializing_if = "Option::is_none")]
+    pubkey: Option<FuseIndexValue<'a>>,
+    #[serde(rename = "2", skip_serializing_if = "Option::is_none")]
+    nip05: Option<FuseIndexValue<'a>>,
 }
 
 #[derive(Debug, Serialize)]
-struct FuseIndexValue {
-    v: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    i: Option<usize>,
+struct FuseIndexValue<'a> {
+    v: &'a str,
     n: FuseNorm,
 }
 
@@ -236,15 +239,14 @@ impl ProfileStore {
     }
 
     fn serialize_rows(&self) -> Result<Vec<u8>> {
-        Ok(serde_json::to_vec(
-            &self.rows_by_pubkey.values().collect::<Vec<_>>(),
-        )?)
+        let mut bytes = Vec::new();
+        serde_json::Serializer::new(&mut bytes).collect_seq(self.rows_by_pubkey.values())?;
+        Ok(bytes)
     }
 
     fn serialize_index(&self) -> Result<Vec<u8>> {
-        Ok(serde_json::to_vec(&build_profile_index(
-            self.rows_by_pubkey.values(),
-        ))?)
+        let index = build_profile_index(&self.rows_by_pubkey);
+        Ok(serde_json::to_vec(&index)?)
     }
 }
 
@@ -271,9 +273,9 @@ fn write_profile_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     Ok(())
 }
 
-fn build_profile_index<'a>(rows: impl IntoIterator<Item = &'a Vec<String>>) -> FuseIndexJson {
+fn build_profile_index(rows: &IndexMap<String, Vec<String>>) -> FuseIndexJson<'_> {
     FuseIndexJson {
-        keys: vec![
+        keys: [
             FuseIndexKey {
                 path: ["name"],
                 id: "name",
@@ -293,46 +295,27 @@ fn build_profile_index<'a>(rows: impl IntoIterator<Item = &'a Vec<String>>) -> F
                 src: "nip05",
             },
         ],
-        records: rows
-            .into_iter()
-            .enumerate()
-            .map(|(index, row)| build_profile_index_record(row, index))
-            .collect(),
+        records: rows,
     }
 }
 
-fn build_profile_index_record(row: &[String], doc_index: usize) -> FuseIndexRecord {
-    let mut fields = BTreeMap::new();
-    insert_profile_index_value(&mut fields, 0, row.get(1));
-    insert_profile_index_value(&mut fields, 1, row.first());
-    insert_profile_index_value(&mut fields, 2, row.get(2).filter(|value| !value.is_empty()));
-
-    FuseIndexRecord {
-        i: doc_index,
-        fields,
-    }
+fn serialize_profile_records<S: Serializer>(
+    rows: &IndexMap<String, Vec<String>>,
+    serializer: S,
+) -> std::result::Result<S::Ok, S::Error> {
+    serializer.collect_seq(rows.values().enumerate().map(|(i, row)| FuseIndexRecord {
+        i,
+        fields: FuseIndexFields {
+            name: fuse_index_value(row.get(1)),
+            pubkey: fuse_index_value(row.first()),
+            nip05: fuse_index_value(row.get(2)),
+        },
+    }))
 }
 
-fn insert_profile_index_value(
-    fields: &mut BTreeMap<String, FuseIndexField>,
-    key_index: usize,
-    value: Option<&String>,
-) {
-    let Some(value) = value
-        .map(|value| value.trim())
-        .filter(|value| !value.is_empty())
-    else {
-        return;
-    };
-
-    fields.insert(
-        key_index.to_string(),
-        FuseIndexField::Single(FuseIndexValue {
-            v: value.to_string(),
-            i: None,
-            n: fuse_norm(value),
-        }),
-    );
+fn fuse_index_value(value: Option<&String>) -> Option<FuseIndexValue<'_>> {
+    let v = value?.trim();
+    (!v.is_empty()).then(|| FuseIndexValue { v, n: fuse_norm(v) })
 }
 
 fn fuse_norm(value: &str) -> FuseNorm {
@@ -2200,6 +2183,31 @@ mod graph_crawl_tests {
                 .await
                 .is_err()
         );
+    }
+
+    #[test]
+    fn profile_files_keep_exact_row_and_fuse_bytes() {
+        const PREFIX: &str = concat!(
+            r#"{"keys":[{"path":["name"],"id":"name","weight":1,"src":"name"},"#,
+            r#"{"path":["pubKey"],"id":"pubKey","weight":1,"src":"pubKey"},"#,
+            r#"{"path":["nip05"],"id":"nip05","weight":1,"src":"nip05"}],"records":["#,
+        );
+        let rows = r#"[["key-b","  Two  Words  ","","ignored picture"],["key-a","  "," β "],["key\"c","Solo","a b c"],["key-d"]]"#;
+        let expected = concat!(
+            r#"{"i":0,"$":{"0":{"v":"Two  Words","n":0.707},"1":{"v":"key-b","n":1}}},"#,
+            r#"{"i":1,"$":{"1":{"v":"key-a","n":1},"2":{"v":"β","n":1}}},"#,
+            r#"{"i":2,"$":{"0":{"v":"Solo","n":1},"1":{"v":"key\"c","n":1},"2":{"v":"a b c","n":0.577}}},"#,
+            r#"{"i":3,"$":{"1":{"v":"key-d","n":1}}}"#,
+        );
+        for (rows, records) in [("[]", ""), (rows, expected)] {
+            let store =
+                ProfileStore::from_snapshot_bytes("profiles.json", rows.as_bytes()).unwrap();
+            assert_eq!(store.serialize_rows().unwrap(), rows.as_bytes());
+            assert_eq!(
+                store.serialize_index().unwrap(),
+                format!("{PREFIX}{records}]}}").as_bytes()
+            );
+        }
     }
 
     #[cfg(unix)]
