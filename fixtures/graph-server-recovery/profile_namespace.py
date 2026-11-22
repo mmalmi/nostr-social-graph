@@ -37,7 +37,7 @@ os.environ.clear();os.environ.update(PATH=config['path'],HOME=str(home),TMPDIR=s
     LANG='C.UTF-8',LC_ALL='C.UTF-8',TOKIO_WORKER_THREADS='2',RAYON_NUM_THREADS='1',
     WS_NO_BUFFER_UTIL='1',WS_NO_UTF_8_VALIDATE='1',CI='true')
 START=time.monotonic();results=[]
-BUDGET = 1800 if config['mode'] == 'memory' else 840
+BUDGET = 9600 if config['mode'] == 'full-daily' else 1800 if config['mode'] == 'memory' else 840
 
 def sha(path):return hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
 def write(path,value):path.write_text(json.dumps(value,indent=2)+'\n')
@@ -84,26 +84,51 @@ try:
     run('network-boundary',[sys.executable,HERE/'network_proof.py',runtime/'network-boundary-proof.json'],15)
     assert sha(config['binary']) == config['binarySha256']
     target = runtime / 'candidate'
-    if config['mode'] == 'memory':
-        fixture = HERE / 'memory/hashtree_publication.mjs'
-        options = ['--memory-seed', config['seed']]
+    if config['mode'] in ('paired-daily', 'full-daily'):
+        fixture = source / 'rust/crates/nostr-social-graph-server/tests/daily_reconciliation.mjs'
+        argv = [config['node'], fixture, '--candidate', config['binary'],
+                '--dependencies', source/'ts/package.json', '--output', target,
+                '--htree', stage/'htree', '--legacy-htree', stage/'legacy-htree']
+        if config['mode'] == 'paired-daily':
+            assert sha(config['oldBinary']) == config['oldSha']
+            argv.extend(['--baseline', config['oldBinary']])
+        else:
+            argv.append('--full-size')
+        run('native-trial', argv, BUDGET-30, cwd=source)
+        trial = json.loads((target/'receipt.json').read_text())
+        assert trial['passed'] and sha(config['binary']) == config['binarySha256']
+        assert trial['candidate']['binarySha256'] == config['binarySha256']
+        if config['mode'] == 'full-daily':
+            assert trial['mode'] == 'full-size'
+            assert 0 < trial['candidate']['signedReadMs'] < 7200000
+            assert trial['candidate']['verified']['users'] == 317222
+            assert [d['authorsVisited'] for d in trial['candidate']['distance']] == [1,411,30865,163456,122489]
+        else:
+            assert trial['mode'] == 'paired' and trial['baseline']['binarySha256'] == config['oldSha']
+            assert trial['baseline']['verified']['semanticSha256'] == trial['candidate']['verified']['semanticSha256']
+        result['fixtureSha256'] = sha(fixture)
+        result['trialReceiptSha256'] = sha(target/'receipt.json')
     else:
-        fixture = source / 'rust/crates/nostr-social-graph-server/tests/hashtree_publication.mjs'
-        options = ['--profile-boundary']
-        if config['mode'] == 'boundary-baseline':
-            options.append('--expect-profile-stall')
-    run('native-trial', [config['node'], fixture, config['binary'],
-        '--htree', stage/'htree', '--legacy-htree', stage/'legacy-htree',
-        '--dependencies', source/'ts/package.json', '--output', target, *options],
-        BUDGET-30, cwd=source)
-    trial = json.loads((target/'receipt.json').read_text())
-    assert trial['passed'] and trial['binarySha256'] == config['binarySha256']
-    if config['mode'] == 'memory':
-        run('memory-comparison', [sys.executable, HERE/'compare_retained_memory.py',
-             config['baseline'], target, runtime/'comparison.json'], 20)
-        assert json.loads((runtime/'comparison.json').read_text())['passed']
-    else:
-        assert trial['expectProfileStall'] == (config['mode'] == 'boundary-baseline')
+        if config['mode'] == 'memory':
+            fixture = HERE / 'memory/hashtree_publication.mjs'
+            options = ['--memory-seed', config['seed']]
+        else:
+            fixture = source / 'rust/crates/nostr-social-graph-server/tests/hashtree_publication.mjs'
+            options = ['--profile-boundary']
+            if config['mode'] == 'boundary-baseline':
+                options.append('--expect-profile-stall')
+        run('native-trial', [config['node'], fixture, config['binary'],
+            '--htree', stage/'htree', '--legacy-htree', stage/'legacy-htree',
+            '--dependencies', source/'ts/package.json', '--output', target, *options],
+            BUDGET-30, cwd=source)
+        trial = json.loads((target/'receipt.json').read_text())
+        assert trial['passed'] and trial['binarySha256'] == config['binarySha256']
+        if config['mode'] == 'memory':
+            run('memory-comparison', [sys.executable, HERE/'compare_retained_memory.py',
+                 config['baseline'], target, runtime/'comparison.json'], 20)
+            assert json.loads((runtime/'comparison.json').read_text())['passed']
+        else:
+            assert trial['expectProfileStall'] == (config['mode'] == 'boundary-baseline')
     assert not remaining()
     result.update(passed=True,mode=config['mode'],inputs=config['inputs'])
 except BaseException as exc:result['error']=repr(exc)
