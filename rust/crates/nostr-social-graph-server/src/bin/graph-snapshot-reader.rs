@@ -14,11 +14,10 @@ use nostr_sdk::hashes::{Hash, sha256};
 use nostr_social_graph::SocialGraph;
 use nostr_social_graph_server::{
     AppState, DEFAULT_SOCIAL_GRAPH_ROOT, ProfileStore, SNAPSHOT_FILES, SnapshotManifest,
-    build_router, graph_cors_layer,
+    build_router, graph_cors_layer, trim_allocator,
 };
 use serde::Deserialize;
 use std::{
-    collections::BTreeMap,
     env, fs, io,
     net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
@@ -75,6 +74,24 @@ fn read_member(directory: &Path, name: &str) -> io::Result<Vec<u8>> {
     fs::read(path)
 }
 
+fn read_verified_member(
+    directory: &Path,
+    manifest: &SnapshotManifest,
+    name: &str,
+) -> io::Result<Vec<u8>> {
+    let entry = manifest
+        .files
+        .get(name)
+        .ok_or_else(|| invalid("missing manifest member"))?;
+    let data = read_member(directory, name)?;
+    if data.len() as u64 != entry.size || sha256::Hash::hash(&data).to_string() != entry.sha256 {
+        return Err(invalid(&format!(
+            "snapshot size or digest mismatch for {name}"
+        )));
+    }
+    Ok(data)
+}
+
 fn load(directory: &Path, root: &str, previous: Option<&Generation>) -> io::Result<Generation> {
     let bytes = read_member(directory, "manifest.json")?;
     let id = sha256::Hash::hash(&bytes).to_string();
@@ -82,6 +99,9 @@ fn load(directory: &Path, root: &str, previous: Option<&Generation>) -> io::Resu
     if manifest.version != 1
         || manifest.root != root
         || manifest.files.len() != SNAPSHOT_FILES.len()
+        || SNAPSHOT_FILES
+            .iter()
+            .any(|name| !manifest.files.contains_key(*name))
         || manifest.graph_completed_at == 0
         || manifest.graph_completed_at > manifest.generated_at
         || manifest.generated_at > now()
@@ -94,37 +114,26 @@ fn load(directory: &Path, root: &str, previous: Option<&Generation>) -> io::Resu
     }) {
         return Err(invalid("snapshot generation moved backwards"));
     }
-    let mut files = BTreeMap::new();
-    for name in SNAPSHOT_FILES {
-        let entry = manifest
-            .files
-            .get(name)
-            .ok_or_else(|| invalid("missing manifest member"))?;
-        let data = read_member(directory, name)?;
-        if data.len() as u64 != entry.size || sha256::Hash::hash(&data).to_string() != entry.sha256
-        {
-            return Err(invalid(&format!(
-                "snapshot size or digest mismatch for {name}"
-            )));
-        }
-        files.insert(name, Bytes::from(data));
-    }
 
-    let graph_v3 = files.remove("social-graph.bin").unwrap();
-    let mobile = files.remove("mobile.bin").unwrap();
-    let graph_v4 = files.remove("social-graph-v4.bin").unwrap();
-    if graph_v3.first() != Some(&3)
-        || graph_v4.first() != Some(&4)
-        || mobile.first() != Some(&4)
-        || mobile.len() > 4 * 1024 * 1024
-    {
-        return Err(invalid("unexpected graph format or mobile budget"));
-    }
-    let graph = SocialGraph::from_binary(root, &graph_v4).map_err(io::Error::other)?;
-    let profile_path = directory.join("profile-data.json");
-    let profiles = ProfileStore::from_snapshot_bytes(profile_path, &files["profile-data.json"])
-        .map_err(io::Error::other)?;
-    let index = files.remove("profile-index.json").unwrap();
+    // Verify and decode transient parse-only files first, then immediately drop
+    // their raw buffers so peak memory stays minimal during generation reloads.
+    let graph = {
+        let graph_v4 = read_verified_member(directory, &manifest, "social-graph-v4.bin")?;
+        if graph_v4.first() != Some(&4) {
+            return Err(invalid("unexpected graph format or mobile budget"));
+        }
+        SocialGraph::from_binary(root, &graph_v4).map_err(io::Error::other)?
+    };
+    let profiles = {
+        let profile_bytes = read_verified_member(directory, &manifest, "profile-data.json")?;
+        let profile_path = directory.join("profile-data.json");
+        ProfileStore::from_snapshot_bytes(profile_path, &profile_bytes).map_err(io::Error::other)?
+    };
+    let index = Bytes::from(read_verified_member(
+        directory,
+        &manifest,
+        "profile-index.json",
+    )?);
     // Verify both arrays without allocating an additional copy of every search record.
     #[derive(Deserialize)]
     struct IndexShape {
@@ -136,7 +145,18 @@ fn load(directory: &Path, root: &str, previous: Option<&Generation>) -> io::Resu
         return Err(invalid("profile index and profile rows disagree"));
     }
 
-    let allowlist = files.remove("allowlist.txt").unwrap();
+    let graph_v3 = Bytes::from(read_verified_member(
+        directory,
+        &manifest,
+        "social-graph.bin",
+    )?);
+    let mobile = Bytes::from(read_verified_member(directory, &manifest, "mobile.bin")?);
+    if graph_v3.first() != Some(&3) || mobile.first() != Some(&4) || mobile.len() > 4 * 1024 * 1024
+    {
+        return Err(invalid("unexpected graph format or mobile budget"));
+    }
+
+    let allowlist = Bytes::from(read_verified_member(directory, &manifest, "allowlist.txt")?);
     std::str::from_utf8(&allowlist).map_err(io::Error::other)?;
     let state = AppState::new_shared(
         Arc::new(RwLock::new(graph)),
@@ -316,10 +336,13 @@ async fn watch(reader: Reader, current: PathBuf, root: String, interval: Duratio
                         .expect("reader lock")
                         .replace(Arc::new(generation));
                     // Dropping a large graph can be expensive. Let new requests
-                    // use the replacement while the old indexes are released.
-                    if let Some(previous) = previous {
-                        let _ = tokio::task::spawn_blocking(move || drop(previous)).await;
-                    }
+                    // use the replacement while the old indexes are released,
+                    // then trim glibc arenas back to the OS.
+                    let _ = tokio::task::spawn_blocking(move || {
+                        drop(previous);
+                        trim_allocator();
+                    })
+                    .await;
                 }
                 last_failure = None;
             }

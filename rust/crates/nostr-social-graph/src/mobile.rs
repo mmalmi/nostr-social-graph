@@ -1,10 +1,13 @@
-//! Bounded v4 decoding for public mobile discovery. Personal and legacy imports
-//! continue to use `SocialGraph::from_binary` with their existing policy.
+//! Bounded v4/v5 decoding for public mobile discovery. Personal and legacy
+//! imports continue to use `SocialGraph::from_binary` with their existing policy.
 use super::{
-    DecodedLists, ListRevision, SocialGraph, SocialGraphError, UniqueIds, canonical_node_id,
-    is_valid_pubkey, read_count, read_list_revision, read_typed_node_id, read_varint,
+    BINARY_FORMAT_VERSION, BINARY_FORMAT_VERSION_V5, DecodedLists, DistanceMap, EdgeSet,
+    SocialGraph, SocialGraphError, UniqueIds, build_reverse_index, is_valid_pubkey, read_count,
+    read_list_revision, read_typed_node_key, read_v5_identities, read_v5_lists, read_varint,
+    storage::CompactRevision,
 };
-use indexmap::{IndexMap, IndexSet};
+use indexmap::IndexMap;
+use std::collections::HashSet;
 
 pub const MOBILE_MAX_BYTES: usize = 4 * 1024 * 1024;
 pub const MOBILE_MIN_USERS: usize = 10_000;
@@ -34,85 +37,133 @@ impl SocialGraph {
         }
         let mut pos = 0;
         let version = read_varint(bytes, &mut pos)?;
-        if version != 4 {
-            return Err(Invalid("expected v4"));
-        }
-        let count = read_count(bytes, &mut pos)?;
-        if count > MAX_NODES || count < min_users {
-            return Err(Invalid("node count"));
+        if !matches!(version, BINARY_FORMAT_VERSION | BINARY_FORMAT_VERSION_V5) {
+            return Err(Invalid("expected v4 or v5"));
         }
 
-        let mut ids = UniqueIds::with_capacity(count);
-        for _ in 0..count {
-            let id = node_id(bytes, &mut pos)?;
-            let value = read_typed_node_id(bytes, &mut pos).map_err(|err| match err {
-                SocialGraphError::EmptyString => Invalid("duplicate or empty identity"),
-                other => MobileGraphError::Decode(other),
-            })?;
-            if !ids.try_insert_unique(value, id) {
-                return Err(Invalid("duplicate or empty identity"));
+        let mut list_revisions = IndexMap::<(u32, u32), CompactRevision>::new();
+        let (
+            ids,
+            followed_by_user,
+            followers_by_user,
+            follow_list_created_at,
+            muted_by_user,
+            user_muted_by,
+            mute_list_created_at,
+        ) = if version == BINARY_FORMAT_VERSION_V5 {
+            let ids = read_v5_identities(bytes, &mut pos, Some(MAX_NODES), Some(min_users))
+                .map_err(map_v5_mobile_err)?;
+            let mut remaining_edges = MAX_EDGES;
+            let (followed, followers, follow_at) = read_v5_lists(
+                bytes,
+                &mut pos,
+                3,
+                &ids,
+                &mut list_revisions,
+                Some(&mut remaining_edges),
+            )
+            .map_err(map_v5_mobile_err)?;
+            let (muted, muters, mute_at) = read_v5_lists(
+                bytes,
+                &mut pos,
+                10_000,
+                &ids,
+                &mut list_revisions,
+                Some(&mut remaining_edges),
+            )
+            .map_err(map_v5_mobile_err)?;
+            (ids, followed, followers, follow_at, muted, muters, mute_at)
+        } else {
+            let count = read_count(bytes, &mut pos)?;
+            if count > MAX_NODES || count < min_users {
+                return Err(Invalid("node count"));
             }
-        }
 
-        let root_key = canonical_node_id(root);
-        let Some(&root_id) = ids.str_to_unique_id.get(root_key.as_ref()) else {
+            let mut ids = UniqueIds::with_capacity(count);
+            for _ in 0..count {
+                let id = node_id(bytes, &mut pos)?;
+                let key = read_typed_node_key(bytes, &mut pos).map_err(|err| match err {
+                    SocialGraphError::EmptyString => Invalid("duplicate or empty identity"),
+                    other => MobileGraphError::Decode(other),
+                })?;
+                if !ids.try_insert_unique_key(key, id) {
+                    return Err(Invalid("duplicate or empty identity"));
+                }
+            }
+
+            let mut remaining_edges = MAX_EDGES;
+            let mut seen_targets = HashSet::new();
+            let mut decode_lists = |kind: u32| -> Result<DecodedLists, MobileGraphError> {
+                let owners = read_count(bytes, &mut pos)?;
+                if owners > count {
+                    return Err(Invalid("too many list owners"));
+                }
+                let mut forward = IndexMap::with_capacity(owners);
+                let mut timestamps = IndexMap::with_capacity(owners);
+                for _ in 0..owners {
+                    let owner = node_id(bytes, &mut pos)?;
+                    if !ids.contains_id(owner) || forward.contains_key(&owner) {
+                        return Err(Invalid("unknown or repeated list owner"));
+                    }
+                    let timestamp = read_varint(bytes, &mut pos)?;
+                    let revision = read_list_revision(bytes, &mut pos, timestamp).map_err(
+                        |err| match err {
+                            SocialGraphError::InvalidBinaryNodeIdType(_) => {
+                                Invalid("revision flag")
+                            }
+                            other => MobileGraphError::Decode(other),
+                        },
+                    )?;
+                    if let Some(revision) = revision {
+                        list_revisions.insert((owner, kind), revision);
+                    }
+                    let edges = read_count(bytes, &mut pos)?;
+                    if edges > count || edges > remaining_edges {
+                        return Err(Invalid("edge count"));
+                    }
+                    remaining_edges -= edges;
+                    let mut targets = Vec::with_capacity(edges);
+                    if edges > 32 {
+                        seen_targets.clear();
+                    }
+                    for _ in 0..edges {
+                        let target = node_id(bytes, &mut pos)?;
+                        let dup = if edges <= 32 {
+                            targets.contains(&target)
+                        } else {
+                            !seen_targets.insert(target)
+                        };
+                        if !ids.contains_id(target) || dup {
+                            return Err(Invalid("unknown or repeated edge"));
+                        }
+                        targets.push(target);
+                    }
+                    forward.insert(owner, EdgeSet::from_vec_exact(targets));
+                    timestamps.insert(owner, timestamp);
+                }
+                let mut reverse = IndexMap::new();
+                build_reverse_index(&forward, &ids, &mut reverse);
+                Ok((forward, reverse, timestamps))
+            };
+
+            let (followed, followers, follow_at) = decode_lists(3)?;
+            let (muted, muters, mute_at) = decode_lists(10_000)?;
+            (ids, followed, followers, follow_at, muted, muters, mute_at)
+        };
+
+        let Some(root_id) = ids.existing_id(root) else {
             return Err(Invalid("missing discovery root"));
         };
-
-        let mut list_revisions = IndexMap::<(u32, u32), ListRevision>::new();
-        let mut remaining_edges = MAX_EDGES;
-        let mut decode_lists = |kind: u32| -> Result<DecodedLists, MobileGraphError> {
-            let owners = read_count(bytes, &mut pos)?;
-            if owners > count {
-                return Err(Invalid("too many list owners"));
-            }
-            let mut forward = IndexMap::with_capacity(owners);
-            let mut reverse =
-                IndexMap::<u32, IndexSet<u32>>::with_capacity(if kind == 3 { count } else { 0 });
-            let mut timestamps = IndexMap::with_capacity(owners);
-            for _ in 0..owners {
-                let owner = node_id(bytes, &mut pos)?;
-                if !ids.contains_id(owner) || forward.contains_key(&owner) {
-                    return Err(Invalid("unknown or repeated list owner"));
-                }
-                let timestamp = read_varint(bytes, &mut pos)?;
-                let revision =
-                    read_list_revision(bytes, &mut pos, timestamp).map_err(|err| match err {
-                        SocialGraphError::InvalidBinaryNodeIdType(_) => Invalid("revision flag"),
-                        other => MobileGraphError::Decode(other),
-                    })?;
-                if let Some(revision) = revision {
-                    list_revisions.insert((owner, kind), revision);
-                }
-                let edges = read_count(bytes, &mut pos)?;
-                if edges > count || edges > remaining_edges {
-                    return Err(Invalid("edge count"));
-                }
-                remaining_edges -= edges;
-                let mut targets = IndexSet::with_capacity(edges);
-                for _ in 0..edges {
-                    let target = node_id(bytes, &mut pos)?;
-                    if !ids.contains_id(target) || !targets.insert(target) {
-                        return Err(Invalid("unknown or repeated edge"));
-                    }
-                    reverse.entry(target).or_default().insert(owner);
-                }
-                forward.insert(owner, targets);
-                timestamps.insert(owner, timestamp);
-            }
-            Ok((forward, reverse, timestamps))
-        };
-
-        let (followed_by_user, followers_by_user, follow_list_created_at) = decode_lists(3)?;
-        let (muted_by_user, user_muted_by, mute_list_created_at) = decode_lists(10_000)?;
         if pos != bytes.len() {
             return Err(Invalid("trailing data"));
         }
 
+        let root_str = ids.str_owned(root_id)?;
         let mut graph = Self {
             list_revisions,
             root: root_id,
-            follow_distance_by_user: IndexMap::with_capacity(count),
+            root_str,
+            follow_distance_by_user: DistanceMap::default(),
             users_by_follow_distance: IndexMap::new(),
             followed_by_user,
             followers_by_user,
@@ -129,11 +180,21 @@ impl SocialGraph {
                 && graph
                     .followed_by_user
                     .get(&root_id)
-                    .is_none_or(IndexSet::is_empty))
+                    .is_none_or(EdgeSet::is_empty))
         {
             return Err(Invalid("insufficient reachable graph"));
         }
         Ok(graph)
+    }
+}
+
+fn map_v5_mobile_err(err: SocialGraphError) -> MobileGraphError {
+    use MobileGraphError::Invalid;
+    match err {
+        SocialGraphError::EmptyString => Invalid("duplicate or empty identity"),
+        SocialGraphError::InvalidId(_) => Invalid("unknown or repeated edge"),
+        SocialGraphError::InvalidBinaryNodeIdType(_) => Invalid("revision flag"),
+        other => MobileGraphError::Decode(other),
     }
 }
 
@@ -176,6 +237,22 @@ pub(crate) mod tests {
         let graph = SocialGraph::from_mobile_binary(&root, &valid, MOBILE_MIN_USERS).unwrap();
         assert!(graph.get_list_revision(&root, 3).unwrap().complete);
         assert!(!graph.get_list_revision(&root, 10_000).unwrap().complete);
+        // Round-trip via v5 mobile encoding as well.
+        let v5 = graph
+            .to_binary_with_budget_version(crate::BinaryBudget::default(), 5)
+            .unwrap();
+        assert_eq!(v5[0], 5);
+        assert!(v5.len() < valid.len());
+        let restored_v5 = SocialGraph::from_mobile_binary(&root, &v5, MOBILE_MIN_USERS).unwrap();
+        assert_eq!(restored_v5.size().users, 10_000);
+        assert!(restored_v5.get_list_revision(&root, 3).unwrap().complete);
+        assert!(
+            !restored_v5
+                .get_list_revision(&root, 10_000)
+                .unwrap()
+                .complete
+        );
+
         assert!(
             SocialGraph::from_mobile_binary(&root, &fixture(10_000, 1_000).1, MOBILE_MIN_USERS)
                 .is_err()

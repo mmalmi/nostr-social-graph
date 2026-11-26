@@ -48,3 +48,19 @@ an empty set for older custom backends. Rust servers can retain legacy clients
 with `to_binary_with_budget_version(budget, 3)` while publishing v4 at a separate
 endpoint. Old readers cannot decode v4; upgrade the library before switching
 snapshot endpoints.
+
+## Binary v5 preparation
+
+Both TypeScript and Rust readers now decode binary v5 alongside v2/v3/v4, while
+default writers remain on v4 for backward compatibility. Opt-in v5 export is
+available via `toBinary(..., 5)` / `toBinaryChunks(..., 5)` in TypeScript and
+`to_binary_with_budget_version(budget, 5)` /
+`to_binary_for_root_with_budget_version(root, budget, 5)` in Rust.
+
+Binary v5 removes per-node ID varints and type tags by partitioning identities
+into three contiguous sections (`pubkeys` as 32-byte values, `uuids` as 16-byte
+values, `strings` as length-prefixed UTF-8) with implicit dense IDs `0..N-1`
+ordered by descending exported reference frequency (tie-broken by canonical
+bytes). Follow and mute sections emit owners and targets in strictly ascending
+dense ID order using gap-delta varints (`delta = next - prev - 1`) while
+preserving timestamps, explicit empty lists, and v4 revision markers.

@@ -64,7 +64,7 @@ pub type Result<T> = std::result::Result<T, ServerError>;
 struct FuseIndexJson<'a> {
     keys: [FuseIndexKey; 3],
     #[serde(serialize_with = "serialize_profile_records")]
-    records: &'a IndexMap<String, Vec<String>>,
+    records: &'a IndexMap<Box<str>, ProfileRecord>,
 }
 
 #[derive(Debug, Serialize)]
@@ -105,11 +105,165 @@ enum FuseNorm {
     Float(f64),
 }
 
+const NO_PROFILE_TIMESTAMP: u64 = u64::MAX;
+
+/// Compact non-pubkey profile columns stored in a single heap allocation for
+/// standard 1..=4 column rows (`[pubkey, name?, nip05?, picture?]`), with a
+/// lossless fallback for wider or oversized rows.
+#[derive(Debug, Clone)]
+enum ProfileFields {
+    Packed {
+        data: Box<str>,
+        len1: u16,
+        len2: u16,
+        cols: u8,
+    },
+    General(Box<[Box<str>]>),
+}
+
+impl ProfileFields {
+    fn from_tail(tail: &[String]) -> Self {
+        let cols = tail.len() + 1;
+        if cols <= 4 {
+            let c1 = tail.first().map(String::as_str).unwrap_or("");
+            let c2 = tail.get(1).map(String::as_str).unwrap_or("");
+            let c3 = tail.get(2).map(String::as_str).unwrap_or("");
+            if let (Ok(len1), Ok(len2)) = (u16::try_from(c1.len()), u16::try_from(c2.len())) {
+                let mut buf = String::with_capacity(c1.len() + c2.len() + c3.len());
+                buf.push_str(c1);
+                buf.push_str(c2);
+                buf.push_str(c3);
+                return Self::Packed {
+                    data: buf.into_boxed_str(),
+                    len1,
+                    len2,
+                    cols: cols as u8,
+                };
+            }
+        }
+        Self::General(
+            tail.iter()
+                .map(|s| s.as_str().into())
+                .collect::<Vec<Box<str>>>()
+                .into_boxed_slice(),
+        )
+    }
+
+    fn from_parts(name: &str, nip05: Option<&str>, picture: Option<&str>) -> Self {
+        let (c2, c3, cols) = match (nip05, picture) {
+            (Some(n), Some(p)) => (n, p, 4u8),
+            (None, Some(p)) => ("", p, 4u8),
+            (Some(n), None) => (n, "", 3u8),
+            (None, None) => ("", "", 2u8),
+        };
+        if let (Ok(len1), Ok(len2)) = (u16::try_from(name.len()), u16::try_from(c2.len())) {
+            let mut buf = String::with_capacity(name.len() + c2.len() + c3.len());
+            buf.push_str(name);
+            buf.push_str(c2);
+            buf.push_str(c3);
+            Self::Packed {
+                data: buf.into_boxed_str(),
+                len1,
+                len2,
+                cols,
+            }
+        } else {
+            let mut parts: Vec<Box<str>> = vec![name.into()];
+            if cols >= 3 {
+                parts.push(c2.into());
+            }
+            if cols >= 4 {
+                parts.push(c3.into());
+            }
+            Self::General(parts.into_boxed_slice())
+        }
+    }
+
+    #[inline]
+    fn col_count(&self) -> usize {
+        match self {
+            Self::Packed { cols, .. } => *cols as usize,
+            Self::General(tail) => tail.len() + 1,
+        }
+    }
+
+    #[inline]
+    fn col(&self, index: usize) -> Option<&str> {
+        match self {
+            Self::Packed {
+                data,
+                len1,
+                len2,
+                cols,
+            } => {
+                if index == 0 || index >= *cols as usize {
+                    return None;
+                }
+                let l1 = *len1 as usize;
+                let l2 = *len2 as usize;
+                match index {
+                    1 => Some(&data[..l1]),
+                    2 => Some(&data[l1..l1 + l2]),
+                    3 => Some(&data[l1 + l2..]),
+                    _ => None,
+                }
+            }
+            Self::General(tail) => index
+                .checked_sub(1)
+                .and_then(|i| tail.get(i).map(Box::as_ref)),
+        }
+    }
+
+    fn to_row_vec(&self, pubkey: &str, no_pictures: bool) -> Vec<String> {
+        let mut total = self.col_count();
+        if no_pictures {
+            total = total.min(3);
+            while total > 1 && self.col(total - 1).is_some_and(str::is_empty) {
+                total -= 1;
+            }
+            if total == 1 && pubkey.is_empty() {
+                total = 0;
+            }
+        }
+        let mut row = Vec::with_capacity(total);
+        if total > 0 {
+            row.push(pubkey.to_owned());
+        }
+        for idx in 1..total {
+            row.push(self.col(idx).unwrap_or("").to_owned());
+        }
+        row
+    }
+}
+
+struct BorrowedProfileRow<'a> {
+    pubkey: &'a str,
+    fields: &'a ProfileFields,
+}
+
+impl Serialize for BorrowedProfileRow<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        use serde::ser::SerializeSeq;
+        let len = self.fields.col_count();
+        let mut seq = serializer.serialize_seq(Some(len))?;
+        seq.serialize_element(self.pubkey)?;
+        for idx in 1..len {
+            seq.serialize_element(self.fields.col(idx).unwrap_or(""))?;
+        }
+        seq.end()
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ProfileRecord {
+    fields: ProfileFields,
+    latest_timestamp: u64,
+}
+
 #[derive(Debug, Clone)]
 pub struct ProfileStore {
     data_path: PathBuf,
-    rows_by_pubkey: IndexMap<String, Vec<String>>,
-    latest_timestamps: BTreeMap<String, u64>,
+    rows_by_pubkey: IndexMap<Box<str>, ProfileRecord>,
 }
 
 impl ProfileStore {
@@ -123,16 +277,55 @@ impl ProfileStore {
     }
 
     pub fn from_snapshot_bytes(path: impl AsRef<Path>, bytes: &[u8]) -> Result<Self> {
+        use serde::de::{DeserializeSeed, Deserializer, SeqAccess, Visitor};
+
+        struct RowsVisitor;
+        impl<'de> Visitor<'de> for RowsVisitor {
+            type Value = IndexMap<Box<str>, ProfileRecord>;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a JSON array of profile row arrays")
+            }
+
+            fn visit_seq<A: SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> std::result::Result<Self::Value, A::Error> {
+                let mut rows_by_pubkey = IndexMap::with_capacity(seq.size_hint().unwrap_or(0));
+                while let Some(row) = seq.next_element::<Vec<String>>()? {
+                    if let Some((pubkey, tail)) = row.split_first() {
+                        rows_by_pubkey.insert(
+                            pubkey.as_str().into(),
+                            ProfileRecord {
+                                fields: ProfileFields::from_tail(tail),
+                                latest_timestamp: NO_PROFILE_TIMESTAMP,
+                            },
+                        );
+                    }
+                }
+                Ok(rows_by_pubkey)
+            }
+        }
+
+        struct RowsSeed;
+        impl<'de> DeserializeSeed<'de> for RowsSeed {
+            type Value = IndexMap<Box<str>, ProfileRecord>;
+
+            fn deserialize<D: Deserializer<'de>>(
+                self,
+                deserializer: D,
+            ) -> std::result::Result<Self::Value, D::Error> {
+                deserializer.deserialize_seq(RowsVisitor)
+            }
+        }
+
         let data_path = path.as_ref().to_owned();
-        let rows = serde_json::from_slice::<Vec<Vec<String>>>(bytes)?;
-        let rows_by_pubkey = rows
-            .into_iter()
-            .filter_map(|row| row.first().cloned().map(|pubkey| (pubkey, row)))
-            .collect();
+        let mut deserializer = serde_json::Deserializer::from_slice(bytes);
+        let rows_by_pubkey = RowsSeed.deserialize(&mut deserializer)?;
+        deserializer.end()?;
         Ok(Self {
             data_path,
             rows_by_pubkey,
-            latest_timestamps: BTreeMap::new(),
         })
     }
 
@@ -141,29 +334,18 @@ impl ProfileStore {
     }
 
     pub fn snapshot(&self, max_bytes: Option<usize>, no_pictures: bool) -> Vec<Vec<String>> {
-        let mut rows: Vec<Vec<String>> = self.rows_by_pubkey.values().cloned().collect();
-
-        if no_pictures {
-            rows = rows
-                .into_iter()
-                .map(|row| {
-                    let base = row.into_iter().take(3).collect::<Vec<_>>();
-                    let mut end = base.len();
-                    while end > 0 && base[end - 1].is_empty() {
-                        end -= 1;
-                    }
-                    base.into_iter().take(end).collect()
-                })
-                .collect();
-        }
-
         let Some(max_bytes) = max_bytes else {
-            return rows;
+            return self
+                .rows_by_pubkey
+                .iter()
+                .map(|(pubkey, record)| record.fields.to_row_vec(pubkey, no_pictures))
+                .collect();
         };
 
         let mut current_size = 2usize;
         let mut result = Vec::new();
-        for row in rows {
+        for (pubkey, record) in &self.rows_by_pubkey {
+            let row = record.fields.to_row_vec(pubkey, no_pictures);
             let row_size = usize::from(!result.is_empty())
                 + 2
                 + row.iter().map(|value| 2 + value.len()).sum::<usize>();
@@ -178,7 +360,11 @@ impl ProfileStore {
     }
 
     pub fn apply_event(&mut self, event: &NostrEvent) -> bool {
-        let current_timestamp = self.latest_timestamps.get(&event.pubkey).copied();
+        let current_timestamp = self
+            .rows_by_pubkey
+            .get(event.pubkey.as_str())
+            .map(|record| record.latest_timestamp)
+            .filter(|&ts| ts != NO_PROFILE_TIMESTAMP);
         if current_timestamp.is_some_and(|current| event.created_at <= current) {
             return false;
         }
@@ -194,21 +380,17 @@ impl ProfileStore {
         let Some(name) = canonical.primary_name else {
             return false;
         };
-
-        self.latest_timestamps
-            .insert(event.pubkey.clone(), event.created_at);
-
-        let mut row = vec![event.pubkey.clone(), name];
-        if let Some(nip05) = canonical.nip05 {
-            row.push(nip05);
-        } else if profile_picture(profile).is_some() {
-            row.push(String::new());
-        }
-        if let Some(picture) = profile_picture(profile) {
-            row.push(picture);
-        }
-
-        self.rows_by_pubkey.insert(event.pubkey.clone(), row);
+        let picture = profile_picture(profile);
+        let record = ProfileRecord {
+            fields: ProfileFields::from_parts(
+                &name,
+                canonical.nip05.as_deref(),
+                picture.as_deref(),
+            ),
+            latest_timestamp: event.created_at,
+        };
+        self.rows_by_pubkey
+            .insert(event.pubkey.as_str().into(), record);
         true
     }
 
@@ -239,14 +421,33 @@ impl ProfileStore {
     }
 
     fn serialize_rows(&self) -> Result<Vec<u8>> {
-        let mut bytes = Vec::new();
-        serde_json::Serializer::new(&mut bytes).collect_seq(self.rows_by_pubkey.values())?;
+        let mut bytes = Vec::with_capacity(self.rows_by_pubkey.len().saturating_mul(128));
+        serde_json::Serializer::new(&mut bytes).collect_seq(self.rows_by_pubkey.iter().map(
+            |(pubkey, record)| BorrowedProfileRow {
+                pubkey,
+                fields: &record.fields,
+            },
+        ))?;
         Ok(bytes)
     }
 
     fn serialize_index(&self) -> Result<Vec<u8>> {
         let index = build_profile_index(&self.rows_by_pubkey);
         Ok(serde_json::to_vec(&index)?)
+    }
+}
+
+/// Ask glibc to return freed heap arenas to the OS after dropping large graph
+/// or snapshot buffers. No-op on non-glibc targets.
+pub fn trim_allocator() {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    {
+        unsafe extern "C" {
+            fn malloc_trim(pad: usize) -> std::ffi::c_int;
+        }
+        unsafe {
+            malloc_trim(0);
+        }
     }
 }
 
@@ -273,7 +474,7 @@ fn write_profile_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     Ok(())
 }
 
-fn build_profile_index(rows: &IndexMap<String, Vec<String>>) -> FuseIndexJson<'_> {
+fn build_profile_index(rows: &IndexMap<Box<str>, ProfileRecord>) -> FuseIndexJson<'_> {
     FuseIndexJson {
         keys: [
             FuseIndexKey {
@@ -300,20 +501,24 @@ fn build_profile_index(rows: &IndexMap<String, Vec<String>>) -> FuseIndexJson<'_
 }
 
 fn serialize_profile_records<S: Serializer>(
-    rows: &IndexMap<String, Vec<String>>,
+    rows: &IndexMap<Box<str>, ProfileRecord>,
     serializer: S,
 ) -> std::result::Result<S::Ok, S::Error> {
-    serializer.collect_seq(rows.values().enumerate().map(|(i, row)| FuseIndexRecord {
-        i,
-        fields: FuseIndexFields {
-            name: fuse_index_value(row.get(1)),
-            pubkey: fuse_index_value(row.first()),
-            nip05: fuse_index_value(row.get(2)),
-        },
-    }))
+    serializer.collect_seq(
+        rows.iter()
+            .enumerate()
+            .map(|(i, (pubkey, record))| FuseIndexRecord {
+                i,
+                fields: FuseIndexFields {
+                    name: fuse_index_value(record.fields.col(1)),
+                    pubkey: fuse_index_value(Some(pubkey.as_ref())),
+                    nip05: fuse_index_value(record.fields.col(2)),
+                },
+            }),
+    )
 }
 
-fn fuse_index_value(value: Option<&String>) -> Option<FuseIndexValue<'_>> {
+fn fuse_index_value(value: Option<&str>) -> Option<FuseIndexValue<'_>> {
     let v = value?.trim();
     (!v.is_empty()).then(|| FuseIndexValue { v, n: fuse_norm(v) })
 }
@@ -679,6 +884,7 @@ pub async fn run(config: ServerConfig) -> Result<()> {
     );
 
     forwarding::refresh_allowlist(&graph)?;
+    trim_allocator();
     let graph = Arc::new(RwLock::new(graph));
     let profiles = Arc::new(RwLock::new(profiles));
     let state = AppState::new_shared(
@@ -1370,6 +1576,7 @@ async fn sync_loop(
             let removed = graph_guard.remove_muted_not_followed_users();
             if removed > 0 {
                 info!("removed {removed} muted users without followers");
+                trim_allocator();
             }
         }
 
@@ -1905,7 +2112,8 @@ async fn sync_profiles_once(
                 .iter()
                 .cloned()
                 .partition::<Vec<_>, _>(|author| {
-                    !guard.rows_by_pubkey.contains_key(author) || !covered_authors.contains(author)
+                    !guard.rows_by_pubkey.contains_key(author.as_str())
+                        || !covered_authors.contains(author)
                 })
         };
 

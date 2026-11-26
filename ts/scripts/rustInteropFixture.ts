@@ -108,30 +108,30 @@ function summary(graph: SocialGraph, binaryHex?: string): GraphSummary {
   };
 }
 
-async function emitScenario(name: string) {
+async function emitScenario(name: string, version: 3 | 4 | 5 = 4) {
   if (name === 'empty-lists') {
     const graph = emptyListsGraph();
-    const binary = await graph.toBinary();
+    const binary = await graph.toBinary(undefined, undefined, undefined, undefined, version);
     process.stdout.write(JSON.stringify(summary(graph, Buffer.from(binary).toString('hex'))));
     return;
   }
   if (name === 'empty') {
     const graph = new SocialGraph(pubKeys.adam);
-    const binary = await graph.toBinary();
+    const binary = await graph.toBinary(undefined, undefined, undefined, undefined, version);
     process.stdout.write(JSON.stringify(summary(graph, Buffer.from(binary).toString('hex'))));
     return;
   }
 
   if (name === 'default') {
     const graph = defaultGraph();
-    const binary = await graph.toBinary();
+    const binary = await graph.toBinary(undefined, undefined, undefined, undefined, version);
     process.stdout.write(JSON.stringify(summary(graph, Buffer.from(binary).toString('hex'))));
     return;
   }
 
   if (name === 'arbitrary-ids') {
     const graph = arbitraryIdsGraph();
-    const binary = await graph.toBinary();
+    const binary = await graph.toBinary(undefined, undefined, undefined, undefined, version);
     process.stdout.write(JSON.stringify(summary(graph, Buffer.from(binary).toString('hex'))));
     return;
   }
@@ -144,7 +144,8 @@ async function emitBudgetedScenario(
   maxNodes?: number,
   maxEdges?: number,
   maxDistance?: number,
-  maxEdgesPerNode?: number
+  maxEdgesPerNode?: number,
+  version: 3 | 4 | 5 = 4
 ) {
   let graph: SocialGraph;
   if (name === 'empty') {
@@ -159,9 +160,16 @@ async function emitBudgetedScenario(
     throw new Error(`unknown scenario ${name}`);
   }
 
-  const binary = await graph.toBinary(maxNodes, maxEdges, maxDistance, maxEdgesPerNode);
+  const binary = await graph.toBinary(maxNodes, maxEdges, maxDistance, maxEdgesPerNode, version);
   const reconstructed = await SocialGraph.fromBinary(graph.getRoot(), binary);
   process.stdout.write(JSON.stringify(summary(reconstructed, Buffer.from(binary).toString('hex'))));
+}
+
+async function reencodeFile(root: string, filePath: string, version: 3 | 4 | 5) {
+  const data = fs.readFileSync(filePath);
+  const graph = await SocialGraph.fromBinary(root, new Uint8Array(data));
+  const binary = await graph.toBinary(undefined, undefined, undefined, undefined, version);
+  process.stdout.write(JSON.stringify(summary(graph, Buffer.from(binary).toString('hex'))));
 }
 
 async function loadBinary(root: string, filePath: string) {
@@ -213,16 +221,24 @@ function parseOptionalNumber(value: string | undefined): number | undefined {
 
 const [command, ...args] = process.argv.slice(2);
 if (command === 'emit') {
-  await emitScenario(args[0] ?? 'default');
+  const version = (parseOptionalNumber(args[1]) ?? 4) as 3 | 4 | 5;
+  await emitScenario(args[0] ?? 'default', version);
 } else if (command === 'emit-budget') {
-  const [name = 'default', maxNodes, maxEdges, maxDistance, maxEdgesPerNode] = args;
+  const [name = 'default', maxNodes, maxEdges, maxDistance, maxEdgesPerNode, version] = args;
   await emitBudgetedScenario(
     name,
     parseOptionalNumber(maxNodes),
     parseOptionalNumber(maxEdges),
     parseOptionalNumber(maxDistance),
-    parseOptionalNumber(maxEdgesPerNode)
+    parseOptionalNumber(maxEdgesPerNode),
+    (parseOptionalNumber(version) ?? 4) as 3 | 4 | 5
   );
+} else if (command === 'reencode') {
+  const [root, filePath, version] = args;
+  if (!root || !filePath) {
+    throw new Error('usage: reencode <root> <filePath> [version]');
+  }
+  await reencodeFile(root, filePath, (parseOptionalNumber(version) ?? 5) as 3 | 4 | 5);
 } else if (command === 'load') {
   const [root, filePath] = args;
   if (!root || !filePath) {

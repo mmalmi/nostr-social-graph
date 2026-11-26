@@ -31,7 +31,7 @@ impl SocialGraph {
         for user in users_to_remove.iter().copied() {
             self.list_revisions.shift_remove(&(user, 3));
             self.list_revisions.shift_remove(&(user, 10_000));
-            if let Some(distance) = self.follow_distance_by_user.shift_remove(&user)
+            if let Some(distance) = self.follow_distance_by_user.remove(user)
                 && let Some(bucket) = self.users_by_follow_distance.get_mut(&distance)
             {
                 bucket.shift_remove(&user);
@@ -42,15 +42,13 @@ impl SocialGraph {
             self.muted_by_user.shift_remove(&user);
             self.user_muted_by.shift_remove(&user);
             self.mute_list_created_at.shift_remove(&user);
-            if let Some(value) = self.ids.unique_id_to_str.shift_remove(&user) {
-                self.ids.str_to_unique_id.shift_remove(&value);
-            }
+            self.ids.remove_id(user);
         }
 
         for (owner, followed_users) in &mut self.followed_by_user {
             let mut changed = false;
             for user in &users_to_remove {
-                changed |= followed_users.shift_remove(user);
+                changed |= followed_users.remove(*user);
             }
             if changed && let Some(revision) = self.list_revisions.get_mut(&(*owner, 3)) {
                 revision.complete = false;
@@ -58,13 +56,13 @@ impl SocialGraph {
         }
         for followers in self.followers_by_user.values_mut() {
             for user in &users_to_remove {
-                followers.shift_remove(user);
+                followers.remove(*user);
             }
         }
         for (owner, muted_users) in &mut self.muted_by_user {
             let mut changed = false;
             for user in &users_to_remove {
-                changed |= muted_users.shift_remove(user);
+                changed |= muted_users.remove(*user);
             }
             if changed && let Some(revision) = self.list_revisions.get_mut(&(*owner, 10_000)) {
                 revision.complete = false;
@@ -72,7 +70,7 @@ impl SocialGraph {
         }
         for muters in self.user_muted_by.values_mut() {
             for user in &users_to_remove {
-                muters.shift_remove(user);
+                muters.remove(*user);
             }
         }
 
@@ -114,16 +112,17 @@ fn fixture(kept: u32, removed: u32, fanout: u32) -> SocialGraph {
             .entry(distance)
             .or_default()
             .insert(user);
-        graph.followed_by_user.insert(user, IndexSet::new());
-        graph.followers_by_user.insert(user, IndexSet::new());
-        graph.muted_by_user.insert(user, IndexSet::new());
-        graph.user_muted_by.insert(user, IndexSet::new());
+        graph.followed_by_user.insert(user, EdgeSet::Empty);
+        graph.followers_by_user.insert(user, EdgeSet::Empty);
+        graph.muted_by_user.insert(user, EdgeSet::Empty);
+        graph.user_muted_by.insert(user, EdgeSet::Empty);
         graph.follow_list_created_at.insert(user, 100);
         graph.mute_list_created_at.insert(user, 100);
         for kind in [3, 10_000] {
-            graph
-                .list_revisions
-                .insert((user, kind), revision(user, kind));
+            graph.list_revisions.insert(
+                (user, kind),
+                CompactRevision::from_public(revision(user, kind)),
+            );
         }
     }
     for owner in 0..total {
@@ -156,8 +155,8 @@ fn assert_same(actual: &SocialGraph, expected: &SocialGraph) {
     assert_eq!(actual.export_state(), expected.export_state());
     assert_eq!(actual.ids.current_unique_id, expected.ids.current_unique_id);
     assert_eq!(
-        actual.ids.str_to_unique_id.iter().collect::<Vec<_>>(),
-        expected.ids.str_to_unique_id.iter().collect::<Vec<_>>()
+        actual.ids.iter().collect::<Vec<_>>(),
+        expected.ids.iter().collect::<Vec<_>>()
     );
 }
 
@@ -173,9 +172,10 @@ fn bulk_pruning_matches_legacy_state_order_and_stable_ids() {
             .entry(7)
             .or_default()
             .insert(candidate);
-        graph
-            .list_revisions
-            .insert((candidate, 99), revision(candidate, 99));
+        graph.list_revisions.insert(
+            (candidate, 99),
+            CompactRevision::from_public(revision(candidate, 99)),
+        );
         if let Some(revision) = graph.list_revisions.get_mut(&(0, 3)) {
             revision.complete = seed % 2 == 0;
         }
@@ -284,7 +284,7 @@ fn bulk_pruning_sparse_graph_benchmark() {
     let start = Instant::now();
     assert_eq!(large.remove_muted_not_followed_users(), 50_000);
     let elapsed = start.elapsed();
-    assert_eq!(large.ids.unique_id_to_str.len(), 100_000);
+    assert_eq!(large.ids.len(), 100_000);
     assert_eq!(large.size().follows, 3_200_000);
     assert_eq!(large.ids.current_unique_id, 150_000);
     assert!(

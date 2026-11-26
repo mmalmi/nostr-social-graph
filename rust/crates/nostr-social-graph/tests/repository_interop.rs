@@ -251,6 +251,83 @@ fn real_binary_fixture_matches_typescript_summary_for_alternate_root() {
     assert_eq!(summary(&mut graph), without_binary(ts_summary));
 }
 
+#[test]
+fn binary_v5_matches_typescript_byte_for_byte_across_scenarios_and_real_fixture() {
+    // Empty, default, empty-lists, budgeted, and arbitrary typed IDs.
+    let empty = SocialGraph::new(ADAM);
+    let empty_v5 = empty
+        .to_binary_with_budget_version(BinaryBudget::default(), 5)
+        .unwrap();
+    assert_eq!(
+        hex::encode(&empty_v5),
+        ts_fixture_emit_version("empty", 5).binary_hex.unwrap()
+    );
+
+    let mut complex = SocialGraph::new(ADAM);
+    for ev in scenario_events() {
+        complex.handle_event(&ev, true, 1.0);
+    }
+    let complex_v5 = complex
+        .to_binary_with_budget_version(BinaryBudget::default(), 5)
+        .unwrap();
+    let ts_complex_v5 = ts_fixture_emit_version("default", 5);
+    assert_eq!(
+        hex::encode(&complex_v5),
+        ts_complex_v5.binary_hex.clone().unwrap()
+    );
+    let mut restored = SocialGraph::from_binary(ADAM, &complex_v5).unwrap();
+    assert_eq!(summary(&mut restored), without_binary(ts_complex_v5));
+
+    let budget = BinaryBudget {
+        max_nodes: Some(3),
+        max_edges: Some(2),
+        max_distance: Some(1),
+        max_edges_per_node: Some(1),
+    };
+    let budgeted_v5 = complex.to_binary_with_budget_version(budget, 5).unwrap();
+    let ts_budgeted_v5 = ts_fixture_emit_budgeted_version("default", budget, 5);
+    assert_eq!(
+        hex::encode(&budgeted_v5),
+        ts_budgeted_v5.binary_hex.clone().unwrap()
+    );
+
+    let ts_arbitrary_v5 = ts_fixture_emit_version("arbitrary-ids", 5);
+    let arbitrary_bytes = hex::decode(ts_arbitrary_v5.binary_hex.unwrap()).unwrap();
+    let arbitrary_graph = SocialGraph::from_binary("local:root", &arbitrary_bytes).unwrap();
+    assert_eq!(
+        arbitrary_graph
+            .to_binary_with_budget_version(BinaryBudget::default(), 5)
+            .unwrap(),
+        arbitrary_bytes
+    );
+
+    // Real 25k-user snapshot: Rust v5 and TypeScript v5 must be byte-for-byte identical.
+    let path = real_binary_path();
+    let v4_bytes = read_bytes(&path);
+    let graph = SocialGraph::from_binary(SIRIUS, &v4_bytes).unwrap();
+    let rust_v5 = graph
+        .to_binary_with_budget_version(BinaryBudget::default(), 5)
+        .unwrap();
+    assert!(
+        rust_v5.len() < v4_bytes.len(),
+        "expected v5 ({}) to be smaller than v4 ({})",
+        rust_v5.len(),
+        v4_bytes.len()
+    );
+    let ts_v5 = ts_fixture_reencode(SIRIUS, &path, 5);
+    let ts_v5_bytes = hex::decode(ts_v5.binary_hex.unwrap()).unwrap();
+    assert_eq!(rust_v5, ts_v5_bytes);
+
+    // Cross-load Rust-encoded v5 in TypeScript and verify identical summary.
+    let temp = NamedTempFile::new().unwrap();
+    fs::write(temp.path(), &rust_v5).unwrap();
+    let mut restored_real = SocialGraph::from_binary(SIRIUS, &rust_v5).unwrap();
+    assert_eq!(
+        summary(&mut restored_real),
+        without_binary(ts_fixture_load(SIRIUS, temp.path()))
+    );
+}
+
 fn real_binary_path() -> PathBuf {
     repo_root().join("ts/data/socialGraph.bin")
 }

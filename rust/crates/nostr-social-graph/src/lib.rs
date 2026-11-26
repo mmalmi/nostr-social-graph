@@ -1,4 +1,4 @@
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::str;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -24,7 +24,13 @@ pub use revision::*;
 mod rating;
 pub use rating::*;
 
+mod storage;
+use storage::{
+    CompactRevision, DistanceMap, EdgeSet, NodeKey, NodeKeyRef, UniqueIds, accepts_compact_revision,
+};
+
 const BINARY_FORMAT_VERSION: u64 = 4;
+pub const BINARY_FORMAT_VERSION_V5: u64 = 5;
 const BINARY_FORMAT_VERSION_V2: u64 = 2;
 const BINARY_CHUNK_SIZE: usize = 16 * 1024;
 const MAX_FUTURE_EVENT_SECONDS: u64 = 10 * 60;
@@ -35,8 +41,8 @@ const DETACHED_DISTANCE: u32 = u32::MAX;
 /// Users whose distance changed in one update, with the distance they had.
 type Moved = IndexMap<u32, Option<u32>>;
 type DecodedLists = (
-    IndexMap<u32, IndexSet<u32>>,
-    IndexMap<u32, IndexSet<u32>>,
+    IndexMap<u32, EdgeSet>,
+    IndexMap<u32, EdgeSet>,
     IndexMap<u32, u64>,
 );
 type RawLists = (Vec<(u32, Vec<u32>)>, Vec<(u32, u64)>);
@@ -184,93 +190,17 @@ pub struct NostrEvent {
 }
 
 #[derive(Debug, Clone, Default)]
-struct UniqueIds {
-    str_to_unique_id: IndexMap<String, u32>,
-    unique_id_to_str: IndexMap<u32, String>,
-    current_unique_id: u32,
-}
-
-impl UniqueIds {
-    fn with_capacity(capacity: usize) -> Self {
-        Self {
-            str_to_unique_id: IndexMap::with_capacity(capacity),
-            unique_id_to_str: IndexMap::with_capacity(capacity),
-            current_unique_id: 0,
-        }
-    }
-
-    fn id(&mut self, value: &str) -> Result<u32> {
-        if let Some(&id) = self.str_to_unique_id.get(value) {
-            return Ok(id);
-        }
-        let value = aliases::canonical_node_id(value);
-        let value = value.as_ref();
-        if value.trim().is_empty() {
-            return Err(SocialGraphError::EmptyString);
-        }
-        if let Some(&id) = self.str_to_unique_id.get(value) {
-            return Ok(id);
-        }
-        let id = self.current_unique_id;
-        self.current_unique_id = self.current_unique_id.saturating_add(1);
-        self.str_to_unique_id.insert(value.to_owned(), id);
-        self.unique_id_to_str.insert(id, value.to_owned());
-        Ok(id)
-    }
-
-    fn existing_id(&self, value: &str) -> Option<u32> {
-        if let Some(&id) = self.str_to_unique_id.get(value) {
-            return Some(id);
-        }
-        let canonical = aliases::canonical_node_id(value);
-        (canonical.as_ref() != value)
-            .then(|| self.str_to_unique_id.get(canonical.as_ref()).copied())
-            .flatten()
-    }
-
-    fn contains_id(&self, id: u32) -> bool {
-        self.unique_id_to_str.contains_key(&id)
-    }
-
-    fn str(&self, id: u32) -> Result<&str> {
-        self.unique_id_to_str
-            .get(&id)
-            .map(String::as_str)
-            .ok_or(SocialGraphError::InvalidId(id))
-    }
-
-    fn insert_with_id(&mut self, value: String, id: u32) {
-        self.current_unique_id = self.current_unique_id.max(id.saturating_add(1));
-        self.str_to_unique_id.insert(value.clone(), id);
-        self.unique_id_to_str.insert(id, value);
-    }
-
-    fn try_insert_unique(&mut self, value: String, id: u32) -> bool {
-        use indexmap::map::Entry;
-        let Entry::Vacant(id_slot) = self.unique_id_to_str.entry(id) else {
-            return false;
-        };
-        let Entry::Vacant(str_slot) = self.str_to_unique_id.entry(value.clone()) else {
-            return false;
-        };
-        id_slot.insert(value);
-        str_slot.insert(id);
-        self.current_unique_id = self.current_unique_id.max(id.saturating_add(1));
-        true
-    }
-}
-
-#[derive(Debug, Clone, Default)]
 pub struct SocialGraph {
-    list_revisions: IndexMap<(u32, u32), ListRevision>,
+    list_revisions: IndexMap<(u32, u32), CompactRevision>,
     root: u32,
-    follow_distance_by_user: IndexMap<u32, u32>,
+    root_str: String,
+    follow_distance_by_user: DistanceMap,
     users_by_follow_distance: IndexMap<u32, IndexSet<u32>>,
-    followed_by_user: IndexMap<u32, IndexSet<u32>>,
-    followers_by_user: IndexMap<u32, IndexSet<u32>>,
+    followed_by_user: IndexMap<u32, EdgeSet>,
+    followers_by_user: IndexMap<u32, EdgeSet>,
     follow_list_created_at: IndexMap<u32, u64>,
-    muted_by_user: IndexMap<u32, IndexSet<u32>>,
-    user_muted_by: IndexMap<u32, IndexSet<u32>>,
+    muted_by_user: IndexMap<u32, EdgeSet>,
+    user_muted_by: IndexMap<u32, EdgeSet>,
     mute_list_created_at: IndexMap<u32, u64>,
     ids: UniqueIds,
 }
@@ -288,7 +218,8 @@ impl SocialGraph {
     pub fn new(root: &str) -> Self {
         let mut ids = UniqueIds::default();
         let root_id = ids.id(root).expect("root must not be empty");
-        let mut follow_distance_by_user = IndexMap::new();
+        let root_str = ids.str_owned(root_id).expect("root id should always exist");
+        let mut follow_distance_by_user = DistanceMap::with_dense_hint(1);
         follow_distance_by_user.insert(root_id, 0);
         let mut users_by_follow_distance = IndexMap::new();
         let mut bucket = IndexSet::new();
@@ -297,6 +228,7 @@ impl SocialGraph {
         Self {
             list_revisions: IndexMap::new(),
             root: root_id,
+            root_str,
             follow_distance_by_user,
             users_by_follow_distance,
             followed_by_user: IndexMap::new(),
@@ -312,7 +244,7 @@ impl SocialGraph {
     pub fn get_list_revision(&self, user: &str, kind: u32) -> Option<ListRevision> {
         self.list_revisions
             .get(&(self.ids.existing_id(user)?, kind))
-            .cloned()
+            .map(CompactRevision::to_public)
     }
 
     pub fn get_list_revisions(&self) -> Vec<(String, u32, ListRevision)> {
@@ -320,9 +252,9 @@ impl SocialGraph {
             .iter()
             .filter_map(|((owner, kind), revision)| {
                 Some((
-                    self.ids.str(*owner).ok()?.to_string(),
+                    self.ids.str_owned(*owner).ok()?,
                     *kind,
-                    revision.clone(),
+                    revision.to_public(),
                 ))
             })
             .collect()
@@ -337,9 +269,7 @@ impl SocialGraph {
     }
 
     pub fn get_root(&self) -> &str {
-        self.ids
-            .str(self.root)
-            .expect("root id should always exist")
+        &self.root_str
     }
 
     pub fn set_root(&mut self, root: &str) -> Result<()> {
@@ -348,6 +278,7 @@ impl SocialGraph {
             return Ok(());
         }
         self.root = root_id;
+        self.root_str = self.ids.str_owned(root_id)?;
         self.recalculate_follow_distances();
         Ok(())
     }
@@ -379,7 +310,7 @@ impl SocialGraph {
             let Some(author) = self.ids.existing_id(&event.pubkey) else {
                 return;
             };
-            if !self.follow_distance_by_user.contains_key(&author) {
+            if !self.follow_distance_by_user.contains_key(author) {
                 return;
             }
             author
@@ -412,7 +343,7 @@ impl SocialGraph {
         let already_present = self
             .followed_by_user
             .get(&rater_id)
-            .is_some_and(|targets| targets.contains(&target_id));
+            .is_some_and(|targets| targets.contains(target_id));
         self.private_add_follower(target_id, rater_id);
         self.follow_list_created_at
             .entry(rater_id)
@@ -450,21 +381,27 @@ impl SocialGraph {
     }
 
     pub fn recalculate_follow_distances(&mut self) {
-        self.follow_distance_by_user.clear();
+        let dense_hint = dense_hint_for(&self.ids);
+        self.follow_distance_by_user
+            .clear_with_dense_hint(dense_hint);
         self.users_by_follow_distance.clear();
         self.follow_distance_by_user.insert(self.root, 0);
         let mut root_bucket = IndexSet::new();
         root_bucket.insert(self.root);
         self.users_by_follow_distance.insert(0, root_bucket);
 
-        let mut queue = VecDeque::from([self.root]);
+        let mut queue = VecDeque::with_capacity(self.ids.len().min(65_536));
+        queue.push_back(self.root);
         while let Some(user) = queue.pop_front() {
-            let Some(distance) = self.follow_distance_by_user.get(&user).copied() else {
+            let Some(distance) = self.follow_distance_by_user.get(user) else {
                 continue;
             };
             let next_distance = distance.saturating_add(1);
-            for &target in self.followed_by_user.get(&user).into_iter().flatten() {
-                if self.follow_distance_by_user.contains_key(&target) {
+            let Some(targets) = self.followed_by_user.get(&user) else {
+                continue;
+            };
+            for &target in targets {
+                if self.follow_distance_by_user.contains_key(target) {
                     continue;
                 }
                 self.follow_distance_by_user.insert(target, next_distance);
@@ -482,8 +419,7 @@ impl SocialGraph {
             return UNKNOWN_FOLLOW_DISTANCE;
         };
         self.follow_distance_by_user
-            .get(&user_id)
-            .copied()
+            .get(user_id)
             .unwrap_or(UNKNOWN_FOLLOW_DISTANCE)
     }
 
@@ -496,7 +432,7 @@ impl SocialGraph {
         };
         self.followed_by_user
             .get(&follower_id)
-            .is_some_and(|set| set.contains(&followed_id))
+            .is_some_and(|set| set.contains(followed_id))
     }
 
     pub fn get_followed_by_user(&self, user: &str) -> Vec<String> {
@@ -507,7 +443,7 @@ impl SocialGraph {
             .get(&user_id)
             .into_iter()
             .flat_map(|set| set.iter())
-            .filter_map(|id| self.ids.str(*id).ok().map(ToOwned::to_owned))
+            .filter_map(|id| self.ids.str_owned(*id).ok())
             .collect()
     }
 
@@ -519,7 +455,7 @@ impl SocialGraph {
             .get(&user_id)
             .into_iter()
             .flat_map(|set| set.iter())
-            .filter_map(|id| self.ids.str(*id).ok().map(ToOwned::to_owned))
+            .filter_map(|id| self.ids.str_owned(*id).ok())
             .collect()
     }
 
@@ -531,7 +467,7 @@ impl SocialGraph {
             .get(&user_id)
             .into_iter()
             .flat_map(|set| set.iter())
-            .filter_map(|id| self.ids.str(*id).ok().map(ToOwned::to_owned))
+            .filter_map(|id| self.ids.str_owned(*id).ok())
             .collect()
     }
 
@@ -543,7 +479,7 @@ impl SocialGraph {
             .get(&user_id)
             .into_iter()
             .flat_map(|set| set.iter())
-            .filter_map(|id| self.ids.str(*id).ok().map(ToOwned::to_owned))
+            .filter_map(|id| self.ids.str_owned(*id).ok())
             .collect()
     }
 
@@ -561,13 +497,9 @@ impl SocialGraph {
         let follows = self
             .followed_by_user
             .values()
-            .map(IndexSet::len)
+            .map(EdgeSet::len)
             .sum::<usize>();
-        let mutes = self
-            .muted_by_user
-            .values()
-            .map(IndexSet::len)
-            .sum::<usize>();
+        let mutes = self.muted_by_user.values().map(EdgeSet::len).sum::<usize>();
         let size_by_distance = self
             .users_by_follow_distance
             .iter()
@@ -576,7 +508,7 @@ impl SocialGraph {
 
         GraphStats {
             users: if self.follow_distance_by_user.is_empty() {
-                self.ids.unique_id_to_str.len()
+                self.ids.len()
             } else {
                 self.follow_distance_by_user.len()
             },
@@ -591,7 +523,7 @@ impl SocialGraph {
             .get(&distance)
             .into_iter()
             .flat_map(|users| users.iter())
-            .filter_map(|id| self.ids.str(*id).ok().map(ToOwned::to_owned))
+            .filter_map(|id| self.ids.str_owned(*id).ok())
             .collect()
     }
 
@@ -609,12 +541,12 @@ impl SocialGraph {
     }
 
     pub fn remove_muted_not_followed_users(&mut self) -> usize {
-        let has_followers: IndexSet<u32> = self
+        let has_followers: HashSet<u32> = self
             .followed_by_user
             .values()
             .flat_map(|users| users.iter().copied())
             .collect();
-        let users_to_remove: IndexSet<u32> = self
+        let users_to_remove: HashSet<u32> = self
             .user_muted_by
             .iter()
             .filter_map(|(user, muters)| {
@@ -634,16 +566,16 @@ impl SocialGraph {
         self.list_revisions.retain(|(owner, kind), _| {
             !users_to_remove.contains(owner) || !matches!(*kind, 3 | 10_000)
         });
-        for (distance, users) in &mut self.users_by_follow_distance {
+        for (&distance, users) in &mut self.users_by_follow_distance {
             // Preserve the assigned-bucket behavior even for imported state whose
             // distance buckets and distance map have not yet been reconciled.
             users.retain(|user| {
                 !users_to_remove.contains(user)
-                    || self.follow_distance_by_user.get(user) != Some(distance)
+                    || self.follow_distance_by_user.get(*user) != Some(distance)
             });
         }
         self.follow_distance_by_user
-            .retain(|user, _| !users_to_remove.contains(user));
+            .retain(|user, _| !users_to_remove.contains(&user));
         self.followed_by_user
             .retain(|user, _| !users_to_remove.contains(user));
         self.followers_by_user
@@ -656,21 +588,7 @@ impl SocialGraph {
             .retain(|user, _| !users_to_remove.contains(user));
         self.mute_list_created_at
             .retain(|user, _| !users_to_remove.contains(user));
-        // Remove the same string keys as the prior per-ID operation, including
-        // imported states that contain duplicate string values for distinct IDs.
-        let removed_values: IndexSet<&str> = self
-            .ids
-            .unique_id_to_str
-            .iter()
-            .filter(|(user, _)| users_to_remove.contains(*user))
-            .map(|(_, value)| value.as_str())
-            .collect();
-        self.ids
-            .str_to_unique_id
-            .retain(|value, _| !removed_values.contains(value.as_str()));
-        self.ids
-            .unique_id_to_str
-            .retain(|user, _| !users_to_remove.contains(user));
+        self.ids.retain_ids(|user| !users_to_remove.contains(&user));
 
         for (owner, followed_users) in &mut self.followed_by_user {
             let before = followed_users.len();
@@ -704,20 +622,15 @@ impl SocialGraph {
             list_revisions: self
                 .list_revisions
                 .iter()
-                .map(|((owner, kind), revision)| (*owner, *kind, revision.clone()))
+                .map(|((owner, kind), revision)| (*owner, *kind, revision.to_public()))
                 .collect(),
-            root: self.get_root().to_string(),
+            root: self.root_str.clone(),
             unique_ids: self
                 .ids
-                .unique_id_to_str
                 .iter()
-                .map(|(id, value)| (value.clone(), *id))
+                .map(|(id, key)| (key.to_string_key(), id))
                 .collect(),
-            follow_distance_by_user: self
-                .follow_distance_by_user
-                .iter()
-                .map(|(id, distance)| (*id, *distance))
-                .collect(),
+            follow_distance_by_user: self.follow_distance_by_user.iter(),
             users_by_follow_distance: self
                 .users_by_follow_distance
                 .iter()
@@ -726,12 +639,12 @@ impl SocialGraph {
             followed_by_user: self
                 .followed_by_user
                 .iter()
-                .map(|(user, followed)| (*user, followed.iter().copied().collect()))
+                .map(|(user, followed)| (*user, followed.as_slice().to_vec()))
                 .collect(),
             followers_by_user: self
                 .followers_by_user
                 .iter()
-                .map(|(user, followers)| (*user, followers.iter().copied().collect()))
+                .map(|(user, followers)| (*user, followers.as_slice().to_vec()))
                 .collect(),
             follow_list_created_at: self
                 .follow_list_created_at
@@ -741,12 +654,12 @@ impl SocialGraph {
             muted_by_user: self
                 .muted_by_user
                 .iter()
-                .map(|(user, muted)| (*user, muted.iter().copied().collect()))
+                .map(|(user, muted)| (*user, muted.as_slice().to_vec()))
                 .collect(),
             user_muted_by: self
                 .user_muted_by
                 .iter()
-                .map(|(user, muters)| (*user, muters.iter().copied().collect()))
+                .map(|(user, muters)| (*user, muters.as_slice().to_vec()))
                 .collect(),
             mute_list_created_at: self
                 .mute_list_created_at
@@ -760,43 +673,45 @@ impl SocialGraph {
         let (state, aliases_repaired) = aliases::canonicalize(state)?;
         let mut ids = UniqueIds::with_capacity(state.unique_ids.len());
         for (value, id) in state.unique_ids {
-            ids.insert_with_id(value, id);
+            ids.insert_with_id(&value, id);
         }
         let root = ids.id(&state.root)?;
+        let root_str = ids.str_owned(root)?;
+        let dense_hint = dense_hint_for(&ids);
+        let mut follow_distance_by_user = DistanceMap::with_dense_hint(dense_hint);
+        for (user, distance) in state.follow_distance_by_user {
+            follow_distance_by_user.insert(user, distance);
+        }
+        let mut scratch = HashSet::new();
+        let mut collect_edges = |rows: Vec<(u32, Vec<u32>)>| -> IndexMap<u32, EdgeSet> {
+            rows.into_iter()
+                .map(|(user, targets)| {
+                    let len = targets.len();
+                    (user, EdgeSet::from_iter_dedup(targets, len, &mut scratch))
+                })
+                .collect()
+        };
         let mut graph = Self {
             list_revisions: state
                 .list_revisions
                 .into_iter()
-                .map(|(owner, kind, revision)| ((owner, kind), revision))
+                .map(|(owner, kind, revision)| {
+                    ((owner, kind), CompactRevision::from_public(revision))
+                })
                 .collect(),
             root,
-            follow_distance_by_user: state.follow_distance_by_user.into_iter().collect(),
+            root_str,
+            follow_distance_by_user,
             users_by_follow_distance: state
                 .users_by_follow_distance
                 .into_iter()
                 .map(|(distance, users)| (distance, users.into_iter().collect()))
                 .collect(),
-            followed_by_user: state
-                .followed_by_user
-                .into_iter()
-                .map(|(user, followed)| (user, followed.into_iter().collect()))
-                .collect(),
-            followers_by_user: state
-                .followers_by_user
-                .into_iter()
-                .map(|(user, followers)| (user, followers.into_iter().collect()))
-                .collect(),
+            followed_by_user: collect_edges(state.followed_by_user),
+            followers_by_user: collect_edges(state.followers_by_user),
             follow_list_created_at: state.follow_list_created_at.into_iter().collect(),
-            muted_by_user: state
-                .muted_by_user
-                .into_iter()
-                .map(|(user, muted)| (user, muted.into_iter().collect()))
-                .collect(),
-            user_muted_by: state
-                .user_muted_by
-                .into_iter()
-                .map(|(user, muters)| (user, muters.into_iter().collect()))
-                .collect(),
+            muted_by_user: collect_edges(state.muted_by_user),
+            user_muted_by: collect_edges(state.user_muted_by),
             mute_list_created_at: state.mute_list_created_at.into_iter().collect(),
             ids,
         };
@@ -815,13 +730,17 @@ impl SocialGraph {
         self.to_binary_with_budget_version(budget, BINARY_FORMAT_VERSION)
     }
 
-    /// Explicit legacy v3 export for rolling upgrades; v3 omits revision metadata.
+    /// Explicit version export: v3 (legacy, omits revisions), v4 (default),
+    /// or v5 (compact grouped dense IDs + sorted delta-encoded edges).
     pub fn to_binary_with_budget_version(
         &self,
         budget: BinaryBudget,
         version: u64,
     ) -> Result<Vec<u8>> {
-        if !matches!(version, 3 | BINARY_FORMAT_VERSION) {
+        if !matches!(
+            version,
+            3 | BINARY_FORMAT_VERSION | BINARY_FORMAT_VERSION_V5
+        ) {
             return Err(SocialGraphError::InvalidVersion(version));
         }
         let plan = self.plan_binary(budget)?;
@@ -836,8 +755,24 @@ impl SocialGraph {
         root: &str,
         budget: BinaryBudget,
     ) -> Result<Vec<u8>> {
+        self.to_binary_for_root_with_budget_version(root, budget, BINARY_FORMAT_VERSION)
+    }
+
+    /// Like `to_binary_for_root_with_budget`, with explicit format version (3, 4, or 5).
+    pub fn to_binary_for_root_with_budget_version(
+        &self,
+        root: &str,
+        budget: BinaryBudget,
+        version: u64,
+    ) -> Result<Vec<u8>> {
+        if !matches!(
+            version,
+            3 | BINARY_FORMAT_VERSION | BINARY_FORMAT_VERSION_V5
+        ) {
+            return Err(SocialGraphError::InvalidVersion(version));
+        }
         let Some(root) = self.ids.existing_id(root) else {
-            return Self::new(root).to_binary_with_budget(budget);
+            return Self::new(root).to_binary_with_budget_version(budget, version);
         };
         let max_nodes = budget.max_nodes.filter(|n| *n > 0);
         let max_edges = budget.max_edges.filter(|n| *n > 0);
@@ -858,14 +793,14 @@ impl SocialGraph {
                 (3, &self.followed_by_user, &mut follow_edge_count),
                 (10_000, &self.muted_by_user, &mut mute_edge_count),
             ] {
-                for target in lists.get(&owner).into_iter().flatten().copied() {
+                for &target in lists.get(&owner).into_iter().flatten() {
                     if per_owner.is_some_and(|limit| owner_edges >= limit) {
                         break;
                     }
                     if max_edges.is_some_and(|limit| edge_count >= limit) {
                         break 'owners;
                     }
-                    if self.ids.str(target).is_err() {
+                    if !self.ids.contains_id(target) {
                         continue;
                     }
                     let added = usize::from(!used_ids.contains(&owner))
@@ -887,7 +822,7 @@ impl SocialGraph {
         }
         self.retain_empty_lists(
             root,
-            &distances,
+            |owner| distances.get(&owner).copied(),
             budget,
             max_nodes,
             &mut used_ids,
@@ -904,7 +839,7 @@ impl SocialGraph {
                 follow_owners,
                 mute_owners,
             },
-            BINARY_FORMAT_VERSION,
+            version,
         )
     }
 
@@ -924,7 +859,7 @@ impl SocialGraph {
     fn retain_empty_lists(
         &self,
         root: u32,
-        distances: &IndexMap<u32, u32>,
+        distance_of: impl Fn(u32) -> Option<u32>,
         budget: BinaryBudget,
         max_nodes: Option<usize>,
         used_ids: &mut IndexSet<u32>,
@@ -938,10 +873,10 @@ impl SocialGraph {
             empty_candidates.push(root);
         }
         for owner in empty_candidates {
-            let Some(distance) = distances.get(&owner) else {
+            let Some(distance) = distance_of(owner) else {
                 continue;
             };
-            if budget.max_distance.is_some_and(|limit| *distance > limit)
+            if budget.max_distance.is_some_and(|limit| distance > limit)
                 || (!used_ids.contains(&owner)
                     && max_nodes.is_some_and(|limit| used_ids.len() >= limit))
             {
@@ -959,7 +894,7 @@ impl SocialGraph {
                     &mut *mute_edge_count,
                 ),
             ] {
-                if lists.get(&owner).is_none_or(IndexSet::is_empty)
+                if lists.get(&owner).is_none_or(EdgeSet::is_empty)
                     && (lists.contains_key(&owner) || timestamps.contains_key(&owner))
                 {
                     used_ids.insert(owner);
@@ -980,13 +915,12 @@ impl SocialGraph {
         match self
             .list_revisions
             .get(&(owner, kind))
-            .filter(|r| r.created_at == timestamp && valid_event_id(&r.id))
+            .filter(|r| r.created_at == timestamp)
+            .and_then(|r| r.as_hex32().map(|bytes| (r.complete, bytes)))
         {
-            Some(revision) => {
-                out.push(if revision.complete && complete { 2 } else { 1 });
-                let mut bytes = [0u8; 32];
-                hex::decode_to_slice(&revision.id, &mut bytes).expect("validated event ID");
-                out.extend_from_slice(&bytes);
+            Some((rev_complete, bytes)) => {
+                out.push(if rev_complete && complete { 2 } else { 1 });
+                out.extend_from_slice(bytes);
             }
             None => out.push(0),
         }
@@ -1000,7 +934,7 @@ impl SocialGraph {
         kind: u32,
         owners: &[u32],
         edge_counts: &IndexMap<u32, usize>,
-        lists: &IndexMap<u32, IndexSet<u32>>,
+        lists: &IndexMap<u32, EdgeSet>,
         timestamps: &IndexMap<u32, u64>,
     ) {
         write_varint(out, owners.len() as u64);
@@ -1016,7 +950,7 @@ impl SocialGraph {
                     owner,
                     kind,
                     ts,
-                    limit == targets.map_or(0, IndexSet::len),
+                    limit == targets.map_or(0, EdgeSet::len),
                 );
             }
             write_varint(out, limit as u64);
@@ -1029,6 +963,9 @@ impl SocialGraph {
     }
 
     fn serialize_binary(&self, plan: &BinaryPlan, version: u64) -> Result<Vec<u8>> {
+        if version == BINARY_FORMAT_VERSION_V5 {
+            return self.serialize_binary_v5(plan);
+        }
         let BinaryPlan {
             used_ids,
             follow_edge_count,
@@ -1053,7 +990,7 @@ impl SocialGraph {
         write_varint(&mut out, used_ids.len() as u64);
         for &id in used_ids {
             write_varint(&mut out, id as u64);
-            write_binary_node_id(&mut out, self.ids.str(id)?);
+            self.ids.key(id)?.write_typed(&mut out);
         }
 
         self.write_edge_lists(
@@ -1078,6 +1015,228 @@ impl SocialGraph {
         Ok(out)
     }
 
+    /// v5 wire format:
+    /// - Header: varint `5`
+    /// - Grouped dense identity table (implicit IDs `0..N-1`), ordered within
+    ///   each group by `(exported_reference_freq DESC, canonical_bytes ASC)`:
+    ///   - `pubkey_count` (varint) + `pubkey_count * 32` raw bytes
+    ///   - `uuid_count` (varint) + `uuid_count * 16` raw bytes
+    ///   - `string_count` (varint) + repeated (`byte_len` varint + UTF-8 bytes)
+    /// - Follow lists (kind 3), then Mute lists (kind 10000):
+    ///   - `lists_count` (varint)
+    ///   - Sorted by strictly ascending dense `owner` ID:
+    ///     - `owner_delta` (`owner_0` for i=0, else `owner_i - owner_{i-1} - 1`)
+    ///     - `timestamp` (varint)
+    ///     - v4 revision metadata (`flag` byte + optional 32-byte event ID)
+    ///     - `edge_count` (varint)
+    ///     - Targets sorted by strictly ascending dense ID, gap-delta encoded
+    ///       (`t_0` for j=0, else `t_j - t_{j-1} - 1`).
+    fn serialize_binary_v5(&self, plan: &BinaryPlan) -> Result<Vec<u8>> {
+        let BinaryPlan {
+            used_ids,
+            follow_edge_count,
+            mute_edge_count,
+            follow_owners,
+            mute_owners,
+        } = plan;
+
+        let max_id = self
+            .ids
+            .max_id()
+            .map_or(0, |m| (m as usize).saturating_add(1));
+        let use_dense = max_id > 0
+            && max_id <= 4_000_000
+            && max_id <= self.ids.len().saturating_mul(8).saturating_add(65_536);
+
+        let mut dense_freq = if use_dense {
+            vec![0u32; max_id]
+        } else {
+            Vec::new()
+        };
+        let mut sparse_freq = if use_dense {
+            HashMap::new()
+        } else {
+            HashMap::<u32, u32>::with_capacity(used_ids.len())
+        };
+        for (counts, lists) in [
+            (follow_edge_count, &self.followed_by_user),
+            (mute_edge_count, &self.muted_by_user),
+        ] {
+            for (&owner, &limit) in counts {
+                if let Some(slot) = dense_freq.get_mut(owner as usize) {
+                    *slot += 1;
+                } else {
+                    *sparse_freq.entry(owner).or_insert(0) += 1;
+                }
+                if limit > 0
+                    && let Some(targets) = lists.get(&owner)
+                {
+                    for &target in targets.iter().take(limit) {
+                        if let Some(slot) = dense_freq.get_mut(target as usize) {
+                            *slot += 1;
+                        } else {
+                            *sparse_freq.entry(target).or_insert(0) += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut pubkeys: Vec<(u32, u32, [u8; 32])> = Vec::with_capacity(used_ids.len());
+        let mut uuids: Vec<(u32, u32, [u8; 16])> = Vec::new();
+        let mut strings: Vec<(u32, u32, &str)> = Vec::new();
+        for &id in used_ids {
+            let count = dense_freq
+                .get(id as usize)
+                .copied()
+                .unwrap_or_else(|| sparse_freq.get(&id).copied().unwrap_or(0));
+            match self.ids.key(id)? {
+                NodeKey::Pubkey(bytes) => pubkeys.push((id, count, *bytes)),
+                NodeKey::Uuid(bytes) => uuids.push((id, count, *bytes)),
+                NodeKey::String(s) => strings.push((id, count, s.as_ref())),
+            }
+        }
+        drop(dense_freq);
+        drop(sparse_freq);
+        pubkeys.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.2.cmp(&b.2)));
+        uuids.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.2.cmp(&b.2)));
+        strings.sort_unstable_by(|a, b| {
+            b.1.cmp(&a.1)
+                .then_with(|| a.2.as_bytes().cmp(b.2.as_bytes()))
+        });
+
+        let mut dense_map = if use_dense {
+            vec![u32::MAX; max_id]
+        } else {
+            Vec::new()
+        };
+        let mut sparse_map = if use_dense {
+            HashMap::new()
+        } else {
+            HashMap::<u32, u32>::with_capacity(used_ids.len())
+        };
+        for (next_id, old_id) in pubkeys
+            .iter()
+            .map(|&(id, _, _)| id)
+            .chain(uuids.iter().map(|&(id, _, _)| id))
+            .chain(strings.iter().map(|&(id, _, _)| id))
+            .enumerate()
+        {
+            let next_id = next_id as u32;
+            if let Some(slot) = dense_map.get_mut(old_id as usize) {
+                *slot = next_id;
+            } else {
+                sparse_map.insert(old_id, next_id);
+            }
+        }
+        let map_id = |old_id: u32| -> u32 {
+            dense_map
+                .get(old_id as usize)
+                .copied()
+                .filter(|&v| v != u32::MAX)
+                .unwrap_or_else(|| sparse_map[&old_id])
+        };
+
+        let total_edges: usize =
+            follow_edge_count.values().sum::<usize>() + mute_edge_count.values().sum::<usize>();
+        let estimated = pubkeys
+            .len()
+            .saturating_mul(32)
+            .saturating_add(uuids.len().saturating_mul(16))
+            .saturating_add(total_edges.saturating_mul(2))
+            .saturating_add((follow_owners.len() + mute_owners.len()).saturating_mul(38))
+            .saturating_add(64);
+        let mut out = Vec::with_capacity(estimated);
+
+        write_varint(&mut out, BINARY_FORMAT_VERSION_V5);
+        write_varint(&mut out, pubkeys.len() as u64);
+        for (_, _, bytes) in &pubkeys {
+            out.extend_from_slice(bytes);
+        }
+        write_varint(&mut out, uuids.len() as u64);
+        for (_, _, bytes) in &uuids {
+            out.extend_from_slice(bytes);
+        }
+        write_varint(&mut out, strings.len() as u64);
+        for (_, _, s) in &strings {
+            write_varint(&mut out, s.len() as u64);
+            out.extend_from_slice(s.as_bytes());
+        }
+
+        let mut mapped_owners = Vec::new();
+        let mut mapped_targets = Vec::new();
+        for (kind, owners, counts, lists, timestamps) in [
+            (
+                3u32,
+                follow_owners,
+                follow_edge_count,
+                &self.followed_by_user,
+                &self.follow_list_created_at,
+            ),
+            (
+                10_000u32,
+                mute_owners,
+                mute_edge_count,
+                &self.muted_by_user,
+                &self.mute_list_created_at,
+            ),
+        ] {
+            mapped_owners.clear();
+            mapped_owners.reserve(owners.len());
+            for &old_owner in owners {
+                mapped_owners.push((map_id(old_owner), old_owner));
+            }
+            mapped_owners.sort_unstable_by_key(|&(new_owner, _)| new_owner);
+
+            write_varint(&mut out, mapped_owners.len() as u64);
+            let mut prev_owner = 0u32;
+            for (idx, &(new_owner, old_owner)) in mapped_owners.iter().enumerate() {
+                let owner_delta = if idx == 0 {
+                    new_owner
+                } else {
+                    new_owner - prev_owner - 1
+                };
+                prev_owner = new_owner;
+                write_varint(&mut out, owner_delta as u64);
+
+                let limit = counts[&old_owner];
+                let ts = timestamps.get(&old_owner).copied().unwrap_or(0);
+                let targets = lists.get(&old_owner);
+                write_varint(&mut out, ts);
+                self.write_list_revision(
+                    &mut out,
+                    old_owner,
+                    kind,
+                    ts,
+                    limit == targets.map_or(0, EdgeSet::len),
+                );
+                write_varint(&mut out, limit as u64);
+                if limit > 0
+                    && let Some(targets) = targets
+                {
+                    mapped_targets.clear();
+                    mapped_targets.reserve(limit);
+                    for &old_target in targets.iter().take(limit) {
+                        mapped_targets.push(map_id(old_target));
+                    }
+                    mapped_targets.sort_unstable();
+                    let mut prev_target = 0u32;
+                    for (j, &new_target) in mapped_targets.iter().enumerate() {
+                        let target_delta = if j == 0 {
+                            new_target
+                        } else {
+                            new_target - prev_target - 1
+                        };
+                        prev_target = new_target;
+                        write_varint(&mut out, target_delta as u64);
+                    }
+                }
+            }
+        }
+
+        Ok(out)
+    }
+
     fn plan_binary(&self, budget: BinaryBudget) -> Result<BinaryPlan> {
         if !budget.has_active_limits() {
             return Ok(self.plan_full_binary());
@@ -1090,9 +1249,7 @@ impl SocialGraph {
         let mut distances: Vec<u32> = self.users_by_follow_distance.keys().copied().collect();
         distances.sort_unstable();
 
-        let cap = max_nodes
-            .unwrap_or(self.ids.unique_id_to_str.len())
-            .min(self.ids.unique_id_to_str.len());
+        let cap = max_nodes.unwrap_or(self.ids.len()).min(self.ids.len());
         let mut used_ids = IndexSet::with_capacity(cap);
         let mut follow_edge_count = IndexMap::new();
         let mut mute_edge_count = IndexMap::new();
@@ -1150,7 +1307,7 @@ impl SocialGraph {
 
         self.retain_empty_lists(
             self.root,
-            &self.follow_distance_by_user,
+            |owner| self.follow_distance_by_user.get(owner),
             budget,
             max_nodes,
             &mut used_ids,
@@ -1170,7 +1327,7 @@ impl SocialGraph {
     }
 
     fn plan_full_binary(&self) -> BinaryPlan {
-        let mut used_ids = IndexSet::with_capacity(self.ids.unique_id_to_str.len());
+        let mut used_ids = IndexSet::with_capacity(self.ids.len());
         let mut follow_edge_count = IndexMap::with_capacity(self.followed_by_user.len());
         let mut mute_edge_count = IndexMap::with_capacity(self.muted_by_user.len());
 
@@ -1219,9 +1376,36 @@ impl SocialGraph {
         let version = read_varint(data, &mut offset)?;
         if !matches!(
             version,
-            BINARY_FORMAT_VERSION | 3 | BINARY_FORMAT_VERSION_V2
+            BINARY_FORMAT_VERSION_V5 | BINARY_FORMAT_VERSION | 3 | BINARY_FORMAT_VERSION_V2
         ) {
             return Err(SocialGraphError::InvalidVersion(version));
+        }
+
+        if version == BINARY_FORMAT_VERSION_V5 {
+            let mut ids = read_v5_identities(data, &mut offset, None, None)?;
+            let mut list_revisions = IndexMap::new();
+            let (followed_by_user, followers_by_user, follow_list_created_at) =
+                read_v5_lists(data, &mut offset, 3, &ids, &mut list_revisions, None)?;
+            let (muted_by_user, user_muted_by, mute_list_created_at) =
+                read_v5_lists(data, &mut offset, 10_000, &ids, &mut list_revisions, None)?;
+            let root_id = ids.id(root)?;
+            let root_str = ids.str_owned(root_id)?;
+            let mut graph = Self {
+                list_revisions,
+                root: root_id,
+                root_str,
+                follow_distance_by_user: DistanceMap::default(),
+                users_by_follow_distance: IndexMap::new(),
+                followed_by_user,
+                followers_by_user,
+                follow_list_created_at,
+                muted_by_user,
+                user_muted_by,
+                mute_list_created_at,
+                ids,
+            };
+            graph.recalculate_follow_distances();
+            return Ok(graph);
         }
 
         let ids_count = read_count(data, &mut offset)?;
@@ -1229,15 +1413,15 @@ impl SocialGraph {
         let mut aliased_ids: Option<Vec<(String, u32)>> = None;
 
         for _ in 0..ids_count {
-            let (value, id) = read_binary_node_id(version, data, &mut offset)?;
+            let (key, id) = read_binary_node_key(version, data, &mut offset)?;
             if let Some(raw_ids) = &mut aliased_ids {
-                raw_ids.push((value, id));
-            } else if !ids.try_insert_unique(value.clone(), id) {
+                raw_ids.push((key.to_string_key(), id));
+            } else if !ids.try_insert_unique_key(key.clone(), id) {
                 let mut raw_ids = Vec::with_capacity(ids_count);
-                for (&eid, eval) in &ids.unique_id_to_str {
-                    raw_ids.push((eval.clone(), eid));
+                for (eid, ekey) in ids.iter() {
+                    raw_ids.push((ekey.to_string_key(), eid));
                 }
-                raw_ids.push((value, id));
+                raw_ids.push((key.to_string_key(), id));
                 aliased_ids = Some(raw_ids);
             }
         }
@@ -1255,7 +1439,7 @@ impl SocialGraph {
                     if version >= 4
                         && let Some(revision) = read_list_revision(data, &mut offset, timestamp)?
                     {
-                        revisions.insert((user, kind), revision);
+                        revisions.insert((user, kind), revision.to_public());
                     }
                     let edge_count = read_count(data, &mut offset)?;
                     let mut targets = Vec::with_capacity(edge_count);
@@ -1287,10 +1471,14 @@ impl SocialGraph {
             };
             let mut graph = Self::from_state(state)?;
             if graph.followers_by_user.is_empty() {
-                build_reverse_index(&graph.followed_by_user, &mut graph.followers_by_user);
+                build_reverse_index(
+                    &graph.followed_by_user,
+                    &graph.ids,
+                    &mut graph.followers_by_user,
+                );
             }
             if graph.user_muted_by.is_empty() {
-                build_reverse_index(&graph.muted_by_user, &mut graph.user_muted_by);
+                build_reverse_index(&graph.muted_by_user, &graph.ids, &mut graph.user_muted_by);
             }
             if graph.follow_distance_by_user.is_empty() {
                 graph.recalculate_follow_distances();
@@ -1298,15 +1486,14 @@ impl SocialGraph {
             return Ok(graph);
         }
 
-        // Alias-free fast path: decode lists directly into graph maps without intermediate Vecs.
+        // Alias-free fast path: decode forward lists into compact EdgeSets,
+        // then build reverse indexes in a 2-pass exact-capacity sweep.
         let mut list_revisions = IndexMap::new();
+        let mut seen_targets = HashSet::new();
         let mut read_direct = |kind: u32| -> Result<DecodedLists> {
             let count = read_count(data, &mut offset)?;
-            let mut forward: IndexMap<u32, IndexSet<u32>> = IndexMap::with_capacity(count);
-            let mut reverse: IndexMap<u32, IndexSet<u32>> =
-                IndexMap::with_capacity(if kind == 3 { ids_count } else { 0 });
+            let mut forward: IndexMap<u32, EdgeSet> = IndexMap::with_capacity(count);
             let mut timestamps: IndexMap<u32, u64> = IndexMap::with_capacity(count);
-            let mut had_duplicate_owner = false;
             for _ in 0..count {
                 let owner = read_varint(data, &mut offset)? as u32;
                 let timestamp = read_varint(data, &mut offset)?;
@@ -1316,33 +1503,41 @@ impl SocialGraph {
                     list_revisions.insert((owner, kind), revision);
                 }
                 let edge_count = read_count(data, &mut offset)?;
-                let mut targets = IndexSet::with_capacity(edge_count);
-                for _ in 0..edge_count {
-                    let target = read_varint(data, &mut offset)? as u32;
-                    if targets.insert(target) && !had_duplicate_owner {
-                        reverse.entry(target).or_default().insert(owner);
+                let mut targets = Vec::with_capacity(edge_count);
+                if edge_count <= 32 {
+                    for _ in 0..edge_count {
+                        let target = read_varint(data, &mut offset)? as u32;
+                        if !targets.contains(&target) {
+                            targets.push(target);
+                        }
+                    }
+                } else {
+                    seen_targets.clear();
+                    for _ in 0..edge_count {
+                        let target = read_varint(data, &mut offset)? as u32;
+                        if seen_targets.insert(target) {
+                            targets.push(target);
+                        }
                     }
                 }
-                if forward.insert(owner, targets).is_some() {
-                    had_duplicate_owner = true;
-                }
+                forward.insert(owner, EdgeSet::from_vec_exact(targets));
                 timestamps.insert(owner, timestamp);
             }
-            if had_duplicate_owner {
-                reverse.clear();
-                build_reverse_index(&forward, &mut reverse);
-            }
+            let mut reverse = IndexMap::new();
+            build_reverse_index(&forward, &ids, &mut reverse);
             Ok((forward, reverse, timestamps))
         };
 
         let (followed_by_user, followers_by_user, follow_list_created_at) = read_direct(3)?;
         let (muted_by_user, user_muted_by, mute_list_created_at) = read_direct(10_000)?;
         let root_id = ids.id(root)?;
+        let root_str = ids.str_owned(root_id)?;
 
         let mut graph = Self {
             list_revisions,
             root: root_id,
-            follow_distance_by_user: IndexMap::with_capacity(ids_count),
+            root_str,
+            follow_distance_by_user: DistanceMap::default(),
             users_by_follow_distance: IndexMap::new(),
             followed_by_user,
             followers_by_user,
@@ -1372,14 +1567,14 @@ impl SocialGraph {
         if muters.is_empty() {
             return false;
         }
-        if muters.contains(&self.root) {
+        if muters.contains(self.root) {
             return true;
         }
 
         let mut min_dist = u32::MAX;
         let mut muters_at_min = 0u32;
-        for muter in muters {
-            if let Some(&distance) = self.follow_distance_by_user.get(muter) {
+        for &muter in muters {
+            if let Some(distance) = self.follow_distance_by_user.get(muter) {
                 if distance < min_dist {
                     min_dist = distance;
                     muters_at_min = 1;
@@ -1395,8 +1590,8 @@ impl SocialGraph {
 
         if let Some(followers) = self.followers_by_user.get(&user_id) {
             let mut followers_at_min = 0u32;
-            for follower in followers {
-                if let Some(&distance) = self.follow_distance_by_user.get(follower) {
+            for &follower in followers {
+                if let Some(distance) = self.follow_distance_by_user.get(follower) {
                     if distance < min_dist {
                         return false;
                     }
@@ -1424,7 +1619,7 @@ impl SocialGraph {
         } else {
             self.mute_list_created_at.get(&author).copied()
         };
-        if !accepts_list_revision(
+        if !accepts_compact_revision(
             existing_at,
             self.list_revisions.get(&(author, kind)),
             created_at,
@@ -1435,11 +1630,7 @@ impl SocialGraph {
         if valid_event_id(id) {
             self.list_revisions.insert(
                 (author, kind),
-                ListRevision {
-                    id: id.to_owned(),
-                    created_at,
-                    complete: true,
-                },
+                CompactRevision::from_valid_hex(id, created_at, true),
             );
         } else {
             self.list_revisions.shift_remove(&(author, kind));
@@ -1452,8 +1643,9 @@ impl SocialGraph {
         true
     }
 
-    fn collect_pubkey_tags(&mut self, author: u32, tags: &[Vec<String>]) -> IndexSet<u32> {
-        let mut targets = IndexSet::with_capacity(tags.len());
+    fn collect_pubkey_tags(&mut self, author: u32, tags: &[Vec<String>]) -> Vec<u32> {
+        let mut targets = Vec::with_capacity(tags.len());
+        let mut seen = (tags.len() > 32).then(|| HashSet::with_capacity(tags.len()));
         for tag in tags {
             if tag.first().is_some_and(|value| value == "p")
                 && let Some(pk) = tag.get(1)
@@ -1461,7 +1653,13 @@ impl SocialGraph {
                 && let Ok(target) = self.ids.id(pk)
                 && target != author
             {
-                targets.insert(target);
+                let inserted = match &mut seen {
+                    Some(set) => set.insert(target),
+                    None => !targets.contains(&target),
+                };
+                if inserted {
+                    targets.push(target);
+                }
             }
         }
         targets
@@ -1480,14 +1678,14 @@ impl SocialGraph {
 
         // Batch distance updates for all edges changed by this event so each
         // distance bucket is compacted at most once instead of once per edge.
-        if let Some(author_dist) = self.follow_distance_by_user.get(&author).copied() {
+        if let Some(author_dist) = self.follow_distance_by_user.get(author) {
             if !removed.is_empty() {
                 let lost_shortest: Vec<u32> = removed
                     .into_iter()
-                    .filter(|u| {
+                    .filter(|&u| {
                         self.follow_distance_by_user
                             .get(u)
-                            .is_some_and(|&d| d > 0 && d - 1 == author_dist)
+                            .is_some_and(|d| d > 0 && d - 1 == author_dist)
                     })
                     .collect();
                 if !lost_shortest.is_empty() {
@@ -1527,7 +1725,7 @@ impl SocialGraph {
             .insert(follower);
 
         // A new edge can only shorten paths, and only from a reachable follower.
-        if let Some(distance) = self.follow_distance_by_user.get(&follower).copied() {
+        if let Some(distance) = self.follow_distance_by_user.get(follower) {
             let mut moved = Moved::new();
             self.lower_distances_into(&[followed_user], distance.saturating_add(1), &mut moved);
             if !moved.is_empty() {
@@ -1541,7 +1739,7 @@ impl SocialGraph {
     fn lower_distances_into(&mut self, starts: &[u32], distance: u32, moved: &mut Moved) {
         let mut queue = VecDeque::new();
         for &start in starts {
-            let current = self.follow_distance_by_user.get(&start).copied();
+            let current = self.follow_distance_by_user.get(start);
             if current.is_none_or(|current| current > distance) {
                 moved.entry(start).or_insert(current);
                 self.follow_distance_by_user.insert(start, distance);
@@ -1549,9 +1747,13 @@ impl SocialGraph {
             }
         }
         while let Some(user) = queue.pop_front() {
-            let next = self.follow_distance_by_user[&user].saturating_add(1);
+            let next = self
+                .follow_distance_by_user
+                .get(user)
+                .expect("queued user distance")
+                .saturating_add(1);
             for &target in self.followed_by_user.get(&user).into_iter().flatten() {
-                let known = self.follow_distance_by_user.get(&target).copied();
+                let known = self.follow_distance_by_user.get(target);
                 if known.is_none_or(|known| known > next) {
                     moved.entry(target).or_insert(known);
                     self.follow_distance_by_user.insert(target, next);
@@ -1567,7 +1769,7 @@ impl SocialGraph {
     fn raise_distances(&mut self, seeds: &[u32]) {
         let mut moved = Moved::new();
         for &user in seeds {
-            let Some(&distance) = self.follow_distance_by_user.get(&user) else {
+            let Some(distance) = self.follow_distance_by_user.get(user) else {
                 continue;
             };
             if distance == DETACHED_DISTANCE || self.has_follower_at(user, distance - 1) {
@@ -1591,9 +1793,9 @@ impl SocialGraph {
                 .into_iter()
                 .flatten()
                 .copied()
-                .filter(|target| {
-                    self.follow_distance_by_user.get(target) == Some(&next)
-                        && !self.has_follower_at(*target, next - 1)
+                .filter(|&target| {
+                    self.follow_distance_by_user.get(target) == Some(next)
+                        && !self.has_follower_at(target, next - 1)
                 })
                 .collect();
             for target in orphaned {
@@ -1611,7 +1813,7 @@ impl SocialGraph {
                 .get(&orphan)
                 .into_iter()
                 .flatten()
-                .filter_map(|follower| self.follow_distance_by_user.get(follower).copied())
+                .filter_map(|&follower| self.follow_distance_by_user.get(follower))
                 .filter(|distance| *distance != DETACHED_DISTANCE)
                 .min();
             if let Some(nearest) = nearest {
@@ -1625,7 +1827,7 @@ impl SocialGraph {
         self.followers_by_user.get(&user).is_some_and(|followers| {
             followers
                 .iter()
-                .any(|follower| self.follow_distance_by_user.get(follower) == Some(&distance))
+                .any(|&follower| self.follow_distance_by_user.get(follower) == Some(distance))
         })
     }
 
@@ -1638,8 +1840,7 @@ impl SocialGraph {
         for (user, old) in moved {
             let new = self
                 .follow_distance_by_user
-                .get(&user)
-                .copied()
+                .get(user)
                 .filter(|distance| *distance != DETACHED_DISTANCE);
             if new.is_none() {
                 detached.push(user);
@@ -1671,12 +1872,8 @@ impl SocialGraph {
                 self.users_by_follow_distance.shift_remove(&distance);
             }
         }
-        if let [user] = detached[..] {
-            self.follow_distance_by_user.shift_remove(&user);
-        } else if !detached.is_empty() {
-            let detached: HashSet<u32> = detached.into_iter().collect();
-            self.follow_distance_by_user
-                .retain(|user, _| !detached.contains(user));
+        for user in detached {
+            self.follow_distance_by_user.remove(user);
         }
     }
 }
@@ -1755,32 +1952,58 @@ impl SocialGraphBackend for SocialGraph {
 }
 
 fn replace_edge_set(
-    forward: &mut IndexMap<u32, IndexSet<u32>>,
+    forward: &mut IndexMap<u32, EdgeSet>,
     author: u32,
-    incoming: IndexSet<u32>,
+    incoming: Vec<u32>,
 ) -> Option<(Vec<u32>, Vec<u32>)> {
     let mut removed = Vec::new();
     let mut added = Vec::new();
     if let Some(existing) = forward.get_mut(&author) {
-        if existing.len() == incoming.len() && existing.iter().all(|u| incoming.contains(u)) {
-            return None;
-        }
-        existing.retain(|&u| {
-            if incoming.contains(&u) {
-                true
-            } else {
-                removed.push(u);
-                false
+        if existing.len() <= 16 && incoming.len() <= 16 {
+            if existing.len() == incoming.len() && existing.iter().all(|u| incoming.contains(u)) {
+                return None;
             }
-        });
-        for user in incoming {
-            if existing.insert(user) {
-                added.push(user);
+            existing.retain(|u| {
+                if incoming.contains(u) {
+                    true
+                } else {
+                    removed.push(*u);
+                    false
+                }
+            });
+            for user in incoming {
+                if existing.insert(user) {
+                    added.push(user);
+                }
             }
+        } else {
+            let incoming_set: HashSet<u32> = incoming.iter().copied().collect();
+            if existing.len() == incoming_set.len()
+                && existing.iter().all(|u| incoming_set.contains(u))
+            {
+                return None;
+            }
+            let mut next = Vec::with_capacity(incoming.len());
+            let mut kept = HashSet::with_capacity(existing.len().min(incoming.len()));
+            for &u in existing.as_slice() {
+                if incoming_set.contains(&u) {
+                    next.push(u);
+                    kept.insert(u);
+                } else {
+                    removed.push(u);
+                }
+            }
+            for user in incoming {
+                if !kept.contains(&user) {
+                    next.push(user);
+                    added.push(user);
+                }
+            }
+            *existing = EdgeSet::from_vec_exact(next);
         }
     } else if !incoming.is_empty() {
-        added.extend(incoming.iter().copied());
-        forward.insert(author, incoming);
+        added.extend_from_slice(&incoming);
+        forward.insert(author, EdgeSet::from_vec_exact(incoming));
     } else {
         return None;
     }
@@ -1788,14 +2011,14 @@ fn replace_edge_set(
 }
 
 fn update_reverse_edges(
-    reverse: &mut IndexMap<u32, IndexSet<u32>>,
+    reverse: &mut IndexMap<u32, EdgeSet>,
     author: u32,
     removed: &[u32],
     added: &[u32],
 ) {
     for &user in removed {
         if let Some(set) = reverse.get_mut(&user) {
-            set.shift_remove(&author);
+            set.remove(author);
         }
     }
     for &user in added {
@@ -1803,52 +2026,129 @@ fn update_reverse_edges(
     }
 }
 
+/// Two-pass exact-capacity reverse index builder. Avoids per-edge hashing on
+/// dense/near-dense graphs and eliminates `Vec` doubling slack across millions
+/// of reverse follower lists.
 fn build_reverse_index(
-    forward: &IndexMap<u32, IndexSet<u32>>,
-    reverse: &mut IndexMap<u32, IndexSet<u32>>,
+    forward: &IndexMap<u32, EdgeSet>,
+    ids: &UniqueIds,
+    reverse: &mut IndexMap<u32, EdgeSet>,
 ) {
-    for (&owner, targets) in forward {
-        for &target in targets {
-            reverse.entry(target).or_default().insert(owner);
+    reverse.clear();
+    if forward.is_empty() {
+        return;
+    }
+    let max_id = ids.max_id().map_or(0, |m| (m as usize).saturating_add(1));
+    let use_dense = max_id > 0
+        && max_id <= 4_000_000
+        && max_id <= ids.len().saturating_mul(8).saturating_add(65_536);
+
+    if use_dense {
+        let mut counts = vec![0u32; max_id];
+        let mut non_zero = 0usize;
+        let mut overflow_counts = HashMap::<u32, u32>::new();
+        for targets in forward.values() {
+            for &target in targets {
+                if let Some(slot) = counts.get_mut(target as usize) {
+                    if *slot == 0 {
+                        non_zero += 1;
+                    }
+                    *slot += 1;
+                } else {
+                    *overflow_counts.entry(target).or_insert(0) += 1;
+                }
+            }
+        }
+        let mut target_to_slot = vec![u32::MAX; max_id];
+        let mut buckets: Vec<(u32, EdgeSet)> = Vec::with_capacity(non_zero);
+        let mut overflow_reverse: IndexMap<u32, EdgeSet> =
+            IndexMap::with_capacity(overflow_counts.len());
+        for (&owner, targets) in forward {
+            for &target in targets {
+                if let Some(slot) = target_to_slot.get_mut(target as usize) {
+                    let bucket_idx = if *slot == u32::MAX {
+                        let idx = buckets.len() as u32;
+                        *slot = idx;
+                        buckets.push((
+                            target,
+                            EdgeSet::with_exact_capacity(counts[target as usize] as usize),
+                        ));
+                        idx as usize
+                    } else {
+                        *slot as usize
+                    };
+                    buckets[bucket_idx].1.push_unchecked(owner);
+                } else {
+                    let cap = overflow_counts.get(&target).copied().unwrap_or(1) as usize;
+                    overflow_reverse
+                        .entry(target)
+                        .or_insert_with(|| EdgeSet::with_exact_capacity(cap))
+                        .push_unchecked(owner);
+                }
+            }
+        }
+        drop(counts);
+        drop(target_to_slot);
+        reverse.reserve(buckets.len() + overflow_reverse.len());
+        reverse.extend(buckets);
+        reverse.extend(overflow_reverse);
+    } else {
+        let mut counts = HashMap::<u32, u32>::new();
+        for targets in forward.values() {
+            for &target in targets {
+                *counts.entry(target).or_insert(0) += 1;
+            }
+        }
+        reverse.reserve(counts.len());
+        for (&owner, targets) in forward {
+            for &target in targets {
+                let cap = counts[&target] as usize;
+                reverse
+                    .entry(target)
+                    .or_insert_with(|| EdgeSet::with_exact_capacity(cap))
+                    .push_unchecked(owner);
+            }
         }
     }
 }
 
-fn is_valid_pubkey(key: &str) -> bool {
+fn dense_hint_for(ids: &UniqueIds) -> usize {
+    let max_exclusive = ids.max_id().map_or(0, |m| (m as usize).saturating_add(1));
+    if max_exclusive > 0 && max_exclusive <= ids.len().saturating_mul(4).saturating_add(4_096) {
+        max_exclusive
+    } else {
+        0
+    }
+}
+
+pub(crate) fn is_valid_pubkey(key: &str) -> bool {
     key.len() == 64 && key.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
-fn is_canonical_uuid(value: &str) -> Option<Uuid> {
+pub(crate) fn is_canonical_uuid(value: &str) -> Option<Uuid> {
     let uuid = Uuid::parse_str(value).ok()?;
     (uuid.to_string() == value).then_some(uuid)
 }
 
+#[cfg(test)]
 fn write_binary_node_id(out: &mut Vec<u8>, value: &str) {
-    if is_valid_pubkey(value) {
-        write_varint(out, BINARY_NODE_ID_PUBKEY);
-        let mut bytes = [0u8; 32];
-        hex::decode_to_slice(value, &mut bytes).expect("validated pubkey hex should decode");
-        out.extend_from_slice(&bytes);
-        return;
-    }
-
-    if let Some(uuid) = is_canonical_uuid(value) {
-        write_varint(out, BINARY_NODE_ID_UUID);
-        out.extend_from_slice(uuid.as_bytes());
-        return;
-    }
-
-    write_varint(out, BINARY_NODE_ID_STRING);
-    write_varint(out, value.len() as u64);
-    out.extend_from_slice(value.as_bytes());
+    NodeKeyRef::parse(value).to_owned().write_typed(out);
 }
 
-fn read_typed_node_id(data: &[u8], offset: &mut usize) -> Result<String> {
+fn read_typed_node_key(data: &[u8], offset: &mut usize) -> Result<NodeKey> {
     match read_varint(data, offset)? {
-        BINARY_NODE_ID_PUBKEY => Ok(hex::encode(read_bytes(data, offset, 32)?)),
-        BINARY_NODE_ID_UUID => Ok(Uuid::from_slice(read_bytes(data, offset, 16)?)
-            .map_err(|_| SocialGraphError::InvalidBinaryNodeIdUuid)?
-            .to_string()),
+        BINARY_NODE_ID_PUBKEY => {
+            let bytes: [u8; 32] = read_bytes(data, offset, 32)?
+                .try_into()
+                .expect("32-byte pubkey slice");
+            Ok(NodeKey::Pubkey(bytes))
+        }
+        BINARY_NODE_ID_UUID => {
+            let bytes: [u8; 16] = read_bytes(data, offset, 16)?
+                .try_into()
+                .expect("16-byte uuid slice");
+            Ok(NodeKey::Uuid(bytes))
+        }
         BINARY_NODE_ID_STRING => {
             let len = read_varint(data, offset)? as usize;
             let raw = str::from_utf8(read_bytes(data, offset, len)?)
@@ -1856,28 +2156,164 @@ fn read_typed_node_id(data: &[u8], offset: &mut usize) -> Result<String> {
             if raw.trim().is_empty() {
                 return Err(SocialGraphError::EmptyString);
             }
-            Ok(aliases::canonical_node_id(raw).into_owned())
+            Ok(NodeKeyRef::parse(raw).to_owned())
         }
         other => Err(SocialGraphError::InvalidBinaryNodeIdType(other)),
     }
 }
 
-fn read_binary_node_id(version: u64, data: &[u8], offset: &mut usize) -> Result<(String, u32)> {
+fn read_binary_node_key(version: u64, data: &[u8], offset: &mut usize) -> Result<(NodeKey, u32)> {
     if version == BINARY_FORMAT_VERSION_V2 {
-        let hex_bytes = read_bytes(data, offset, 32)?;
+        let bytes: [u8; 32] = read_bytes(data, offset, 32)?
+            .try_into()
+            .expect("32-byte pubkey slice");
         let id = read_varint(data, offset)? as u32;
-        return Ok((hex::encode(hex_bytes), id));
+        return Ok((NodeKey::Pubkey(bytes), id));
     }
 
     let id = read_varint(data, offset)? as u32;
-    Ok((read_typed_node_id(data, offset)?, id))
+    Ok((read_typed_node_key(data, offset)?, id))
+}
+
+fn read_v5_identities(
+    data: &[u8],
+    offset: &mut usize,
+    max_nodes: Option<usize>,
+    min_nodes: Option<usize>,
+) -> Result<UniqueIds> {
+    let pubkey_count = read_count(data, offset)?;
+    if max_nodes.is_some_and(|max| pubkey_count > max) {
+        return Err(SocialGraphError::InvalidId(u32::MAX));
+    }
+    let pk_bytes_len = pubkey_count
+        .checked_mul(32)
+        .ok_or(SocialGraphError::UnexpectedEof)?;
+    let pk_slice = read_bytes(data, offset, pk_bytes_len)?;
+    let mut ids = UniqueIds::with_capacity(pubkey_count);
+    for &bytes in pk_slice.as_chunks::<32>().0 {
+        if !ids.push_dense_unique_key(NodeKey::Pubkey(bytes)) {
+            return Err(SocialGraphError::EmptyString);
+        }
+    }
+
+    let uuid_count = read_count(data, offset)?;
+    if max_nodes.is_some_and(|max| ids.len().saturating_add(uuid_count) > max) {
+        return Err(SocialGraphError::InvalidId(u32::MAX));
+    }
+    let uuid_bytes_len = uuid_count
+        .checked_mul(16)
+        .ok_or(SocialGraphError::UnexpectedEof)?;
+    let uuid_slice = read_bytes(data, offset, uuid_bytes_len)?;
+    for &bytes in uuid_slice.as_chunks::<16>().0 {
+        if !ids.push_dense_unique_key(NodeKey::Uuid(bytes)) {
+            return Err(SocialGraphError::EmptyString);
+        }
+    }
+
+    let string_count = read_count(data, offset)?;
+    if max_nodes.is_some_and(|max| ids.len().saturating_add(string_count) > max) {
+        return Err(SocialGraphError::InvalidId(u32::MAX));
+    }
+    for _ in 0..string_count {
+        let len = read_varint(data, offset)? as usize;
+        let raw = str::from_utf8(read_bytes(data, offset, len)?)
+            .map_err(|_| SocialGraphError::InvalidBinaryNodeIdUtf8)?;
+        if raw.trim().is_empty() {
+            return Err(SocialGraphError::EmptyString);
+        }
+        if !ids.push_dense_unique_key(NodeKeyRef::parse(raw).to_owned()) {
+            return Err(SocialGraphError::EmptyString);
+        }
+    }
+
+    if min_nodes.is_some_and(|min| ids.len() < min) {
+        return Err(SocialGraphError::InvalidId(u32::MAX));
+    }
+    Ok(ids)
+}
+
+fn read_v5_lists(
+    data: &[u8],
+    offset: &mut usize,
+    kind: u32,
+    ids: &UniqueIds,
+    list_revisions: &mut IndexMap<(u32, u32), CompactRevision>,
+    mut remaining_edges: Option<&mut usize>,
+) -> Result<DecodedLists> {
+    let total_nodes = ids.len();
+    let count = read_count(data, offset)?;
+    if count > total_nodes {
+        return Err(SocialGraphError::InvalidId(u32::MAX));
+    }
+    let mut forward = IndexMap::with_capacity(count);
+    let mut timestamps = IndexMap::with_capacity(count);
+    let mut prev_owner = 0u32;
+    for i in 0..count {
+        let delta = read_varint(data, offset)?;
+        let owner_u64 = if i == 0 {
+            delta
+        } else {
+            u64::from(prev_owner)
+                .checked_add(1)
+                .and_then(|v| v.checked_add(delta))
+                .ok_or(SocialGraphError::InvalidId(u32::MAX))?
+        };
+        if owner_u64 >= total_nodes as u64 {
+            return Err(SocialGraphError::InvalidId(
+                owner_u64.min(u32::MAX as u64) as u32
+            ));
+        }
+        let owner = owner_u64 as u32;
+        prev_owner = owner;
+
+        let timestamp = read_varint(data, offset)?;
+        if let Some(revision) = read_list_revision(data, offset, timestamp)? {
+            list_revisions.insert((owner, kind), revision);
+        }
+        let edge_count = read_count(data, offset)?;
+        if edge_count > total_nodes {
+            return Err(SocialGraphError::InvalidId(u32::MAX));
+        }
+        if let Some(rem) = remaining_edges.as_deref_mut() {
+            if edge_count > *rem {
+                return Err(SocialGraphError::InvalidId(u32::MAX));
+            }
+            *rem -= edge_count;
+        }
+        let mut targets = Vec::with_capacity(edge_count);
+        let mut prev_target = 0u32;
+        for j in 0..edge_count {
+            let t_delta = read_varint(data, offset)?;
+            let target_u64 = if j == 0 {
+                t_delta
+            } else {
+                u64::from(prev_target)
+                    .checked_add(1)
+                    .and_then(|v| v.checked_add(t_delta))
+                    .ok_or(SocialGraphError::InvalidId(u32::MAX))?
+            };
+            if target_u64 >= total_nodes as u64 {
+                return Err(SocialGraphError::InvalidId(
+                    target_u64.min(u32::MAX as u64) as u32
+                ));
+            }
+            let target = target_u64 as u32;
+            prev_target = target;
+            targets.push(target);
+        }
+        forward.insert(owner, EdgeSet::from_vec_exact(targets));
+        timestamps.insert(owner, timestamp);
+    }
+    let mut reverse = IndexMap::new();
+    build_reverse_index(&forward, ids, &mut reverse);
+    Ok((forward, reverse, timestamps))
 }
 
 fn read_list_revision(
     data: &[u8],
     offset: &mut usize,
     created_at: u64,
-) -> Result<Option<ListRevision>> {
+) -> Result<Option<CompactRevision>> {
     let flag = read_bytes(data, offset, 1)?[0];
     if flag == 0 {
         return Ok(None);
@@ -1885,11 +2321,10 @@ fn read_list_revision(
     if flag > 2 {
         return Err(SocialGraphError::InvalidBinaryNodeIdType(flag as u64));
     }
-    Ok(Some(ListRevision {
-        id: hex::encode(read_bytes(data, offset, 32)?),
-        created_at,
-        complete: flag == 2,
-    }))
+    let id: [u8; 32] = read_bytes(data, offset, 32)?
+        .try_into()
+        .expect("32-byte event id");
+    Ok(Some(CompactRevision::from_bytes(id, created_at, flag == 2)))
 }
 
 fn write_varint(out: &mut Vec<u8>, mut value: u64) {
@@ -1991,8 +2426,8 @@ mod tests {
         assert_eq!(adam, 0);
         assert_eq!(fiatjaf, 1);
         assert_eq!(ids.id(ADAM).unwrap(), adam);
-        assert_eq!(ids.str(adam).unwrap(), ADAM);
-        assert_eq!(ids.str(fiatjaf).unwrap(), FIATJAF);
+        assert_eq!(ids.str_owned(adam).unwrap(), ADAM);
+        assert_eq!(ids.str_owned(fiatjaf).unwrap(), FIATJAF);
     }
 
     #[test]
@@ -2003,7 +2438,7 @@ mod tests {
             ids.id("   ").unwrap_err().to_string(),
             "cannot store empty or whitespace-only strings"
         );
-        assert_eq!(ids.str(99).unwrap_err().to_string(), "invalid id 99");
+        assert_eq!(ids.str_owned(99).unwrap_err().to_string(), "invalid id 99");
     }
 
     #[test]
@@ -2082,5 +2517,47 @@ mod tests {
         assert!(restored.is_following(uuid, external));
         assert_eq!(restored.get_follow_distance(uuid), 1);
         assert_eq!(restored.get_follow_distance(external), 2);
+
+        // v5 round-trip preserves pubkeys, UUIDs, strings, distances, and shrinks bytes.
+        let v5 = graph
+            .to_binary_with_budget_version(BinaryBudget::default(), BINARY_FORMAT_VERSION_V5)
+            .unwrap();
+        assert_eq!(v5[0], BINARY_FORMAT_VERSION_V5 as u8);
+        assert!(v5.len() < binary.len());
+        let restored_v5 = SocialGraph::from_binary(ADAM, &v5).unwrap();
+        assert!(restored_v5.is_following(ADAM, uuid));
+        assert!(restored_v5.is_following(uuid, external));
+        assert_eq!(restored_v5.get_follow_distance(uuid), 1);
+        assert_eq!(restored_v5.get_follow_distance(external), 2);
+        // Re-encoding a v5 graph produces identical v5 bytes.
+        assert_eq!(
+            restored_v5
+                .to_binary_with_budget_version(BinaryBudget::default(), BINARY_FORMAT_VERSION_V5)
+                .unwrap(),
+            v5
+        );
+    }
+
+    #[test]
+    fn binary_v5_rejects_out_of_range_and_duplicate_identities() {
+        // Out-of-range owner index (1 node, owner delta = 1).
+        let mut bad_owner = vec![5, 1];
+        bad_owner.extend([0x11; 32]);
+        bad_owner.extend([0, 0, 1, 1, 100, 0, 0, 0]);
+        assert!(SocialGraph::from_binary(ADAM, &bad_owner).is_err());
+
+        // Out-of-range target delta (2 nodes, owner 0 follows target 2).
+        let mut bad_target = vec![5, 2];
+        bad_target.extend([0x11; 32]);
+        bad_target.extend([0x22; 32]);
+        bad_target.extend([0, 0, 1, 0, 100, 0, 1, 2, 0]);
+        assert!(SocialGraph::from_binary(ADAM, &bad_target).is_err());
+
+        // Duplicate pubkey inside v5 identity table.
+        let mut dup_pk = vec![5, 2];
+        dup_pk.extend([0x11; 32]);
+        dup_pk.extend([0x11; 32]);
+        dup_pk.extend([0, 0, 0, 0]);
+        assert!(SocialGraph::from_binary(ADAM, &dup_pk).is_err());
     }
 }
