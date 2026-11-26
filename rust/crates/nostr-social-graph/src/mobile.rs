@@ -1,10 +1,10 @@
 //! Bounded v4 decoding for public mobile discovery. Personal and legacy imports
 //! continue to use `SocialGraph::from_binary` with their existing policy.
 use super::{
-    SocialGraph, SocialGraphError, canonical_node_id, is_valid_pubkey, read_binary_node_id,
-    read_bytes, read_count, read_varint,
+    DecodedLists, ListRevision, SocialGraph, SocialGraphError, UniqueIds, canonical_node_id,
+    is_valid_pubkey, read_count, read_list_revision, read_typed_node_id, read_varint,
 };
-use std::collections::HashSet;
+use indexmap::{IndexMap, IndexSet};
 
 pub const MOBILE_MAX_BYTES: usize = 4 * 1024 * 1024;
 pub const MOBILE_MIN_USERS: usize = 10_000;
@@ -20,9 +20,9 @@ pub enum MobileGraphError {
 }
 
 impl SocialGraph {
-    /// Read a new public discovery seed. The coverage threshold counts distinct
-    /// reachable users from the published root. Applications choose their own
-    /// local cache policy before calling this helper.
+    /// Read and validate a public discovery seed in a single pass. The coverage
+    /// threshold counts distinct reachable users from the published root.
+    /// Applications choose their own local cache policy before calling this helper.
     pub fn from_mobile_binary(
         root: &str,
         bytes: &[u8],
@@ -41,65 +41,95 @@ impl SocialGraph {
         if count > MAX_NODES || count < min_users {
             return Err(Invalid("node count"));
         }
-        let mut ids = HashSet::with_capacity(count);
-        let mut keys = HashSet::with_capacity(count);
+
+        let mut ids = UniqueIds::with_capacity(count);
         for _ in 0..count {
-            let mut id_pos = pos;
-            let id = node_id(bytes, &mut id_pos)?;
-            let (key, _) = read_binary_node_id(version, bytes, &mut pos)?;
-            if key.trim().is_empty()
-                || !ids.insert(id)
-                || !keys.insert(canonical_node_id(&key).into_owned())
-            {
+            let id = node_id(bytes, &mut pos)?;
+            let value = read_typed_node_id(bytes, &mut pos).map_err(|err| match err {
+                SocialGraphError::EmptyString => Invalid("duplicate or empty identity"),
+                other => MobileGraphError::Decode(other),
+            })?;
+            if !ids.try_insert_unique(value, id) {
                 return Err(Invalid("duplicate or empty identity"));
             }
         }
-        if !keys.contains(canonical_node_id(root).as_ref()) {
+
+        let root_key = canonical_node_id(root);
+        let Some(&root_id) = ids.str_to_unique_id.get(root_key.as_ref()) else {
             return Err(Invalid("missing discovery root"));
-        }
-        drop(keys);
+        };
+
+        let mut list_revisions = IndexMap::<(u32, u32), ListRevision>::new();
         let mut remaining_edges = MAX_EDGES;
-        for _ in [3, 10_000] {
+        let mut decode_lists = |kind: u32| -> Result<DecodedLists, MobileGraphError> {
             let owners = read_count(bytes, &mut pos)?;
             if owners > count {
                 return Err(Invalid("too many list owners"));
             }
-            let mut rows = HashSet::with_capacity(owners);
+            let mut forward = IndexMap::with_capacity(owners);
+            let mut reverse =
+                IndexMap::<u32, IndexSet<u32>>::with_capacity(if kind == 3 { count } else { 0 });
+            let mut timestamps = IndexMap::with_capacity(owners);
             for _ in 0..owners {
                 let owner = node_id(bytes, &mut pos)?;
-                if !ids.contains(&owner) || !rows.insert(owner) {
+                if !ids.contains_id(owner) || forward.contains_key(&owner) {
                     return Err(Invalid("unknown or repeated list owner"));
                 }
-                read_varint(bytes, &mut pos)?;
-                match read_bytes(bytes, &mut pos, 1)?[0] {
-                    0 => {}
-                    1 | 2 => {
-                        read_bytes(bytes, &mut pos, 32)?;
-                    }
-                    _ => return Err(Invalid("revision flag")),
+                let timestamp = read_varint(bytes, &mut pos)?;
+                let revision =
+                    read_list_revision(bytes, &mut pos, timestamp).map_err(|err| match err {
+                        SocialGraphError::InvalidBinaryNodeIdType(_) => Invalid("revision flag"),
+                        other => MobileGraphError::Decode(other),
+                    })?;
+                if let Some(revision) = revision {
+                    list_revisions.insert((owner, kind), revision);
                 }
                 let edges = read_count(bytes, &mut pos)?;
                 if edges > count || edges > remaining_edges {
                     return Err(Invalid("edge count"));
                 }
                 remaining_edges -= edges;
-                let mut targets = HashSet::with_capacity(edges);
+                let mut targets = IndexSet::with_capacity(edges);
                 for _ in 0..edges {
                     let target = node_id(bytes, &mut pos)?;
-                    if !ids.contains(&target) || !targets.insert(target) {
+                    if !ids.contains_id(target) || !targets.insert(target) {
                         return Err(Invalid("unknown or repeated edge"));
                     }
+                    reverse.entry(target).or_default().insert(owner);
                 }
+                forward.insert(owner, targets);
+                timestamps.insert(owner, timestamp);
             }
-        }
+            Ok((forward, reverse, timestamps))
+        };
+
+        let (followed_by_user, followers_by_user, follow_list_created_at) = decode_lists(3)?;
+        let (muted_by_user, user_muted_by, mute_list_created_at) = decode_lists(10_000)?;
         if pos != bytes.len() {
             return Err(Invalid("trailing data"));
         }
-        drop(ids);
-        let graph = Self::from_binary(root, bytes)?;
-        if graph.size().users < min_users
-            || (graph.get_list_revision(root, 3).is_none()
-                && graph.get_followed_by_user(root).is_empty())
+
+        let mut graph = Self {
+            list_revisions,
+            root: root_id,
+            follow_distance_by_user: IndexMap::with_capacity(count),
+            users_by_follow_distance: IndexMap::new(),
+            followed_by_user,
+            followers_by_user,
+            follow_list_created_at,
+            muted_by_user,
+            user_muted_by,
+            mute_list_created_at,
+            ids,
+        };
+        graph.recalculate_follow_distances();
+
+        if graph.follow_distance_by_user.len() < min_users
+            || (!graph.list_revisions.contains_key(&(root_id, 3))
+                && graph
+                    .followed_by_user
+                    .get(&root_id)
+                    .is_none_or(IndexSet::is_empty))
         {
             return Err(Invalid("insufficient reachable graph"));
         }

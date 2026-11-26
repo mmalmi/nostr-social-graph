@@ -6,6 +6,8 @@ import { SocialGraphUtils } from './SocialGraphUtils.js';
 export interface ListRevision { id: string; created_at: number; complete: boolean }
 export interface GraphListRevision extends ListRevision { pubkey: string; kind: 3 | 10000 }
 
+const hexEventIdPattern = /^[0-9a-f]{64}$/;
+
 export class SocialGraph {
   private listRevisions = new Map<string, ListRevision>();
 
@@ -16,20 +18,22 @@ export class SocialGraph {
   }
 
   getListRevisions(): GraphListRevision[] {
-    return [...this.listRevisions].map(([key, revision]) => {
+    const result: GraphListRevision[] = [];
+    for (const [key, revision] of this.listRevisions) {
       const split = key.indexOf(':');
-      return {pubkey: key.slice(split + 1), kind: Number(key.slice(0, split)) as 3 | 10000, ...revision};
-    });
+      result.push({pubkey: key.slice(split + 1), kind: Number(key.slice(0, split)) as 3 | 10000, ...revision});
+    }
+    return result;
   }
 
   private acceptRevision(event: NostrEvent, previousAt: number | undefined): boolean {
     const key = `${event.kind}:${canonicalNodeId(event.pubkey)}`;
     const previous = this.listRevisions.get(key);
-    const validId = /^[0-9a-f]{64}$/.test(event.id);
+    const validId = hexEventIdPattern.test(event.id);
     if (previousAt !== undefined && (event.created_at < previousAt ||
       (event.created_at === previousAt && (!validId || (previous &&
         (event.id > previous.id || (event.id === previous.id && previous.complete))))))) return false;
-    if (validId) this.listRevisions.set(key, {id:event.id, created_at:event.created_at, complete:true});
+    if (validId) this.listRevisions.set(key, {id: event.id, created_at: event.created_at, complete: true});
     else this.listRevisions.delete(key);
     return true;
   }
@@ -48,7 +52,7 @@ export class SocialGraph {
   private followListCreatedAt = new Map<number, number>();
   private mutedByUser = new Map<number, Set<number>>();
   private userMutedBy = new Map<number, Set<number>>();
-  private muteListCreatedAt = new Map<number, number>()
+  private muteListCreatedAt = new Map<number, number>();
   private ids = new UniqueIds();
   private recalculationRequested = false;
 
@@ -72,7 +76,7 @@ export class SocialGraph {
   }
 
   getRoot() {
-    return this.str(this.root)
+    return this.str(this.root);
   }
 
   getInternalData() {
@@ -85,7 +89,7 @@ export class SocialGraph {
       followListCreatedAt: this.followListCreatedAt,
       muteListCreatedAt: this.muteListCreatedAt,
       ids: this.ids,
-      str: (id: number) => this.str(id)
+      str: (id: number) => this.str(id),
     };
   }
 
@@ -100,6 +104,43 @@ export class SocialGraph {
     this.followDistanceByUser = new Map([[rootId, 0]]);
     this.usersByFollowDistance = new Map([[0, new Set([rootId])]]);
     return this.recalculateFollowDistances();
+  }
+
+  /** Advance a BFS frontier up to `limit` queued users, avoiding empty-array allocations on leaves. */
+  private stepFollowDistances(
+    queue: number[],
+    head: number,
+    limit: number,
+    distances: Map<number, number>,
+    usersByDistance: Map<number, Set<number>>,
+  ): number {
+    const followedByUser = this.followedByUser;
+    for (; head < limit && head < queue.length; head++) {
+      const user = queue[head];
+      const followed = followedByUser.get(user);
+      if (!followed || !followed.size) continue;
+      const distance = distances.get(user)! + 1;
+      let bucket = usersByDistance.get(distance);
+      for (const target of followed) {
+        if (distances.has(target)) continue;
+        distances.set(target, distance);
+        if (!bucket) usersByDistance.set(distance, bucket = new Set());
+        bucket.add(target);
+        queue.push(target);
+      }
+    }
+    return head;
+  }
+
+  /** Synchronous full-graph BFS for freshly deserialized graphs with no concurrent readers. */
+  recalculateFollowDistancesSync(): void {
+    const root = this.root;
+    const distances = new Map<number, number>([[root, 0]]);
+    const usersByDistance = new Map<number, Set<number>>([[0, new Set([root])]]);
+    const queue = [root];
+    this.stepFollowDistances(queue, 0, Infinity, distances, usersByDistance);
+    this.followDistanceByUser = distances;
+    this.usersByFollowDistance = usersByDistance;
   }
 
   recalculateFollowDistances(
@@ -118,29 +159,17 @@ export class SocialGraph {
         do {
           this.recalculationRequested = false;
           const root = this.root;
-          const distances = new Map([[root, 0]]);
-          const usersByDistance = new Map([[0, new Set([root])]]);
+          const distances = new Map<number, number>([[root, 0]]);
+          const usersByDistance = new Map<number, Set<number>>([[0, new Set([root])]]);
           const queue = [root];
           let head = 0;
           const start = performance.now();
           logger(`recalculateFollowDistances: start (batchSize=${batchSize})`);
 
           while (head < queue.length) {
-            const end = head + batchSize;
             // Newly discovered users count toward this batch too. A deep graph
             // should not need a separate timer for every degree of separation.
-            for (; head < end && head < queue.length; head++) {
-              const user = queue[head];
-              const distance = distances.get(user)! + 1;
-              for (const followed of this.followedByUser.get(user) ?? []) {
-                if (distances.has(followed)) continue;
-                distances.set(followed, distance);
-                let bucket = usersByDistance.get(distance);
-                if (!bucket) usersByDistance.set(distance, bucket = new Set());
-                bucket.add(followed);
-                queue.push(followed);
-              }
-            }
+            head = this.stepFollowDistances(queue, head, head + batchSize, distances, usersByDistance);
             if (head > 0 && head % logEvery < batchSize) {
               logger(`recalculateFollowDistances: ${head} processed, ${queue.length - head} remaining`);
             }
@@ -160,109 +189,112 @@ export class SocialGraph {
   }
 
   handleEvent(evs: NostrEvent | Array<NostrEvent>, allowUnknownAuthors = false, overmuteThreshold = 1): boolean {
-    const filtered = (Array.isArray(evs) ? evs : [evs]).filter((a) => [3, 10000].includes(a.kind));
+    const maxCreatedAt = Math.floor(Date.now() / 1000) + 10 * 60;
+    const isList = Array.isArray(evs);
+    const count = isList ? evs.length : 1;
     let changed = false;
 
-    for (const event of filtered) {
-        const createdAt = event.created_at;
-        if (createdAt > Math.floor(Date.now() / 1000) + 10 * 60) {
-            console.debug("event.created_at more than 10 minutes in the future", event)
-            continue
-        }
-        if (!allowUnknownAuthors) {
-          const known = this.known(event.pubkey);
-          if (known === undefined || !this.followDistanceByUser.has(known)) continue;
-        }
-        const author = this.id(event.pubkey);
+    for (let i = 0; i < count; i++) {
+      const event = isList ? evs[i] : evs;
+      if (event.kind !== 3 && event.kind !== 10000) continue;
 
-        if (SocialGraphUtils.isOvermuted(this, event.pubkey, overmuteThreshold)) {
-            continue;
-        }
+      const createdAt = event.created_at;
+      if (createdAt > maxCreatedAt) {
+        console.debug("event.created_at more than 10 minutes in the future", event);
+        continue;
+      }
 
-        if (event.kind === 3) {
-            changed = this.handleFollowList(event, author, createdAt) || changed;
-        } else if (event.kind === 10000) {
-            changed = this.handleMuteList(event, author, createdAt) || changed;
-        }
+      let author: number;
+      if (!allowUnknownAuthors) {
+        const known = this.known(event.pubkey);
+        if (known === undefined || !this.followDistanceByUser.has(known)) continue;
+        author = known;
+      } else {
+        author = this.id(event.pubkey);
+      }
+
+      if (SocialGraphUtils.isOvermutedById(this, author, overmuteThreshold)) {
+        continue;
+      }
+
+      if (event.kind === 3) {
+        if (this.handleFollowList(event, author, createdAt)) changed = true;
+      } else {
+        if (this.handleMuteList(event, author, createdAt)) changed = true;
+      }
     }
 
     return changed;
   }
 
+  private parsePubkeyTags(tags: string[][], author: number): Set<number> {
+    const targets = new Set<number>();
+    for (let i = 0; i < tags.length; i++) {
+      const tag = tags[i];
+      if (tag[0] === 'p' && isValidPubKey(tag[1])) {
+        const target = this.id(tag[1]);
+        if (target !== author) targets.add(target);
+      }
+    }
+    return targets;
+  }
+
   private handleFollowList(event: NostrEvent, author: number, createdAt: number): boolean {
-    const existingCreatedAt = this.followListCreatedAt.get(author);
-    if (!this.acceptRevision(event, existingCreatedAt)) {
-        return false;
+    if (!this.acceptRevision(event, this.followListCreatedAt.get(author))) {
+      return false;
     }
     this.followListCreatedAt.set(author, createdAt);
 
-    const followedInEvent = new Set<number>();
-    for (const tag of event.tags) {
-        if (tag[0] === 'p') {
-            if (!isValidPubKey(tag[1])) {
-                continue;
-            }
-            const followedUser = this.id(tag[1]);
-            if (followedUser !== author) {
-                followedInEvent.add(followedUser);
-            }
-        }
-    }
+    const followedInEvent = this.parsePubkeyTags(event.tags, author);
+    const currentlyFollowed = this.followedByUser.get(author);
 
-    const currentlyFollowed = this.followedByUser.get(author) || new Set<number>();
-
-    for (const user of currentlyFollowed) {
+    if (currentlyFollowed) {
+      for (const user of currentlyFollowed) {
         if (!followedInEvent.has(user)) {
-            this.privateRemoveFollower(user, author);
+          this.privateRemoveFollower(user, author);
         }
-    }
-
-    for (const user of followedInEvent) {
+      }
+      for (const user of followedInEvent) {
+        if (!currentlyFollowed.has(user)) {
+          this.privateAddFollower(user, author);
+        }
+      }
+    } else {
+      for (const user of followedInEvent) {
         this.privateAddFollower(user, author);
+      }
     }
 
     return true;
   }
 
   private handleMuteList(event: NostrEvent, author: number, createdAt: number): boolean {
-    const existingCreatedAt = this.muteListCreatedAt.get(author);
-    if (!this.acceptRevision(event, existingCreatedAt)) {
-        return false;
+    if (!this.acceptRevision(event, this.muteListCreatedAt.get(author))) {
+      return false;
     }
     this.muteListCreatedAt.set(author, createdAt);
 
-    const mutedInEvent = new Set<number>();
-    for (const tag of event.tags) {
-        if (tag[0] === 'p') {
-            if (!isValidPubKey(tag[1])) {
-                continue;
-            }
-            const mutedUser = this.id(tag[1]);
-            if (mutedUser !== author) {
-                mutedInEvent.add(mutedUser);
-            }
-        }
-    }
+    const mutedInEvent = this.parsePubkeyTags(event.tags, author);
+    let currentlyMuted = this.mutedByUser.get(author);
 
-    const currentlyMuted = this.mutedByUser.get(author) || new Set<number>();
-
-    for (const user of currentlyMuted) {
+    if (currentlyMuted) {
+      for (const user of currentlyMuted) {
         if (!mutedInEvent.has(user)) {
-            this.mutedByUser.get(author)?.delete(user);
-            this.userMutedBy.get(user)?.delete(author);
+          currentlyMuted.delete(user);
+          this.userMutedBy.get(user)?.delete(author);
         }
+      }
     }
 
-    for (const user of mutedInEvent) {
-        if (!this.mutedByUser.has(author)) {
-            this.mutedByUser.set(author, new Set<number>());
-        }
-        this.mutedByUser.get(author)?.add(user);
-
-        if (!this.userMutedBy.has(user)) {
-            this.userMutedBy.set(user, new Set<number>());
-        }
-        this.userMutedBy.get(user)?.add(author);
+    if (mutedInEvent.size) {
+      if (!currentlyMuted) this.mutedByUser.set(author, currentlyMuted = new Set<number>());
+      for (const user of mutedInEvent) {
+        if (currentlyMuted.has(user)) continue;
+        currentlyMuted.add(user);
+        let muters = this.userMutedBy.get(user);
+        if (!muters) this.userMutedBy.set(user, muters = new Set<number>());
+        muters.add(author);
+      }
     }
 
     return true;
@@ -321,12 +353,15 @@ export class SocialGraph {
     this.setDistance(user, distance);
     const queue = [user];
     for (let head = 0; head < queue.length; head++) {
-      const next = this.followDistanceByUser.get(queue[head])! + 1;
-      for (const followed of this.followedByUser.get(queue[head]) ?? []) {
-        const known = this.followDistanceByUser.get(followed);
+      const id = queue[head];
+      const followed = this.followedByUser.get(id);
+      if (!followed || !followed.size) continue;
+      const next = this.followDistanceByUser.get(id)! + 1;
+      for (const target of followed) {
+        const known = this.followDistanceByUser.get(target);
         if (known === undefined || known > next) {
-          this.setDistance(followed, next);
-          queue.push(followed);
+          this.setDistance(target, next);
+          queue.push(target);
         }
       }
     }
@@ -340,8 +375,10 @@ export class SocialGraph {
     const distances = this.followDistanceByUser;
     const orphaned = new Set<number>();
     const hasCloserFollower = (id: number) => {
+      const followers = this.followersByUser.get(id);
+      if (!followers) return false;
       const closer = distances.get(id)! - 1;
-      for (const follower of this.followersByUser.get(id) ?? []) {
+      for (const follower of followers) {
         if (distances.get(follower) === closer && !orphaned.has(follower)) return true;
       }
       return false;
@@ -350,18 +387,22 @@ export class SocialGraph {
     orphaned.add(user);
     // Sets iterate in insertion order, including additions: closest users first.
     for (const id of orphaned) {
+      const followed = this.followedByUser.get(id);
+      if (!followed) continue;
       const next = distances.get(id)! + 1;
-      for (const followed of this.followedByUser.get(id) ?? []) {
-        if (distances.get(followed) === next && !orphaned.has(followed) && !hasCloserFollower(followed)) {
-          orphaned.add(followed);
+      for (const target of followed) {
+        if (distances.get(target) === next && !orphaned.has(target) && !hasCloserFollower(target)) {
+          orphaned.add(target);
         }
       }
     }
     for (const id of orphaned) this.setDistance(id, undefined);
     // Reattach through the nearest follower that is still reachable.
     for (const id of orphaned) {
+      const followers = this.followersByUser.get(id);
+      if (!followers) continue;
       let nearest = Infinity;
-      for (const follower of this.followersByUser.get(id) ?? []) {
+      for (const follower of followers) {
         const distance = distances.get(follower);
         if (distance !== undefined && distance < nearest) nearest = distance;
       }
@@ -393,12 +434,12 @@ export class SocialGraph {
 
   addFollower(follower: string, followedUser: string) {
     this.markListIncomplete(follower, 3);
-    this.privateAddFollower(this.id(followedUser), this.id(follower))
+    this.privateAddFollower(this.id(followedUser), this.id(follower));
   }
 
   removeFollower(follower: string, followedUser: string) {
     this.markListIncomplete(follower, 3);
-    this.privateRemoveFollower(this.id(followedUser), this.id(follower))
+    this.privateRemoveFollower(this.id(followedUser), this.id(follower));
   }
 
   private privateRemoveFollower(unfollowedUser: number, follower: number) {
@@ -416,27 +457,30 @@ export class SocialGraph {
   }
 
   followerCount(address: string) {
-    return this.getFollowersSet(this.known(address)).size;
+    const id = this.known(address);
+    return id === undefined ? 0 : (this.followersByUser.get(id)?.size ?? 0);
   }
 
   followedByFriendsCount(address: string) {
-    let count = 0;
     const id = this.known(address);
-    for (const follower of this.getFollowersSet(id)) {
-      if (this.followedByUser.get(this.root)?.has(follower)) {
-        count++;
-      }
+    const followers = id === undefined ? undefined : this.followersByUser.get(id);
+    const rootFollows = this.followedByUser.get(this.root);
+    if (!followers || !rootFollows) return 0;
+    let count = 0;
+    for (const follower of followers) {
+      if (rootFollows.has(follower)) count++;
     }
     return count;
   }
 
   mutedByFriendsCount(address: string) {
-    let count = 0;
     const id = this.known(address);
-    for (const muter of (id === undefined ? undefined : this.userMutedBy.get(id)) ?? []) {
-      if (this.followedByUser.get(this.root)?.has(muter)) {
-        count++;
-      }
+    const muters = id === undefined ? undefined : this.userMutedBy.get(id);
+    const rootFollows = this.followedByUser.get(this.root);
+    if (!muters || !rootFollows) return 0;
+    let count = 0;
+    for (const muter of muters) {
+      if (rootFollows.has(muter)) count++;
     }
     return count;
   }
@@ -446,14 +490,8 @@ export class SocialGraph {
     let mutes = 0;
     const sizeByDistance: { [distance: number]: number } = {};
 
-    for (const followedSet of this.followedByUser.values()) {
-      follows += followedSet.size;
-    }
-
-    for (const mutedSet of this.mutedByUser.values()) {
-      mutes += mutedSet.size;
-    }
-
+    for (const followedSet of this.followedByUser.values()) follows += followedSet.size;
+    for (const mutedSet of this.mutedByUser.values()) mutes += mutedSet.size;
     for (const [distance, users] of this.usersByFollowDistance.entries()) {
       sizeByDistance[distance] = users.size;
     }
@@ -472,11 +510,13 @@ export class SocialGraph {
   }
 
   followedByFriends(address: string) {
-    const id = this.known(address);
     const set = new Set<string>();
-    for (const follower of this.getFollowersSet(id)) {
-      if (this.followedByUser.get(this.root)?.has(follower)) {
-        set.add(this.str(follower));
+    const id = this.known(address);
+    const followers = id === undefined ? undefined : this.followersByUser.get(id);
+    const rootFollows = this.followedByUser.get(this.root);
+    if (followers && rootFollows) {
+      for (const follower of followers) {
+        if (rootFollows.has(follower)) set.add(this.str(follower));
       }
     }
     return set;
@@ -484,9 +524,7 @@ export class SocialGraph {
 
   getFollowedByUser(user: string, includeSelf = false): Set<string> {
     const set = this.strings(this.followedByUser, user);
-    if (includeSelf) {
-      set.add(user);
-    }
+    if (includeSelf) set.add(user);
     return set;
   }
 
@@ -498,16 +536,18 @@ export class SocialGraph {
   private strings(edges: Map<number, Set<number>>, user: string): Set<string> {
     const set = new Set<string>();
     const id = this.known(user);
-    for (const other of (id === undefined ? undefined : edges.get(id)) ?? []) {
-      set.add(this.str(other));
+    const related = id === undefined ? undefined : edges.get(id);
+    if (related) {
+      for (const other of related) set.add(this.str(other));
     }
     return set;
   }
 
   getUsersByFollowDistance(distance: number): Set<string> {
     const result = new Set<string>();
-    for (const user of this.usersByFollowDistance.get(distance) ?? []) {
-      result.add(this.str(user));
+    const users = this.usersByFollowDistance.get(distance);
+    if (users) {
+      for (const user of users) result.add(this.str(user));
     }
     return result;
   }
@@ -546,7 +586,7 @@ export class SocialGraph {
     other: SocialGraph,
     ourCreatedAtMap: Map<number, number>,
     theirCreatedAtMap: Map<number, number>,
-    ourUserMap: Map<number, Set<number>>, 
+    ourUserMap: Map<number, Set<number>>,
     theirUserMap: Map<number, Set<number>>,
     ourReverseMap: Map<number, Set<number>>
   ) {
@@ -555,10 +595,11 @@ export class SocialGraph {
     // No source list is different from an authoritative empty list.
     if (theirCreatedAt === undefined && theirUsers === undefined) return;
 
-    const userId = this.id(other.str(theirUserId));
+    const ownerKey = other.str(theirUserId);
+    const userId = this.id(ownerKey);
     const ourCreatedAt = ourCreatedAtMap.get(userId);
     const kind = ourCreatedAtMap === this.followListCreatedAt ? 3 : 10000;
-    const key = `${kind}:${other.str(theirUserId)}`;
+    const key = `${kind}:${ownerKey}`;
     const incoming = other.listRevisions.get(key);
     const current = this.listRevisions.get(key);
     // A projection cannot erase a client's more complete crawl.
@@ -571,11 +612,16 @@ export class SocialGraph {
 
     // Numeric IDs are private to each graph, including IDs inside each list.
     const newUsers = new Set<number>();
-    for (const theirTarget of theirUsers ?? []) {
-      newUsers.add(this.id(other.str(theirTarget)));
+    if (theirUsers) {
+      for (const theirTarget of theirUsers) {
+        newUsers.add(this.id(other.str(theirTarget)));
+      }
     }
-    for (const currentUser of ourUserMap.get(userId) ?? []) {
-      if (!newUsers.has(currentUser)) ourReverseMap.get(currentUser)?.delete(userId);
+    const oldUsers = ourUserMap.get(userId);
+    if (oldUsers) {
+      for (const currentUser of oldUsers) {
+        if (!newUsers.has(currentUser)) ourReverseMap.get(currentUser)?.delete(userId);
+      }
     }
     for (const newUser of newUsers) {
       let reverse = ourReverseMap.get(newUser);
@@ -589,13 +635,10 @@ export class SocialGraph {
   *userIterator(upToDistance?: number): Generator<string> {
     const distances = Array.from(this.usersByFollowDistance.keys()).sort((a, b) => a - b);
     for (const distance of distances) {
-      if (upToDistance !== undefined && distance > upToDistance) {
-        break;
-      }
-      const users = this.usersByFollowDistance.get(distance) || new Set<number>();
-      for (const user of users) {
-        yield this.str(user);
-      }
+      if (upToDistance !== undefined && distance > upToDistance) break;
+      const users = this.usersByFollowDistance.get(distance);
+      if (!users) continue;
+      for (const user of users) yield this.str(user);
     }
   }
 
@@ -618,8 +661,8 @@ export class SocialGraph {
 
   /**
    * Remove users who are muted by someone AND have zero followers.
-   * O(E + M) where E = follows edges, M = mutes edges.
-   * Now async and non-blocking with batching.
+   * O(M) to scan muted users + O(incident edges) to remove them.
+   * Async and non-blocking with batching.
    */
   removeMutedNotFollowedUsers(
     batchSize = 10_000,
@@ -642,9 +685,5 @@ export class SocialGraph {
 
   static fromBinaryStream(root: string, stream: ReadableStream<Uint8Array>): Promise<SocialGraph> {
     return Binary.fromBinaryStream(root, stream);
-  }
-
-  private getFollowersSet(id: number | undefined): Set<number> {
-    return (id === undefined ? undefined : this.followersByUser.get(id)) ?? new Set();
   }
 }

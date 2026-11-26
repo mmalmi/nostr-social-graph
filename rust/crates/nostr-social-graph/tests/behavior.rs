@@ -165,8 +165,55 @@ fn zero_threshold_is_not_overmuted_without_root_mute() {
     graph.handle_event(&event(SNOWDEN, 10_000, 1_002, vec![FIATJAF]), true, 1.0);
 
     assert!(!graph.is_overmuted(FIATJAF, 0.0));
+    assert!(!graph.is_overmuted(FIATJAF, -1.0));
+    assert!(!graph.is_overmuted(FIATJAF, f64::NAN));
     assert!(!graph.is_overmuted(FIATJAF, 1.0));
     assert!(graph.is_overmuted(FIATJAF, 1.1));
+    assert!(graph.is_overmuted(FIATJAF, f64::INFINITY));
+}
+
+#[test]
+fn closer_follower_beats_distant_muter_and_unreachable_muter_never_overmutes() {
+    let mut graph = SocialGraph::new(ADAM);
+    graph.handle_event(&event(ADAM, 3, 1_000, vec![FIATJAF]), true, 1.0);
+    graph.handle_event(&event(FIATJAF, 3, 1_001, vec![SNOWDEN, SIRIUS]), true, 1.0);
+    // Distance-2 muter vs distance-1 follower
+    graph.handle_event(&event(SNOWDEN, 10_000, 1_002, vec![SIRIUS]), true, 1.0);
+    // Unreachable muter (DIANA)
+    graph.handle_event(&event(DIANA, 10_000, 1_003, vec![CHARLIE]), true, 1.0);
+
+    assert!(!graph.is_overmuted(SIRIUS, 1.0));
+    assert!(!graph.is_overmuted(SIRIUS, f64::INFINITY));
+    assert!(!graph.is_overmuted(CHARLIE, 1.0));
+    assert!(!graph.is_overmuted(CHARLIE, f64::INFINITY));
+    assert!(!graph.is_overmuted(&ADAM.to_uppercase(), f64::INFINITY));
+}
+
+#[test]
+fn batched_follow_list_diff_matches_full_recalculation() {
+    let mut graph = SocialGraph::new(ADAM);
+    graph.handle_event(&event(ADAM, 3, 1_000, vec![FIATJAF, SNOWDEN]), true, 1.0);
+    graph.handle_event(&event(FIATJAF, 3, 1_001, vec![SIRIUS, CHARLIE]), true, 1.0);
+    graph.handle_event(&event(SIRIUS, 3, 1_002, vec![DIANA]), true, 1.0);
+    graph.handle_event(&event(SNOWDEN, 3, 1_003, vec![CHARLIE]), true, 1.0);
+
+    // Revision-only unchanged refresh keeps distances and updates timestamp
+    graph.handle_event(&event(FIATJAF, 3, 1_010, vec![SIRIUS, CHARLIE]), true, 1.0);
+    assert_eq!(graph.get_follow_list_created_at(FIATJAF), Some(1_010));
+    assert_eq!(graph.get_follow_distance(DIANA), 3);
+
+    // Simultaneous unfollow of SIRIUS + CHARLIE and follow of DIANA
+    graph.handle_event(&event(FIATJAF, 3, 1_020, vec![DIANA]), true, 1.0);
+    assert_eq!(graph.get_follow_distance(SIRIUS), 1000);
+    assert_eq!(graph.get_follow_distance(CHARLIE), 2);
+    assert_eq!(graph.get_follow_distance(DIANA), 2);
+
+    let before_recalc =
+        [ADAM, FIATJAF, SNOWDEN, SIRIUS, CHARLIE, DIANA].map(|pk| graph.get_follow_distance(pk));
+    graph.recalculate_follow_distances();
+    let after_recalc =
+        [ADAM, FIATJAF, SNOWDEN, SIRIUS, CHARLIE, DIANA].map(|pk| graph.get_follow_distance(pk));
+    assert_eq!(before_recalc, after_recalc);
 }
 
 #[test]
