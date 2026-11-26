@@ -3,7 +3,14 @@ export type { ListRevision, GraphListRevision } from './SocialGraph.js';
 
 export { UniqueIds } from './UniqueIds.js';
 export type { NostrEvent } from './utils.js';
-export { toBinaryChunks, toBinary, fromBinary, fromBinaryStream } from './SocialGraphBinary.js';
+export {
+  BINARY_FORMAT_VERSION,
+  BINARY_FORMAT_VERSION_V5,
+  toBinaryChunks,
+  toBinary,
+  fromBinary,
+  fromBinaryStream,
+} from './SocialGraphBinary.js';
 export * from './factEvents.js';
 export * from './trustedAuthors.js';
 export * from './contactMemory.js';

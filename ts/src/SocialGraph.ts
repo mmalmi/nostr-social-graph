@@ -6,7 +6,141 @@ import { SocialGraphUtils } from './SocialGraphUtils.js';
 export interface ListRevision { id: string; created_at: number; complete: boolean }
 export interface GraphListRevision extends ListRevision { pubkey: string; kind: 3 | 10000 }
 
+/** Reverse-index slot storing a single follower/muter inline without allocating a Set. */
+export type CompactEdgeEntry = number | Set<number>;
+
 const hexEventIdPattern = /^[0-9a-f]{64}$/;
+const MAX_DENSE_DISTANCES = 1_000_000;
+
+/**
+ * Dense `Int32Array` distance table that transitions cleanly to a `Map` if a
+ * sparse legacy ID arrives, avoiding any key shadowing between dense & sparse.
+ */
+export class DistanceTable {
+  private dense: Int32Array | null;
+  private sparse: Map<number, number> | null;
+  private count = 0;
+
+  constructor(denseCapacity = 0) {
+    if (denseCapacity > 0 && denseCapacity <= MAX_DENSE_DISTANCES) {
+      this.dense = new Int32Array(denseCapacity).fill(-1);
+      this.sparse = null;
+    } else {
+      this.dense = null;
+      this.sparse = new Map();
+    }
+  }
+
+  private switchToSparse(): Map<number, number> {
+    if (this.sparse) return this.sparse;
+    const map = new Map<number, number>();
+    const d = this.dense!;
+    for (let i = 0; i < d.length; i++) {
+      if (d[i] !== -1) map.set(i, d[i]);
+    }
+    this.dense = null;
+    this.sparse = map;
+    return map;
+  }
+
+  get size(): number {
+    return this.dense !== null ? this.count : this.sparse!.size;
+  }
+
+  get(id: number): number | undefined {
+    const d = this.dense;
+    if (d !== null) {
+      if (id >= 0 && id < d.length) {
+        const val = d[id];
+        return val === -1 ? undefined : val;
+      }
+      return undefined;
+    }
+    return this.sparse!.get(id);
+  }
+
+  has(id: number): boolean {
+    const d = this.dense;
+    if (d !== null) return id >= 0 && id < d.length && d[id] !== -1;
+    return this.sparse!.has(id);
+  }
+
+  set(id: number, distance: number): void {
+    const d = this.dense;
+    if (d !== null) {
+      if (id >= 0 && id < d.length) {
+        if (d[id] === -1) this.count++;
+        d[id] = distance;
+        return;
+      }
+      if (id >= 0 && id < MAX_DENSE_DISTANCES && id < d.length * 2 + 64) {
+        const nextLen = Math.min(MAX_DENSE_DISTANCES, Math.max(id + 1, d.length * 2));
+        const grown = new Int32Array(nextLen).fill(-1);
+        grown.set(d);
+        this.dense = grown;
+        grown[id] = distance;
+        this.count++;
+        return;
+      }
+      this.switchToSparse().set(id, distance);
+      return;
+    }
+    this.sparse!.set(id, distance);
+  }
+
+  delete(id: number): boolean {
+    const d = this.dense;
+    if (d !== null) {
+      if (id >= 0 && id < d.length && d[id] !== -1) {
+        d[id] = -1;
+        this.count--;
+        return true;
+      }
+      return false;
+    }
+    return this.sparse!.delete(id);
+  }
+
+  clear(): void {
+    if (this.dense) {
+      this.dense.fill(-1);
+      this.count = 0;
+    } else {
+      this.sparse!.clear();
+    }
+  }
+}
+
+export function addCompactEdge(
+  map: Map<number, CompactEdgeEntry>,
+  target: number,
+  owner: number,
+  materialized: boolean,
+): void {
+  const cur = map.get(target);
+  if (cur === undefined) {
+    map.set(target, materialized ? new Set([owner]) : owner);
+  } else if (typeof cur === 'number') {
+    if (cur !== owner) map.set(target, new Set([cur, owner]));
+  } else {
+    cur.add(owner);
+  }
+}
+
+export function removeCompactEdge(
+  map: Map<number, CompactEdgeEntry>,
+  target: number,
+  owner: number,
+): void {
+  const cur = map.get(target);
+  if (cur === undefined) return;
+  if (typeof cur === 'number') {
+    if (cur === owner) map.delete(target);
+  } else {
+    cur.delete(owner);
+    if (cur.size === 0) map.delete(target);
+  }
+}
 
 export class SocialGraph {
   private listRevisions = new Map<string, ListRevision>();
@@ -45,13 +179,15 @@ export class SocialGraph {
 
   private root: number;
   private recalculatingPromise = null as Promise<void> | null;
-  private followDistanceByUser = new Map<number, number>();
+  private followDistanceByUser = new DistanceTable(16);
   private usersByFollowDistance = new Map<number, Set<number>>();
   private followedByUser = new Map<number, Set<number>>();
-  private followersByUser = new Map<number, Set<number>>();
+  private followersByUser = new Map<number, CompactEdgeEntry>();
+  private followersMaterialized = false;
   private followListCreatedAt = new Map<number, number>();
   private mutedByUser = new Map<number, Set<number>>();
-  private userMutedBy = new Map<number, Set<number>>();
+  private userMutedBy = new Map<number, CompactEdgeEntry>();
+  private userMutedByMaterialized = false;
   private muteListCreatedAt = new Map<number, number>();
   private ids = new UniqueIds();
   private recalculationRequested = false;
@@ -79,18 +215,47 @@ export class SocialGraph {
     return this.str(this.root);
   }
 
+  private materializeFollowers(): Map<number, Set<number>> {
+    if (!this.followersMaterialized) {
+      for (const [k, v] of this.followersByUser) {
+        if (typeof v === 'number') this.followersByUser.set(k, new Set([v]));
+      }
+      this.followersMaterialized = true;
+    }
+    return this.followersByUser as Map<number, Set<number>>;
+  }
+
+  private materializeUserMutedBy(): Map<number, Set<number>> {
+    if (!this.userMutedByMaterialized) {
+      for (const [k, v] of this.userMutedBy) {
+        if (typeof v === 'number') this.userMutedBy.set(k, new Set([v]));
+      }
+      this.userMutedByMaterialized = true;
+    }
+    return this.userMutedBy as Map<number, Set<number>>;
+  }
+
   getInternalData() {
+    const self = this;
     return {
       listRevisions: this.listRevisions,
       followedByUser: this.followedByUser,
-      followersByUser: this.followersByUser,
+      get followersByUser(): Map<number, Set<number>> {
+        return self.materializeFollowers();
+      },
       mutedByUser: this.mutedByUser,
-      userMutedBy: this.userMutedBy,
+      get userMutedBy(): Map<number, Set<number>> {
+        return self.materializeUserMutedBy();
+      },
       followListCreatedAt: this.followListCreatedAt,
       muteListCreatedAt: this.muteListCreatedAt,
       ids: this.ids,
       str: (id: number) => this.str(id),
     };
+  }
+
+  private newDistanceTable(): DistanceTable {
+    return new DistanceTable(this.ids.isDense ? Math.max(16, this.ids.denseLength) : 0);
   }
 
   setRoot(root: string): Promise<void> {
@@ -101,7 +266,9 @@ export class SocialGraph {
 
     this.root = rootId;
     // Do not expose distances from the previous root while computing the new one.
-    this.followDistanceByUser = new Map([[rootId, 0]]);
+    const distances = this.newDistanceTable();
+    distances.set(rootId, 0);
+    this.followDistanceByUser = distances;
     this.usersByFollowDistance = new Map([[0, new Set([rootId])]]);
     return this.recalculateFollowDistances();
   }
@@ -111,7 +278,7 @@ export class SocialGraph {
     queue: number[],
     head: number,
     limit: number,
-    distances: Map<number, number>,
+    distances: DistanceTable,
     usersByDistance: Map<number, Set<number>>,
   ): number {
     const followedByUser = this.followedByUser;
@@ -135,7 +302,8 @@ export class SocialGraph {
   /** Synchronous full-graph BFS for freshly deserialized graphs with no concurrent readers. */
   recalculateFollowDistancesSync(): void {
     const root = this.root;
-    const distances = new Map<number, number>([[root, 0]]);
+    const distances = this.newDistanceTable();
+    distances.set(root, 0);
     const usersByDistance = new Map<number, Set<number>>([[0, new Set([root])]]);
     const queue = [root];
     this.stepFollowDistances(queue, 0, Infinity, distances, usersByDistance);
@@ -159,7 +327,8 @@ export class SocialGraph {
         do {
           this.recalculationRequested = false;
           const root = this.root;
-          const distances = new Map<number, number>([[root, 0]]);
+          const distances = this.newDistanceTable();
+          distances.set(root, 0);
           const usersByDistance = new Map<number, Set<number>>([[0, new Set([root])]]);
           const queue = [root];
           let head = 0;
@@ -281,8 +450,12 @@ export class SocialGraph {
       for (const user of currentlyMuted) {
         if (!mutedInEvent.has(user)) {
           currentlyMuted.delete(user);
-          this.userMutedBy.get(user)?.delete(author);
+          removeCompactEdge(this.userMutedBy, user, author);
         }
+      }
+      if (currentlyMuted.size === 0) {
+        this.mutedByUser.delete(author);
+        currentlyMuted = undefined;
       }
     }
 
@@ -291,9 +464,7 @@ export class SocialGraph {
       for (const user of mutedInEvent) {
         if (currentlyMuted.has(user)) continue;
         currentlyMuted.add(user);
-        let muters = this.userMutedBy.get(user);
-        if (!muters) this.userMutedBy.set(user, muters = new Set<number>());
-        muters.add(author);
+        addCompactEdge(this.userMutedBy, user, author, this.userMutedByMaterialized);
       }
     }
 
@@ -376,8 +547,11 @@ export class SocialGraph {
     const orphaned = new Set<number>();
     const hasCloserFollower = (id: number) => {
       const followers = this.followersByUser.get(id);
-      if (!followers) return false;
+      if (followers === undefined) return false;
       const closer = distances.get(id)! - 1;
+      if (typeof followers === 'number') {
+        return distances.get(followers) === closer && !orphaned.has(followers);
+      }
       for (const follower of followers) {
         if (distances.get(follower) === closer && !orphaned.has(follower)) return true;
       }
@@ -400,11 +574,16 @@ export class SocialGraph {
     // Reattach through the nearest follower that is still reachable.
     for (const id of orphaned) {
       const followers = this.followersByUser.get(id);
-      if (!followers) continue;
+      if (followers === undefined) continue;
       let nearest = Infinity;
-      for (const follower of followers) {
-        const distance = distances.get(follower);
-        if (distance !== undefined && distance < nearest) nearest = distance;
+      if (typeof followers === 'number') {
+        const distance = distances.get(followers);
+        if (distance !== undefined) nearest = distance;
+      } else {
+        for (const follower of followers) {
+          const distance = distances.get(follower);
+          if (distance !== undefined && distance < nearest) nearest = distance;
+        }
       }
       if (nearest !== Infinity) this.lowerDistance(id, nearest + 1);
     }
@@ -423,9 +602,7 @@ export class SocialGraph {
     }
 
     // Maintain reverse index
-    let followers = this.followersByUser.get(followedUser);
-    if (!followers) this.followersByUser.set(followedUser, followers = new Set());
-    followers.add(follower);
+    addCompactEdge(this.followersByUser, followedUser, follower, this.followersMaterialized);
 
     // A new edge can only shorten paths, and only from a reachable follower.
     const followerDistance = this.followDistanceByUser.get(follower);
@@ -443,11 +620,13 @@ export class SocialGraph {
   }
 
   private privateRemoveFollower(unfollowedUser: number, follower: number) {
-    if (!this.followedByUser.get(follower)?.delete(unfollowedUser)) return;
+    const followed = this.followedByUser.get(follower);
+    if (!followed?.delete(unfollowedUser)) return;
+    if (followed.size === 0) this.followedByUser.delete(follower);
     if (this.recalculatingPromise) this.recalculationRequested = true;
 
     // Maintain reverse index
-    this.followersByUser.get(unfollowedUser)?.delete(follower);
+    removeCompactEdge(this.followersByUser, unfollowedUser, follower);
 
     // Only the loss of a shortest path can change distances.
     const distance = this.followDistanceByUser.get(unfollowedUser);
@@ -458,14 +637,18 @@ export class SocialGraph {
 
   followerCount(address: string) {
     const id = this.known(address);
-    return id === undefined ? 0 : (this.followersByUser.get(id)?.size ?? 0);
+    if (id === undefined) return 0;
+    const followers = this.followersByUser.get(id);
+    if (followers === undefined) return 0;
+    return typeof followers === 'number' ? 1 : followers.size;
   }
 
   followedByFriendsCount(address: string) {
     const id = this.known(address);
     const followers = id === undefined ? undefined : this.followersByUser.get(id);
     const rootFollows = this.followedByUser.get(this.root);
-    if (!followers || !rootFollows) return 0;
+    if (followers === undefined || !rootFollows) return 0;
+    if (typeof followers === 'number') return rootFollows.has(followers) ? 1 : 0;
     let count = 0;
     for (const follower of followers) {
       if (rootFollows.has(follower)) count++;
@@ -477,7 +660,8 @@ export class SocialGraph {
     const id = this.known(address);
     const muters = id === undefined ? undefined : this.userMutedBy.get(id);
     const rootFollows = this.followedByUser.get(this.root);
-    if (!muters || !rootFollows) return 0;
+    if (muters === undefined || !rootFollows) return 0;
+    if (typeof muters === 'number') return rootFollows.has(muters) ? 1 : 0;
     let count = 0;
     for (const muter of muters) {
       if (rootFollows.has(muter)) count++;
@@ -514,9 +698,13 @@ export class SocialGraph {
     const id = this.known(address);
     const followers = id === undefined ? undefined : this.followersByUser.get(id);
     const rootFollows = this.followedByUser.get(this.root);
-    if (followers && rootFollows) {
-      for (const follower of followers) {
-        if (rootFollows.has(follower)) set.add(this.str(follower));
+    if (followers !== undefined && rootFollows) {
+      if (typeof followers === 'number') {
+        if (rootFollows.has(followers)) set.add(this.str(followers));
+      } else {
+        for (const follower of followers) {
+          if (rootFollows.has(follower)) set.add(this.str(follower));
+        }
       }
     }
     return set;
@@ -529,16 +717,28 @@ export class SocialGraph {
   }
 
   getFollowersByUser(address: string): Set<string> {
-    return this.strings(this.followersByUser, address);
+    return this.stringsCompact(this.followersByUser, address);
   }
 
-  /** Public keys related to `user` in one of the edge maps. */
+  /** Public keys related to `user` in one of the forward edge maps. */
   private strings(edges: Map<number, Set<number>>, user: string): Set<string> {
     const set = new Set<string>();
     const id = this.known(user);
     const related = id === undefined ? undefined : edges.get(id);
     if (related) {
       for (const other of related) set.add(this.str(other));
+    }
+    return set;
+  }
+
+  /** Public keys related to `user` in a compact reverse edge map. */
+  private stringsCompact(edges: Map<number, CompactEdgeEntry>, user: string): Set<string> {
+    const set = new Set<string>();
+    const id = this.known(user);
+    const related = id === undefined ? undefined : edges.get(id);
+    if (related !== undefined) {
+      if (typeof related === 'number') set.add(this.str(related));
+      else for (const other of related) set.add(this.str(other));
     }
     return set;
   }
@@ -572,9 +772,9 @@ export class SocialGraph {
     let processed = 0;
     for (const user of users) {
       this.mergeUserLists(user, other, this.followListCreatedAt, other.followListCreatedAt,
-        this.followedByUser, other.followedByUser, this.followersByUser);
+        this.followedByUser, other.followedByUser, this.followersByUser, this.followersMaterialized);
       this.mergeUserLists(user, other, this.muteListCreatedAt, other.muteListCreatedAt,
-        this.mutedByUser, other.mutedByUser, this.userMutedBy);
+        this.mutedByUser, other.mutedByUser, this.userMutedBy, this.userMutedByMaterialized);
       // Yield in bounded batches rather than imposing one timer per identity.
       if (++processed % 256 === 0) await new Promise(resolve => setTimeout(resolve, 0));
     }
@@ -588,7 +788,8 @@ export class SocialGraph {
     theirCreatedAtMap: Map<number, number>,
     ourUserMap: Map<number, Set<number>>,
     theirUserMap: Map<number, Set<number>>,
-    ourReverseMap: Map<number, Set<number>>
+    ourReverseMap: Map<number, CompactEdgeEntry>,
+    reverseMaterialized: boolean
   ) {
     const theirCreatedAt = theirCreatedAtMap.get(theirUserId);
     const theirUsers = theirUserMap.get(theirUserId);
@@ -620,15 +821,14 @@ export class SocialGraph {
     const oldUsers = ourUserMap.get(userId);
     if (oldUsers) {
       for (const currentUser of oldUsers) {
-        if (!newUsers.has(currentUser)) ourReverseMap.get(currentUser)?.delete(userId);
+        if (!newUsers.has(currentUser)) removeCompactEdge(ourReverseMap, currentUser, userId);
       }
     }
     for (const newUser of newUsers) {
-      let reverse = ourReverseMap.get(newUser);
-      if (!reverse) ourReverseMap.set(newUser, reverse = new Set());
-      reverse.add(userId);
+      addCompactEdge(ourReverseMap, newUser, userId, reverseMaterialized);
     }
-    ourUserMap.set(userId, newUsers);
+    if (newUsers.size) ourUserMap.set(userId, newUsers);
+    else ourUserMap.delete(userId);
     if (theirCreatedAt !== undefined) ourCreatedAtMap.set(userId, theirCreatedAt);
   }
 
@@ -651,7 +851,7 @@ export class SocialGraph {
   }
 
   getUserMutedBy(user: string): Set<string> {
-    return this.strings(this.userMutedBy, user);
+    return this.stringsCompact(this.userMutedBy, user);
   }
 
   // follower and muter counts by distance
@@ -671,12 +871,24 @@ export class SocialGraph {
     return SocialGraphUtils.removeMutedNotFollowedUsers(this, batchSize, logger);
   }
 
-  toBinaryChunks(maxNodes?: number, maxEdges?: number, maxDistance?: number, maxEdgesPerNode?: number): AsyncGenerator<Uint8Array> {
-    return Binary.toBinaryChunks(this, maxNodes, maxEdges, maxDistance, maxEdgesPerNode);
+  toBinaryChunks(
+    maxNodes?: number,
+    maxEdges?: number,
+    maxDistance?: number,
+    maxEdgesPerNode?: number,
+    version?: 3 | 4 | 5
+  ): AsyncGenerator<Uint8Array> {
+    return Binary.toBinaryChunks(this, maxNodes, maxEdges, maxDistance, maxEdgesPerNode, version);
   }
 
-  toBinary(maxNodes?: number, maxEdges?: number, maxDistance?: number, maxEdgesPerNode?: number): Promise<Uint8Array> {
-    return Binary.toBinary(this, maxNodes, maxEdges, maxDistance, maxEdgesPerNode);
+  toBinary(
+    maxNodes?: number,
+    maxEdges?: number,
+    maxDistance?: number,
+    maxEdgesPerNode?: number,
+    version?: 3 | 4 | 5
+  ): Promise<Uint8Array> {
+    return Binary.toBinary(this, maxNodes, maxEdges, maxDistance, maxEdgesPerNode, version);
   }
 
   static fromBinary(root: string, data: Uint8Array): Promise<SocialGraph> {

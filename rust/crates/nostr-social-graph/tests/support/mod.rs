@@ -74,7 +74,23 @@ pub fn ts_fixture_emit(name: &str) -> GraphSummary {
     run_fixture(["emit", name])
 }
 
+pub fn ts_fixture_emit_version(name: &str, version: u64) -> GraphSummary {
+    run_fixture_owned(vec![
+        "emit".to_string(),
+        name.to_string(),
+        version.to_string(),
+    ])
+}
+
 pub fn ts_fixture_emit_budgeted(name: &str, budget: BinaryBudget) -> GraphSummary {
+    ts_fixture_emit_budgeted_version(name, budget, 4)
+}
+
+pub fn ts_fixture_emit_budgeted_version(
+    name: &str,
+    budget: BinaryBudget,
+    version: u64,
+) -> GraphSummary {
     let max_nodes = budget_arg(budget.max_nodes);
     let max_edges = budget_arg(budget.max_edges);
     let max_distance = budget_arg(budget.max_distance.map(|value| value as usize));
@@ -86,6 +102,16 @@ pub fn ts_fixture_emit_budgeted(name: &str, budget: BinaryBudget) -> GraphSummar
         max_edges,
         max_distance,
         max_edges_per_node,
+        version.to_string(),
+    ])
+}
+
+pub fn ts_fixture_reencode(root: &str, path: &Path, version: u64) -> GraphSummary {
+    run_fixture_owned(vec![
+        "reencode".to_string(),
+        root.to_string(),
+        path.to_str().unwrap().to_string(),
+        version.to_string(),
     ])
 }
 
