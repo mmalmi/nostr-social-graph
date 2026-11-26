@@ -155,6 +155,40 @@ fn overmute_queries_read_from_lmdb_state() {
     assert!(reopened.is_overmuted(SIRIUS, 1.0).unwrap());
 }
 
+#[test]
+fn overmute_early_exit_and_deduped_follow_list_preserve_semantics() {
+    let tempdir = TempDir::new().unwrap();
+    let mut store = HeedSocialGraph::open(tempdir.path(), ADAM).unwrap();
+    store
+        .handle_event(
+            &event(ADAM, 3, 1_000, vec![FIATJAF, SNOWDEN, FIATJAF]),
+            true,
+            1.0,
+        )
+        .unwrap();
+    // Distance-1 follower (FIATJAF) beats distance-2 muter (SIRIUS)
+    store
+        .handle_event(&event(FIATJAF, 3, 1_001, vec![SNOWDEN, SIRIUS]), true, 1.0)
+        .unwrap();
+    store
+        .handle_event(&event(SIRIUS, 10_000, 1_002, vec![SNOWDEN]), true, 1.0)
+        .unwrap();
+
+    assert_eq!(
+        store.get_followed_by_user(ADAM).unwrap(),
+        vec![FIATJAF.to_string(), SNOWDEN.to_string()]
+    );
+    assert!(!store.is_overmuted(SNOWDEN, 1.0).unwrap());
+    assert!(!store.is_overmuted(SNOWDEN, f64::INFINITY).unwrap());
+    assert!(!store.is_overmuted(SNOWDEN, 0.0).unwrap());
+    assert!(!store.is_overmuted(SNOWDEN, f64::NAN).unwrap());
+    assert!(
+        !store
+            .is_overmuted(&ADAM.to_uppercase(), f64::INFINITY)
+            .unwrap()
+    );
+}
+
 fn event(pubkey: &str, kind: u32, created_at: u64, tagged: Vec<&str>) -> NostrEvent {
     NostrEvent {
         created_at,

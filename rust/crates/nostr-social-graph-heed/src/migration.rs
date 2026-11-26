@@ -32,10 +32,10 @@ impl HeedSocialGraph {
         let mut by_id = BTreeMap::<u32, String>::new();
         let mut insert = |value: &str, id| -> Result<()> {
             let value = canonical_node_id(value).into_owned();
-            if let Some(previous) = by_id.insert(id, value.clone()) {
-                if previous != value {
-                    return Err(SocialGraphError::InvalidId(id).into());
-                }
+            if let Some(previous) = by_id.insert(id, value.clone())
+                && previous != value
+            {
+                return Err(SocialGraphError::InvalidId(id).into());
             }
             Ok(())
         };

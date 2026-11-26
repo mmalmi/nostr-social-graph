@@ -7,11 +7,41 @@ const BINARY_FORMAT_VERSION_V2 = 2;
 const BINARY_NODE_ID_PUBKEY = 0;
 const BINARY_NODE_ID_UUID = 1;
 const BINARY_NODE_ID_STRING = 2;
+const CHUNK_SIZE = 16 * 1024;
 
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const pubkeyPattern = /^[0-9a-fA-F]{64}$/;
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder('utf-8', { fatal: true });
+
+const byteHex = Array.from({ length: 256 }, (_, byte) => byte.toString(16).padStart(2, '0'));
+const hexNibble = new Int8Array(128).fill(-1);
+for (let i = 0; i < 10; i++) hexNibble[48 + i] = i;
+for (let i = 0; i < 6; i++) hexNibble[65 + i] = hexNibble[97 + i] = 10 + i;
+
+function hexAt(bytes: Uint8Array, start: number, len: number): string {
+  let out = '';
+  const end = start + len;
+  let i = start;
+  for (; i + 4 <= end; i += 4) {
+    out += byteHex[bytes[i]] + byteHex[bytes[i + 1]] + byteHex[bytes[i + 2]] + byteHex[bytes[i + 3]];
+  }
+  for (; i < end; i++) out += byteHex[bytes[i]];
+  return out;
+}
+
+function uuidAt(bytes: Uint8Array, start: number): string {
+  const hex = hexAt(bytes, start, 16);
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+interface BinaryPlan {
+  usedIds: Set<number>;
+  followEdgeCount: Map<number, number>;
+  muteEdgeCount: Map<number, number>;
+  followOwners: number[];
+  muteOwners: number[];
+}
 
 function planBudget(
   graph: SocialGraph,
@@ -19,11 +49,12 @@ function planBudget(
   maxEdges?: number,
   maxDistance?: number,
   maxEdgesPerNode?: number
-) {
+): BinaryPlan {
   const usedIds = new Set<number>();
   const followEdgeCount = new Map<number, number>();
   const muteEdgeCount = new Map<number, number>();
-  const { followedByUser, mutedByUser, followListCreatedAt, muteListCreatedAt, ids, str } = graph.getInternalData();
+  const { followedByUser, mutedByUser, followListCreatedAt, muteListCreatedAt, ids } = graph.getInternalData();
+  const idMap = (ids as any).uniqueIdToStr as Map<number, string>;
   const edgeTypes = [
     [followedByUser, followEdgeCount],
     [mutedByUser, muteEdgeCount],
@@ -39,6 +70,7 @@ function planBudget(
     if (maxDistance !== undefined && distance > maxDistance) break;
     owners: for (const owner of usersByFollowDistance.get(distance)!) {
       let ownerEdgeCount = 0;
+      const ownerValid = idMap.has(owner);
       for (const [edgesByOwner, counts] of edgeTypes) {
         const targets = edgesByOwner.get(owner);
         if (!targets) continue;
@@ -47,10 +79,7 @@ function planBudget(
           if (maxEdgesPerNode && ownerEdgeCount >= maxEdgesPerNode) continue owners;
           ownerEdgeCount++;
 
-          try {
-            str(owner);
-            str(target);
-          } catch {
+          if (!ownerValid || !idMap.has(target)) {
             console.warn(`Skipping edge with invalid ID: owner=${owner}, target=${target}`);
             continue;
           }
@@ -72,7 +101,8 @@ function planBudget(
   // Empty lists are facts too. Keep them for retained, in-range owners (and
   // an isolated root), without calling a truncated nonempty list empty.
   const rootId = ids.id(graph.getRoot());
-  for (const owner of new Set([...usedIds, rootId])) {
+  const candidates = usedIds.has(rootId) ? Array.from(usedIds) : [...usedIds, rootId];
+  for (const owner of candidates) {
     const distance = followDistances.get(owner);
     if (distance === undefined || (maxDistance !== undefined && distance > maxDistance)) continue;
     if (!usedIds.has(owner) && maxNodes && usedIds.size >= maxNodes) continue;
@@ -96,521 +126,469 @@ function planBudget(
   };
 }
 
-function hexToBytes(hex: string): Uint8Array {
-    if (!/^[0-9a-fA-F]+$/.test(hex)) {
-        throw new Error(`Invalid hex string: ${hex}`);
+function planFull(graph: SocialGraph): BinaryPlan {
+  const { followedByUser, mutedByUser, followListCreatedAt, muteListCreatedAt } = graph.getInternalData();
+  const usedIds = new Set<number>();
+  const followEdgeCount = new Map<number, number>();
+  const muteEdgeCount = new Map<number, number>();
+
+  for (const [lists, timestamps, counts] of [
+    [followedByUser, followListCreatedAt, followEdgeCount],
+    [mutedByUser, muteListCreatedAt, muteEdgeCount],
+  ] as const) {
+    for (const [user, targets] of lists) {
+      usedIds.add(user);
+      counts.set(user, targets.size);
+      for (const target of targets) usedIds.add(target);
     }
-    if (hex.length % 2 !== 0) {
-        throw new Error(`Hex string must have even length: ${hex}`);
+    // A first empty event can have a timestamp without an adjacency row.
+    for (const user of timestamps.keys()) {
+      if (!counts.has(user)) {
+        usedIds.add(user);
+        counts.set(user, 0);
+      }
     }
-    const bytes = new Uint8Array(hex.length / 2);
-    for (let i = 0; i < hex.length; i += 2) {
-        bytes[i / 2] = parseInt(hex.substr(i, 2), 16);
+  }
+
+  return {
+    usedIds,
+    followEdgeCount,
+    muteEdgeCount,
+    followOwners: Array.from(followEdgeCount.keys()),
+    muteOwners: Array.from(muteEdgeCount.keys()),
+  };
+}
+
+function* encodeBinaryChunks(
+  graph: SocialGraph,
+  maxNodes?: number,
+  maxEdges?: number,
+  maxDistance?: number,
+  maxEdgesPerNode?: number,
+  version: 3 | 4 = BINARY_FORMAT_VERSION
+): Generator<Uint8Array> {
+  const data = graph.getInternalData();
+  const plan = (maxNodes !== undefined || maxEdges !== undefined || maxDistance !== undefined || maxEdgesPerNode !== undefined)
+    ? planBudget(graph, maxNodes, maxEdges, maxDistance, maxEdgesPerNode)
+    : planFull(graph);
+
+  let buf = new Uint8Array(CHUNK_SIZE);
+  let pos = 0;
+  const pending: Uint8Array[] = [];
+
+  const flush = () => {
+    if (pos === 0) return;
+    pending.push(buf.subarray(0, pos));
+    buf = new Uint8Array(CHUNK_SIZE);
+    pos = 0;
+  };
+
+  const writeByte = (b: number) => {
+    if (pos >= CHUNK_SIZE) flush();
+    buf[pos++] = b;
+  };
+
+  const writeBytes = (bytes: Uint8Array) => {
+    let i = 0;
+    while (i < bytes.length) {
+      const avail = CHUNK_SIZE - pos;
+      if (avail === 0) { flush(); continue; }
+      const len = Math.min(avail, bytes.length - i);
+      buf.set(bytes.subarray(i, i + len), pos);
+      pos += len;
+      i += len;
     }
-    return bytes;
-}
+  };
 
-const byteHex = Array.from({ length: 256 }, (_, byte) => byte.toString(16).padStart(2, '0'));
-
-function bytesToHex(bytes: Uint8Array): string {
-    let hex = '';
-    for (const byte of bytes) hex += byteHex[byte];
-    return hex;
-}
-
-function isCanonicalUuid(value: string): boolean {
-    return uuidPattern.test(value);
-}
-
-function uuidToBytes(uuid: string): Uint8Array {
-    return hexToBytes(uuid.replace(/-/g, ''));
-}
-
-function bytesToUuid(bytes: Uint8Array): string {
-    const hex = bytesToHex(bytes);
-    return [
-        hex.slice(0, 8),
-        hex.slice(8, 12),
-        hex.slice(12, 16),
-        hex.slice(16, 20),
-        hex.slice(20),
-    ].join('-');
-}
-
-function writeBinaryNodeId(
-    value: string,
-    writeVar: (value: number) => void,
-    writeBytes: (bytes: Uint8Array) => void,
-) {
-    if (pubkeyPattern.test(value)) {
-        writeVar(BINARY_NODE_ID_PUBKEY);
-        writeBytes(hexToBytes(value));
-        return;
+  const writeHex = (hex: string, skipDashes = false) => {
+    const byteLen = skipDashes ? 16 : (hex.length >> 1);
+    if (!skipDashes && pos + byteLen <= CHUNK_SIZE) {
+      for (let i = 0; i < hex.length; i += 2) {
+        const hi = hexNibble[hex.charCodeAt(i)];
+        const lo = hexNibble[hex.charCodeAt(i + 1)];
+        if ((hi | lo) < 0) throw new Error(`Invalid hex string: ${hex}`);
+        buf[pos++] = (hi << 4) | lo;
+      }
+      return;
     }
-
-    if (isCanonicalUuid(value)) {
-        writeVar(BINARY_NODE_ID_UUID);
-        writeBytes(uuidToBytes(value));
-        return;
+    for (let i = 0; i < hex.length; ) {
+      if (skipDashes && hex.charCodeAt(i) === 45) { i++; continue; }
+      const hi = hexNibble[hex.charCodeAt(i)];
+      const lo = hexNibble[hex.charCodeAt(i + 1)];
+      if ((hi | lo) < 0) throw new Error(`Invalid hex string: ${hex}`);
+      writeByte((hi << 4) | lo);
+      i += 2;
     }
+  };
 
-    const bytes = textEncoder.encode(value);
-    writeVar(BINARY_NODE_ID_STRING);
-    writeVar(bytes.length);
-    writeBytes(bytes);
-}
-
-// Variable-length integer decoding
-function decodeVarint(bytes: Uint8Array, offset: number): { value: number; bytesRead: number } {
-    let value = 0;
-    let multiplier = 1;
-    for (let bytesRead = 1; bytesRead <= 8; bytesRead++) {
-        if (offset + bytesRead > bytes.length) throw new Error('Unexpected end of binary data');
-        const byte = bytes[offset + bytesRead - 1];
-        value += (byte & 0x7f) * multiplier;
-        if (!Number.isSafeInteger(value)) throw new Error('Binary integer exceeds safe range');
-        if ((byte & 0x80) === 0) return {value, bytesRead};
-        multiplier *= 128;
+  const writeVar = (v: number) => {
+    let n = v >>> 0;
+    if (n < 0x80 && pos < CHUNK_SIZE) { buf[pos++] = n; return; }
+    while (n >= 0x80) {
+      writeByte((n & 0x7f) | 0x80);
+      n >>>= 7;
     }
-    throw new Error('Invalid binary integer');
-}
+    writeByte(n);
+  };
 
-// All integers use varint encoding for consistency and simplicity
+  const idToStr = (data.ids as any).uniqueIdToStr as Map<number, string>;
 
-export async function* toBinaryChunks(graph: SocialGraph, maxNodes?: number, maxEdges?: number, maxDistance?: number, maxEdgesPerNode?: number, version: 3 | 4 = BINARY_FORMAT_VERSION): AsyncGenerator<Uint8Array> {
-    // --- Phase 1: grab internal graph data ---
-    const data = graph.getInternalData();
-
-    // If no budget limits are specified, use the original approach
-    let usedIds: Set<number>;
-    let followEdgeCount: Map<number, number>;
-    let muteEdgeCount: Map<number, number>;
-    let followOwners: number[];
-    let muteOwners: number[];
-
-    if (maxNodes !== undefined || maxEdges !== undefined || maxDistance !== undefined || maxEdgesPerNode !== undefined) {
-        // Budget planning using local planBudget function
-        const budgetResult = planBudget(graph, maxNodes, maxEdges, maxDistance, maxEdgesPerNode);
-        usedIds = budgetResult.usedIds;
-        followEdgeCount = budgetResult.followEdgeCount;
-        muteEdgeCount = budgetResult.muteEdgeCount;
-        followOwners = budgetResult.followOwners;
-        muteOwners = budgetResult.muteOwners;
+  // Header & uniqueIds
+  writeVar(version);
+  writeVar(plan.usedIds.size);
+  for (const id of plan.usedIds) {
+    const value = idToStr.get(id);
+    if (!value) throw new Error('pub: invalid id ' + id);
+    writeVar(id);
+    if (value.length === 64 && pubkeyPattern.test(value)) {
+      writeVar(BINARY_NODE_ID_PUBKEY);
+      writeHex(value);
+    } else if (value.length === 36 && uuidPattern.test(value)) {
+      writeVar(BINARY_NODE_ID_UUID);
+      writeHex(value, true);
     } else {
-        // Original approach: include all data
-        usedIds = new Set<number>();
-        followEdgeCount = new Map<number, number>();
-        muteEdgeCount = new Map<number, number>();
-
-        for (const [user, followedUsers] of data.followedByUser.entries()) {
-            usedIds.add(user);
-            followEdgeCount.set(user, followedUsers.size);
-            for (const followed of followedUsers) {
-                usedIds.add(followed);
-            }
-        }
-        // A first empty event can have a timestamp without an adjacency row.
-        for (const user of data.followListCreatedAt.keys()) {
-            if (!followEdgeCount.has(user)) {
-                usedIds.add(user);
-                followEdgeCount.set(user, 0);
-            }
-        }
-        for (const [user, mutedUsers] of data.mutedByUser.entries()) {
-            usedIds.add(user);
-            muteEdgeCount.set(user, mutedUsers.size);
-            for (const muted of mutedUsers) {
-                usedIds.add(muted);
-            }
-        }
-        for (const user of data.muteListCreatedAt.keys()) {
-            if (!muteEdgeCount.has(user)) {
-                usedIds.add(user);
-                muteEdgeCount.set(user, 0);
-            }
-        }
-
-        followOwners = Array.from(followEdgeCount.keys());
-        muteOwners = Array.from(muteEdgeCount.keys());
+      const encoded = textEncoder.encode(value);
+      writeVar(BINARY_NODE_ID_STRING);
+      writeVar(encoded.length);
+      writeBytes(encoded);
     }
+    if (pending.length) { yield* pending; pending.length = 0; }
+  }
 
-    // --- Helper utilities for fast byte writes ---
-    const CHUNK_SIZE = 16 * 1024; // 16 KB
-    let buf = new Uint8Array(CHUNK_SIZE);
-    let pos = 0;
-
-    const out: Uint8Array[] = [];
-    
-    const flush = () => {
-        if (pos === 0) return;
-        out.push(buf.subarray(0, pos));
-        buf = new Uint8Array(CHUNK_SIZE);
-        pos = 0;
-    };
-
-    const writeByte = (b: number) => {
-        if (pos >= buf.length) flush();
-        buf[pos++] = b;
-    };
-
-    const writeBytes = (bytes: Uint8Array) => {
-        let i = 0;
-        while (i < bytes.length) {
-            const avail = buf.length - pos;
-            if (avail === 0) {
-                flush();
-                continue;
-            }
-            const len = Math.min(avail, bytes.length - i);
-            buf.set(bytes.subarray(i, i + len), pos);
-            pos += len;
-            i += len;
+  const writeLists = (
+    owners: number[],
+    kind: 3 | 10000,
+    lists: Map<number, Set<number>>,
+    timestamps: Map<number, number>,
+    counts: Map<number, number>,
+  ) => {
+    const prefix = `${kind}:`;
+    writeVar(owners.length);
+    for (let i = 0; i < owners.length; i++) {
+      const owner = owners[i];
+      const ts = timestamps.get(owner) ?? 0;
+      const limit = counts.get(owner)!;
+      const outs = lists.get(owner);
+      writeVar(owner);
+      writeVar(ts);
+      if (version >= 4) {
+        const ownerStr = idToStr.get(owner);
+        const revision = ownerStr ? data.listRevisions.get(prefix + ownerStr) : undefined;
+        if (!revision || revision.created_at !== ts) {
+          writeVar(0);
+        } else {
+          writeVar(revision.complete && limit === (outs?.size ?? 0) ? 2 : 1);
+          writeHex(revision.id);
         }
-    };
-
-    const writeVar = (v: number) => {
-        let n = v >>> 0; // ensure unsigned 32-bit
-        while (n >= 0x80) {
-            writeByte((n & 0x7f) | 0x80);
-            n >>>= 7;
-        }
-        writeByte(n & 0x7f);
-    };
-
-    // --- Header ---
-    writeVar(version);
-
-    // --- uniqueIds block ---
-    writeVar(usedIds.size);
-    for (const id of usedIds) {
-        writeVar(id);
-        writeBinaryNodeId(data.ids.str(id), writeVar, writeBytes);
-    }
-
-    const writeRevision = (owner: number, kind: number, timestamp: number, complete: boolean) => {
-        if (version === 3) return;
-        const revision = graph.getListRevision(data.str(owner), kind);
-        if (!revision || revision.created_at !== timestamp) { writeVar(0); return; }
-        writeVar(revision.complete && complete ? 2 : 1);
-        writeBytes(hexToBytes(revision.id));
-    };
-
-    // --- follow lists ---
-    writeVar(followOwners.length);
-    for (const owner of followOwners) {
-        const ts = data.followListCreatedAt.get(owner) ?? 0;
-        const limit = followEdgeCount.get(owner)!;
-        writeVar(owner);
-        writeVar(ts);
-        writeRevision(owner, 3, ts, limit === (data.followedByUser.get(owner)?.size ?? 0));
-        writeVar(limit);
-
+      }
+      writeVar(limit);
+      if (outs && limit > 0) {
         let emitted = 0;
-        const outs = data.followedByUser.get(owner) || new Set<number>();
         for (const t of outs) {
-            if (emitted >= limit) break;
-            writeVar(t);
-            emitted++;
+          writeVar(t);
+          if (++emitted >= limit) break;
         }
+      }
     }
+  };
 
-    // --- mute lists ---
-    writeVar(muteOwners.length);
-    for (const owner of muteOwners) {
-        const ts = data.muteListCreatedAt.get(owner) ?? 0;
-        const limit = muteEdgeCount.get(owner)!;
-        writeVar(owner);
-        writeVar(ts);
-        writeRevision(owner, 10000, ts, limit === (data.mutedByUser.get(owner)?.size ?? 0));
-        writeVar(limit);
-
-        let emitted = 0;
-        const outs = data.mutedByUser.get(owner) || new Set<number>();
-        for (const t of outs) {
-            if (emitted >= limit) break;
-            writeVar(t);
-            emitted++;
-        }
-    }
-
-    // --- Final flush ---
-    flush();
-    for (const c of out) {
-        yield c;
-    }
+  writeLists(plan.followOwners, 3, data.followedByUser, data.followListCreatedAt, plan.followEdgeCount);
+  if (pending.length) { yield* pending; pending.length = 0; }
+  writeLists(plan.muteOwners, 10000, data.mutedByUser, data.muteListCreatedAt, plan.muteEdgeCount);
+  flush();
+  if (pending.length) yield* pending;
 }
 
+export async function* toBinaryChunks(
+  graph: SocialGraph,
+  maxNodes?: number,
+  maxEdges?: number,
+  maxDistance?: number,
+  maxEdgesPerNode?: number,
+  version: 3 | 4 = BINARY_FORMAT_VERSION
+): AsyncGenerator<Uint8Array> {
+  for (const chunk of encodeBinaryChunks(graph, maxNodes, maxEdges, maxDistance, maxEdgesPerNode, version)) {
+    yield chunk;
+  }
+}
 
-export async function toBinary(graph: SocialGraph, maxNodes?: number, maxEdges?: number, maxDistance?: number, maxEdgesPerNode?: number, version: 3 | 4 = BINARY_FORMAT_VERSION): Promise<Uint8Array> {
-    const chunks: Uint8Array[] = [];
-    let total = 0;
-    
-    for await (const c of toBinaryChunks(graph, maxNodes, maxEdges, maxDistance, maxEdgesPerNode, version)) {
-        chunks.push(c);
-        total += c.length;
-    }
-    
-    const out = new Uint8Array(total);
-    let off = 0;
-    for (const c of chunks) { 
-        out.set(c, off); 
-        off += c.length; 
-    }
-    return out;
+export async function toBinary(
+  graph: SocialGraph,
+  maxNodes?: number,
+  maxEdges?: number,
+  maxDistance?: number,
+  maxEdgesPerNode?: number,
+  version: 3 | 4 = BINARY_FORMAT_VERSION
+): Promise<Uint8Array> {
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (const c of encodeBinaryChunks(graph, maxNodes, maxEdges, maxDistance, maxEdgesPerNode, version)) {
+    chunks.push(c);
+    total += c.length;
+  }
+  if (chunks.length === 1) return chunks[0];
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const c of chunks) {
+    out.set(c, off);
+    off += c.length;
+  }
+  return out;
 }
 
 // Public mobile files have a fixed v4 schema and bounded rows. Saved and
 // imported graphs retain the compatibility rules for older binary versions.
 export async function fromBinary(root: string, data: Uint8Array, publicMobile = false): Promise<SocialGraph> {
-    let offset = 0;
-    
-    // Read version
-    const version = decodeVarint(data, offset);
-    offset += version.bytesRead;
-    
-    if (publicMobile && version.value !== BINARY_FORMAT_VERSION) throw new Error('Invalid mobile graph binary version');
-    if (version.value !== BINARY_FORMAT_VERSION && version.value !== 3 && version.value !== BINARY_FORMAT_VERSION_V2) {
-        throw new Error(`Invalid binary version: ${version.value}`);
+  let offset = 0;
+  const len = data.length;
+
+  const readVar = (): number => {
+    if (offset >= len) throw new Error('Unexpected end of binary data');
+    const b0 = data[offset];
+    if (b0 < 0x80) { offset++; return b0; }
+    let value = 0;
+    let multiplier = 1;
+    for (let bytesRead = 1; bytesRead <= 8; bytesRead++) {
+      if (offset + bytesRead > len) throw new Error('Unexpected end of binary data');
+      const byte = data[offset + bytesRead - 1];
+      value += (byte & 0x7f) * multiplier;
+      if (!Number.isSafeInteger(value)) throw new Error('Binary integer exceeds safe range');
+      if ((byte & 0x80) === 0) { offset += bytesRead; return value; }
+      multiplier *= 128;
     }
+    throw new Error('Invalid binary integer');
+  };
 
-    const readBytes = (len: number): Uint8Array => {
-        if (offset + len > data.length) {
-            throw new Error('Unexpected end of binary data');
-        }
-        const bytes = data.subarray(offset, offset + len);
-        offset += len;
-        return bytes;
-    };
+  const skip = (n: number): number => {
+    const start = offset;
+    const end = start + n;
+    if (end > len) throw new Error('Unexpected end of binary data');
+    offset = end;
+    return start;
+  };
 
-    // Read unique IDs
-    const idsCount = decodeVarint(data, offset);
-    offset += idsCount.bytesRead;
-    
-    if (publicMobile && idsCount.value > 30_000) throw new Error('Mobile graph node limit');
-    let edgesLeft = 180_000;
-    const uniqueIds: [string, number][] = [];
-    
-    for (let i = 0; i < idsCount.value; i++) {
-        if (version.value === BINARY_FORMAT_VERSION_V2) {
-            const hexBytes = readBytes(32);
-            const hexStr = bytesToHex(hexBytes);
-            const id = decodeVarint(data, offset);
-            offset += id.bytesRead;
-            uniqueIds.push([hexStr, id.value]);
-            continue;
-        }
+  const version = readVar();
+  if (publicMobile && version !== BINARY_FORMAT_VERSION) throw new Error('Invalid mobile graph binary version');
+  if (version !== BINARY_FORMAT_VERSION && version !== 3 && version !== BINARY_FORMAT_VERSION_V2) {
+    throw new Error(`Invalid binary version: ${version}`);
+  }
 
-        const id = decodeVarint(data, offset);
-        offset += id.bytesRead;
+  const idsCount = readVar();
+  if (publicMobile && idsCount > 30_000) throw new Error('Mobile graph node limit');
 
-        const nodeIdType = decodeVarint(data, offset);
-        offset += nodeIdType.bytesRead;
+  const graph = new SocialGraph(root);
+  const graphAny = graph as any;
+  const uniqueIdToStr: Map<number, string> = graphAny.ids.uniqueIdToStr;
+  const strToUniqueId: Map<string, number> = graphAny.ids.strToUniqueId;
+  uniqueIdToStr.clear();
+  strToUniqueId.clear();
+  let nextUniqueId = 0;
 
-        let value: string;
-        if (nodeIdType.value === BINARY_NODE_ID_PUBKEY) {
-            value = bytesToHex(readBytes(32));
-        } else if (nodeIdType.value === BINARY_NODE_ID_UUID) {
-            value = bytesToUuid(readBytes(16));
-        } else if (nodeIdType.value === BINARY_NODE_ID_STRING) {
-            const len = decodeVarint(data, offset);
-            offset += len.bytesRead;
-            value = textDecoder.decode(readBytes(len.value));
-        } else {
-            throw new Error(`Invalid binary node id type: ${nodeIdType.value}`);
-        }
+  let rawUniqueIds: [string, number][] | null = null;
 
-        if (!value || value.trim() === '') {
-            throw new Error('Cannot store empty or whitespace-only strings');
-        }
-        uniqueIds.push([value, id.value]);
-    }
-    
-    const revisions: [number, number, string, number, boolean][] = [];
-    const readRevision = (user: number, kind: number, timestamp: number) => {
-        if (version.value < 4) return;
-        const flag = readBytes(1)[0];
-        if (flag > 2) throw new Error('Invalid list revision flag');
-        if (flag) revisions.push([user, kind, bytesToHex(readBytes(32)), timestamp, flag === 2]);
-    };
-
-    // Read follow lists
-    const followListsCount = decodeVarint(data, offset);
-    offset += followListsCount.bytesRead;
-    if (publicMobile && followListsCount.value > idsCount.value) throw new Error('Mobile graph row limit');
-    
-    const followLists: [number, number[], number][] = [];
-    
-    for (let i = 0; i < followListsCount.value; i++) {
-        const user = decodeVarint(data, offset);
-        offset += user.bytesRead;
-        
-        const timestamp = decodeVarint(data, offset);
-        offset += timestamp.bytesRead;
-        
-        readRevision(user.value, 3, timestamp.value);
-        const followedCount = decodeVarint(data, offset);
-        offset += followedCount.bytesRead;
-        if (publicMobile) {
-            edgesLeft -= followedCount.value;
-            if (edgesLeft < 0) throw new Error('Mobile graph edge limit');
-        }
-        
-        const followedUsers: number[] = [];
-        
-        for (let j = 0; j < followedCount.value; j++) {
-            const followedUser = decodeVarint(data, offset);
-            offset += followedUser.bytesRead;
-            followedUsers.push(followedUser.value);
-        }
-        
-        followLists.push([user.value, followedUsers, timestamp.value]);
-    }
-    
-    // Read mute lists
-    const muteListsCount = decodeVarint(data, offset);
-    offset += muteListsCount.bytesRead;
-    if (publicMobile && muteListsCount.value > idsCount.value) throw new Error('Mobile graph row limit');
-    
-    const muteLists: [number, number[], number][] = [];
-    
-    for (let i = 0; i < muteListsCount.value; i++) {
-        const user = decodeVarint(data, offset);
-        offset += user.bytesRead;
-        
-        const timestamp = decodeVarint(data, offset);
-        offset += timestamp.bytesRead;
-        
-        readRevision(user.value, 10000, timestamp.value);
-        const mutedCount = decodeVarint(data, offset);
-        offset += mutedCount.bytesRead;
-        if (publicMobile) {
-            edgesLeft -= mutedCount.value;
-            if (edgesLeft < 0) throw new Error('Mobile graph edge limit');
-        }
-        
-        const mutedUsers: number[] = [];
-        
-        for (let j = 0; j < mutedCount.value; j++) {
-            const mutedUser = decodeVarint(data, offset);
-            offset += mutedUser.bytesRead;
-            mutedUsers.push(mutedUser.value);
-        }
-        
-        muteLists.push([user.value, mutedUsers, timestamp.value]);
-    }
-    
-    if (publicMobile) {
-        if (offset !== data.length) throw new Error('Unexpected trailing mobile graph data');
-        const ids = new Set(uniqueIds.map(([, id]) => id));
-        const keys = new Set(uniqueIds.map(([key]) => canonicalNodeId(key)));
-        if (ids.size !== uniqueIds.length || keys.size !== uniqueIds.length || !keys.has(root)) {
-            throw new Error('Invalid mobile graph identities or discovery root');
-        }
-        for (const lists of [followLists, muteLists]) {
-            const owners = new Set<number>();
-            for (const [owner, targets] of lists) {
-                if (!ids.has(owner) || owners.has(owner) || targets.some(id => !ids.has(id)) ||
-                    new Set(targets).size !== targets.length) throw new Error('Invalid mobile graph list');
-                owners.add(owner);
-            }
-        }
-    }
-    const canonical = canonicalizeGraphNodes(uniqueIds, followLists, muteLists, revisions);
-    root = canonicalNodeId(root);
-
-    // Create a new SocialGraph and populate it directly
-    const graph = new SocialGraph(root);
-    const graphAny = graph as any;
-    
-    // Clear the UniqueIds mapping and repopulate with serialized data
-    graphAny.ids.uniqueIdToStr.clear();
-    graphAny.ids.strToUniqueId.clear();
-    graphAny.ids.currentUniqueId = 0;
-    
-    // Populate the UniqueIds mapping
-    for (const [value, id] of canonical.uniqueIds) {
-        graphAny.ids.uniqueIdToStr.set(id, value);
-        graphAny.ids.strToUniqueId.set(value, id);
-        graphAny.ids.currentUniqueId = Math.max(graphAny.ids.currentUniqueId, id + 1);
-    }
-    
-    for (const [user, kind, id, created_at, complete] of canonical.revisions) {
-        graph.getInternalData().listRevisions.set(`${kind}:${graphAny.ids.str(user)}`, {id, created_at, complete});
-    }
-
-    // Ensure the new root is properly mapped in the UniqueIds
-    if (!graphAny.ids.strToUniqueId.has(root)) {
-        // If the new root wasn't in the original data, add it with a new ID
-        const rootId = graphAny.ids.id(root);
-        graphAny.root = rootId;
+  for (let i = 0; i < idsCount; i++) {
+    let value: string;
+    let id: number;
+    if (version === BINARY_FORMAT_VERSION_V2) {
+      value = hexAt(data, skip(32), 32);
+      id = readVar();
     } else {
-        // If the new root was in the original data, use its existing ID
-        graphAny.root = graphAny.ids.strToUniqueId.get(root);
-    }
-    
-    graphAny.followDistanceByUser.clear();
-    graphAny.usersByFollowDistance.clear();
-    graphAny.followedByUser.clear();
-    graphAny.followersByUser.clear();
-    graphAny.followListCreatedAt.clear();
-    graphAny.mutedByUser.clear();
-    graphAny.userMutedBy.clear();
-    graphAny.muteListCreatedAt.clear();
-
-    // Populate follow lists without deriving distances from serialized order.
-    for (const [follower, followedUsers, createdAt] of canonical.followLists) {
-        graphAny.followedByUser.set(follower, new Set(followedUsers));
-        for (const followedUser of followedUsers) {
-            if (!graphAny.followersByUser.has(followedUser)) {
-                graphAny.followersByUser.set(followedUser, new Set<number>());
-            }
-            graphAny.followersByUser.get(followedUser)!.add(follower);
+      id = readVar();
+      const nodeIdType = readVar();
+      if (nodeIdType === BINARY_NODE_ID_PUBKEY) {
+        value = hexAt(data, skip(32), 32);
+      } else if (nodeIdType === BINARY_NODE_ID_UUID) {
+        value = uuidAt(data, skip(16));
+      } else if (nodeIdType === BINARY_NODE_ID_STRING) {
+        const strLen = readVar();
+        const start = skip(strLen);
+        const decoded = textDecoder.decode(data.subarray(start, start + strLen));
+        if (!decoded || decoded.trim() === '') {
+          throw new Error('Cannot store empty or whitespace-only strings');
         }
-        graphAny.followListCreatedAt.set(follower, createdAt ?? 0);
-    }
-    
-    // Populate mute lists
-    for (const [muter, mutedUsers, createdAt] of canonical.muteLists) {
-        graphAny.mutedByUser.set(muter, new Set(mutedUsers));
-        for (const mutedUser of mutedUsers) {
-            if (!graphAny.userMutedBy.has(mutedUser)) {
-                graphAny.userMutedBy.set(mutedUser, new Set());
-            }
-            graphAny.userMutedBy.get(mutedUser)?.add(muter);
-        }
-        graphAny.muteListCreatedAt.set(muter, createdAt ?? 0);
+        value = canonicalNodeId(decoded);
+      } else {
+        throw new Error(`Invalid binary node id type: ${nodeIdType}`);
+      }
     }
 
-    await graph.recalculateFollowDistances(1_000, 100_000, () => {});
-    
+    if (rawUniqueIds !== null) {
+      rawUniqueIds.push([value, id]);
+    } else if (uniqueIdToStr.has(id) || strToUniqueId.has(value)) {
+      if (publicMobile) throw new Error('Invalid mobile graph identities or discovery root');
+      rawUniqueIds = [];
+      for (const [eid, evalStr] of uniqueIdToStr) rawUniqueIds.push([evalStr, eid]);
+      rawUniqueIds.push([value, id]);
+    } else {
+      uniqueIdToStr.set(id, value);
+      strToUniqueId.set(value, id);
+      if (id + 1 > nextUniqueId) nextUniqueId = id + 1;
+    }
+  }
+
+  if (publicMobile && !strToUniqueId.has(root)) {
+    throw new Error('Invalid mobile graph identities or discovery root');
+  }
+
+  graphAny.followDistanceByUser.clear();
+  graphAny.usersByFollowDistance.clear();
+  graphAny.followedByUser.clear();
+  graphAny.followersByUser.clear();
+  graphAny.followListCreatedAt.clear();
+  graphAny.mutedByUser.clear();
+  graphAny.userMutedBy.clear();
+  graphAny.muteListCreatedAt.clear();
+
+  let edgesLeft = 180_000;
+
+  if (!rawUniqueIds) {
+    // Fast alias-free path: populate graph maps directly without intermediate arrays or canonicalization pass.
+    graphAny.ids.currentUniqueId = nextUniqueId;
+    const listRevisions: Map<string, { id: string; created_at: number; complete: boolean }> = graphAny.listRevisions;
+
+    const readListsDirect = (
+      kind: 3 | 10000,
+      forward: Map<number, Set<number>>,
+      reverse: Map<number, Set<number>>,
+      timestamps: Map<number, number>,
+    ) => {
+      const listsCount = readVar();
+      if (publicMobile && listsCount > idsCount) throw new Error('Mobile graph row limit');
+      const prefix = `${kind}:`;
+
+      for (let i = 0; i < listsCount; i++) {
+        const owner = readVar();
+        const timestamp = readVar();
+        if (version >= 4) {
+          const flag = data[skip(1)];
+          if (flag > 2) throw new Error('Invalid list revision flag');
+          if (flag) {
+            const revId = hexAt(data, skip(32), 32);
+            const ownerStr = uniqueIdToStr.get(owner);
+            if (!ownerStr) throw new Error('pub: invalid id ' + owner);
+            listRevisions.set(prefix + ownerStr, { id: revId, created_at: timestamp, complete: flag === 2 });
+          }
+        }
+        const edgeCount = readVar();
+        if (publicMobile) {
+          edgesLeft -= edgeCount;
+          if (edgesLeft < 0) throw new Error('Mobile graph edge limit');
+          if (!uniqueIdToStr.has(owner) || forward.has(owner)) throw new Error('Invalid mobile graph list');
+        }
+
+        const targets = new Set<number>();
+        for (let j = 0; j < edgeCount; j++) {
+          const target = readVar();
+          if (publicMobile && (!uniqueIdToStr.has(target) || targets.has(target))) {
+            throw new Error('Invalid mobile graph list');
+          }
+          targets.add(target);
+          let rev = reverse.get(target);
+          if (!rev) reverse.set(target, rev = new Set<number>());
+          rev.add(owner);
+        }
+        forward.set(owner, targets);
+        timestamps.set(owner, timestamp);
+      }
+    };
+
+    readListsDirect(3, graphAny.followedByUser, graphAny.followersByUser, graphAny.followListCreatedAt);
+    readListsDirect(10000, graphAny.mutedByUser, graphAny.userMutedBy, graphAny.muteListCreatedAt);
+    if (publicMobile && offset !== len) throw new Error('Unexpected trailing mobile graph data');
+
+    root = canonicalNodeId(root);
+    graphAny.root = strToUniqueId.get(root) ?? graphAny.ids.id(root);
+    graph.recalculateFollowDistancesSync();
     return graph;
+  }
+
+  // Legacy aliased snapshot path: decode lists into tuples and repair aliases identically.
+  const revisions: [number, number, string, number, boolean][] = [];
+  const readListsRaw = (kind: 3 | 10000): [number, number[], number][] => {
+    const listsCount = readVar();
+    const lists: [number, number[], number][] = [];
+    for (let i = 0; i < listsCount; i++) {
+      const owner = readVar();
+      const timestamp = readVar();
+      if (version >= 4) {
+        const flag = data[skip(1)];
+        if (flag > 2) throw new Error('Invalid list revision flag');
+        if (flag) revisions.push([owner, kind, hexAt(data, skip(32), 32), timestamp, flag === 2]);
+      }
+      const edgeCount = readVar();
+      const targets = new Array<number>(edgeCount);
+      for (let j = 0; j < edgeCount; j++) targets[j] = readVar();
+      lists.push([owner, targets, timestamp]);
+    }
+    return lists;
+  };
+
+  const followLists = readListsRaw(3);
+  const muteLists = readListsRaw(10000);
+  const canonical = canonicalizeGraphNodes(rawUniqueIds, followLists, muteLists, revisions);
+  root = canonicalNodeId(root);
+
+  uniqueIdToStr.clear();
+  strToUniqueId.clear();
+  nextUniqueId = 0;
+  for (const [value, id] of canonical.uniqueIds) {
+    uniqueIdToStr.set(id, value);
+    strToUniqueId.set(value, id);
+    if (id + 1 > nextUniqueId) nextUniqueId = id + 1;
+  }
+  graphAny.ids.currentUniqueId = nextUniqueId;
+
+  for (const [user, kind, id, created_at, complete] of canonical.revisions) {
+    graphAny.listRevisions.set(`${kind}:${graphAny.ids.str(user)}`, { id, created_at, complete });
+  }
+
+  graphAny.root = strToUniqueId.get(root) ?? graphAny.ids.id(root);
+
+  const populate = (
+    lists: [number, number[], number][],
+    forward: Map<number, Set<number>>,
+    reverse: Map<number, Set<number>>,
+    timestamps: Map<number, number>,
+  ) => {
+    for (const [owner, targets, createdAt] of lists) {
+      forward.set(owner, new Set(targets));
+      for (const target of targets) {
+        let rev = reverse.get(target);
+        if (!rev) reverse.set(target, rev = new Set<number>());
+        rev.add(owner);
+      }
+      timestamps.set(owner, createdAt ?? 0);
+    }
+  };
+
+  populate(canonical.followLists, graphAny.followedByUser, graphAny.followersByUser, graphAny.followListCreatedAt);
+  populate(canonical.muteLists, graphAny.mutedByUser, graphAny.userMutedBy, graphAny.muteListCreatedAt);
+  graph.recalculateFollowDistancesSync();
+  return graph;
 }
 
 export async function fromBinaryStream(root: string, stream: ReadableStream<Uint8Array>): Promise<SocialGraph> {
-    const reader = stream.getReader();
-    const chunks: Uint8Array[] = [];
-    let totalLength = 0;
-    
-    try {
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            
-            chunks.push(value);
-            totalLength += value.length;
-        }
-    } finally {
-        reader.releaseLock();
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let totalLength = 0;
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      totalLength += value.length;
     }
-    
-    // Combine all chunks into a single buffer
-    const combined = new Uint8Array(totalLength);
-    let offset = 0;
-    
-    for (const chunk of chunks) {
-        combined.set(chunk, offset);
-        offset += chunk.length;
-    }
-    
-    return await fromBinary(root, combined);
+  } finally {
+    reader.releaseLock();
+  }
+
+  const combined = new Uint8Array(totalLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    combined.set(chunk, offset);
+    offset += chunk.length;
+  }
+
+  return await fromBinary(root, combined);
 }

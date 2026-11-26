@@ -23,10 +23,10 @@ pub(crate) fn canonicalize(mut state: SocialGraphState) -> Result<(SocialGraphSt
         if value.trim().is_empty() {
             return Err(SocialGraphError::EmptyString);
         }
-        if let Some(previous) = by_id.insert(*id, value.as_str()) {
-            if previous != value {
-                return Err(SocialGraphError::InvalidId(*id));
-            }
+        if let Some(previous) = by_id.insert(*id, value.as_str())
+            && previous != value
+        {
+            return Err(SocialGraphError::InvalidId(*id));
         }
         canonical
             .entry(value.as_str())
@@ -82,30 +82,30 @@ pub(crate) fn canonicalize(mut state: SocialGraphState) -> Result<(SocialGraphSt
                 .cloned();
             let mut entry = (owner, targets, at, revision, false);
             let key = map(owner);
-            if let Some(old) = chosen.get_mut(&key) {
-                if at == old.2 {
-                    let resolved = matches!((&entry.3, &old.3), (Some(a), Some(b))
-                        if a.id != b.id || a.complete != b.complete);
-                    if !resolved {
-                        let a: IndexSet<_> = entry.1.iter().copied().map(map).collect();
-                        let b: IndexSet<_> = old.1.iter().copied().map(map).collect();
-                        if a != b {
-                            if kind == 3 {
-                                old.4 = true;
-                            } else {
-                                old.1 = b
-                                    .into_iter()
-                                    .chain(a)
-                                    .collect::<IndexSet<_>>()
-                                    .into_iter()
-                                    .collect();
-                                old.3 = None;
-                                continue;
-                            }
+            if let Some(old) = chosen.get_mut(&key)
+                && at == old.2
+            {
+                let resolved = matches!((&entry.3, &old.3), (Some(a), Some(b))
+                    if a.id != b.id || a.complete != b.complete);
+                if !resolved {
+                    let a: IndexSet<_> = entry.1.iter().copied().map(map).collect();
+                    let b: IndexSet<_> = old.1.iter().copied().map(map).collect();
+                    if a != b {
+                        if kind == 3 {
+                            old.4 = true;
+                        } else {
+                            old.1 = b
+                                .into_iter()
+                                .chain(a)
+                                .collect::<IndexSet<_>>()
+                                .into_iter()
+                                .collect();
+                            old.3 = None;
+                            continue;
                         }
                     }
-                    entry.4 = old.4;
                 }
+                entry.4 = old.4;
             }
             let replace = chosen.get(&key).is_none_or(|old| {
                 if at != old.2 {

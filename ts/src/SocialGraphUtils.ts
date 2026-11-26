@@ -2,158 +2,79 @@ import { SocialGraph } from './SocialGraph.js';
 import { UID } from './UniqueIds.js';
 
 export class SocialGraphUtils {
-
   /**
    * Remove users who are muted by someone AND have zero followers.
-   * O(E + M) where E = follows edges, M = mutes edges.
-   * Now async and non-blocking with batching.
+   * Uses the reverse follower index in O(M) + O(incident edges).
    */
-  static removeMutedNotFollowedUsers(
+  static async removeMutedNotFollowedUsers(
     graph: SocialGraph,
     batchSize = 10_000,
     logger: (phase: string, scanned: number, removed: number) => void = () => {}
   ): Promise<number> {
-    console.time('removeMutedNotFollowedUsers');
-    let currentPhase = '';
-    
-    return new Promise((resolve) => {
-      const { followedByUser, userMutedBy } = graph.getInternalData();
+    const { followersByUser, userMutedBy } = graph.getInternalData();
+    const mutedEntries = Array.from(userMutedBy.entries());
+    const usersToRemove: number[] = [];
 
-      // Phase 1: Build set of users who have at least one follower
-      const hasFollowers = new Set<number>();
-      const followEntries = Array.from(followedByUser.entries());
-      let followProcessed = 0;
-
-      logger('Building follower counts', 0, 0);
-      console.log('Building follower index...');
-      console.time('Building follower index');
-      currentPhase = 'building';
-
-      const buildFollowerSet = () => {
-        const end = Math.min(followProcessed + batchSize, followEntries.length);
-
-        for (let i = followProcessed; i < end; i++) {
-          const [, followedUsers] = followEntries[i];
-          for (const user of followedUsers) {
-            hasFollowers.add(user);
-          }
+    logger('Scanning muted users', 0, 0);
+    for (let i = 0; i < mutedEntries.length; ) {
+      const end = Math.min(i + batchSize, mutedEntries.length);
+      for (; i < end; i++) {
+        const [user, muters] = mutedEntries[i];
+        if (muters.size > 0 && !followersByUser.get(user)?.size) {
+          usersToRemove.push(user);
         }
+      }
+      logger('Scanning muted users', i, usersToRemove.length);
+      if (i < mutedEntries.length) await new Promise(resolve => setTimeout(resolve, 0));
+    }
 
-        followProcessed = end;
-
-        if (followProcessed < followEntries.length) {
-          setTimeout(buildFollowerSet, 0);
-        } else {
-          // Phase 1 complete, start Phase 2
-          scanMutedUsers();
-        }
-      };
-
-      // Phase 2: Scan muted users for those with zero followers
-      const usersToRemove: number[] = [];
-      const mutedEntries = Array.from(userMutedBy.entries());
-      let mutedProcessed = 0;
-
-      const scanMutedUsers = () => {
-        const end = Math.min(mutedProcessed + batchSize, mutedEntries.length);
-
-        for (let i = mutedProcessed; i < end; i++) {
-          const [user, muters] = mutedEntries[i];
-          if (muters.size > 0 && !hasFollowers.has(user)) {
-            usersToRemove.push(user);
-          }
-        }
-
-        mutedProcessed = end;
-
-        if (mutedProcessed % (batchSize * 10) === 0 || mutedProcessed === end) {
-          if (currentPhase !== 'scanning') {
-            console.timeEnd('Building follower index');
-            console.time('Scanning muted users');
-            currentPhase = 'scanning';
-          }
-          console.log(`Scanned ${mutedProcessed.toLocaleString()} muted users, found ${usersToRemove.length.toLocaleString()} to remove`);
-          logger('Scanning muted users', mutedProcessed, usersToRemove.length);
-        }
-
-        if (mutedProcessed < mutedEntries.length) {
-          setTimeout(scanMutedUsers, 0);
-        } else {
-          // Phase 2 complete, start Phase 3
-          console.timeEnd('Scanning muted users');
-          console.time('Removing users');
-          currentPhase = 'removing';
-          logger('Removing users', mutedProcessed, usersToRemove.length);
-          batchRemoveUsers();
-        }
-      };
-
-      // Phase 3: Batch remove all identified users efficiently
-      const batchRemoveUsers = () => {
-        if (usersToRemove.length === 0) {
-          console.timeEnd('Removing users');
-          console.log(`✅ Cleanup complete: removed 0 muted users with zero followers`);
-          logger('Cleanup complete', mutedEntries.length, 0);
-          console.timeEnd('removeMutedNotFollowedUsers');
-          resolve(0);
-          return;
-        }
-
-        console.log(`Batch removing ${usersToRemove.length.toLocaleString()} users...`);
-        SocialGraphUtils.batchRemoveUsers(graph, usersToRemove);
-        
-        console.timeEnd('Removing users');
-        console.log(`✅ Cleanup complete: removed ${usersToRemove.length.toLocaleString()} muted users with zero followers`);
-        logger('Cleanup complete', mutedEntries.length, usersToRemove.length);
-        console.timeEnd('removeMutedNotFollowedUsers');
-        resolve(usersToRemove.length);
-      };
-
-      // Start Phase 1
-      setTimeout(buildFollowerSet, 0);
-    });
+    if (usersToRemove.length > 0) {
+      logger('Removing users', mutedEntries.length, usersToRemove.length);
+      SocialGraphUtils.batchRemoveUsers(graph, usersToRemove);
+    }
+    logger('Cleanup complete', mutedEntries.length, usersToRemove.length);
+    return usersToRemove.length;
   }
 
   /**
-   * Efficiently remove multiple users in batch to avoid O(N) operations per user
+   * Remove multiple users in O(incident edges) using forward and reverse adjacency indexes.
    */
   static batchRemoveUsers(graph: SocialGraph, usersToRemove: number[]): void {
-    const { ids } = graph.getInternalData();
+    if (!usersToRemove.length) return;
+    const { ids, listRevisions } = graph.getInternalData();
     const graphAny = graph as any;
 
-    // Phase 1: Collect relationships before removal
-    const userRelationships = new Map<number, {
-      followedUsers: Set<number>;
-      mutedUsers: Set<number>;
-      userMuters: Set<number>;
-      followDistance?: number;
-    }>();
+    const uniqueUsers = new Set<number>(usersToRemove);
+    const removedData: Array<{
+      user: number;
+      followed: Set<number> | undefined;
+      followers: Set<number> | undefined;
+      muted: Set<number> | undefined;
+      muters: Set<number> | undefined;
+    }> = [];
 
-    for (const user of usersToRemove) {
-      userRelationships.set(user, {
-        followedUsers: graphAny.followedByUser.get(user) || new Set(),
-        mutedUsers: graphAny.mutedByUser.get(user) || new Set(),
-        userMuters: graphAny.userMutedBy.get(user) || new Set(),
-        followDistance: graphAny.followDistanceByUser.get(user)
-      });
-    }
+    for (const revision of listRevisions.values()) revision.complete = false;
 
-    if (usersToRemove.length) for (const revision of graph.getInternalData().listRevisions.values()) revision.complete = false;
-    // Phase 2: Remove from all primary data structures
-    for (const user of usersToRemove) {
-      const relationships = userRelationships.get(user)!;
-      
-      // Remove from UniqueIds
-      graph.getInternalData().listRevisions.delete(`3:${ids.str(user)}`);
-      graph.getInternalData().listRevisions.delete(`10000:${ids.str(user)}`);
+    for (const user of uniqueUsers) {
+      const followed: Set<number> | undefined = graphAny.followedByUser.get(user);
+      const followers: Set<number> | undefined = graphAny.followersByUser.get(user);
+      const muted: Set<number> | undefined = graphAny.mutedByUser.get(user);
+      const muters: Set<number> | undefined = graphAny.userMutedBy.get(user);
+      removedData.push({ user, followed, followers, muted, muters });
+
+      const str = (ids as any).uniqueIdToStr.get(user);
+      if (str !== undefined) {
+        listRevisions.delete(`3:${str}`);
+        listRevisions.delete(`10000:${str}`);
+      }
       ids.remove(user);
 
-      // Remove from distance tracking
-      if (relationships.followDistance !== undefined) {
-        graphAny.usersByFollowDistance.get(relationships.followDistance)?.delete(user);
+      const distance = graphAny.followDistanceByUser.get(user);
+      if (distance !== undefined) {
+        const bucket = graphAny.usersByFollowDistance.get(distance);
+        if (bucket?.delete(user) && !bucket.size) graphAny.usersByFollowDistance.delete(distance);
       }
 
-      // Remove from all maps
       graphAny.followDistanceByUser.delete(user);
       graphAny.followedByUser.delete(user);
       graphAny.followersByUser.delete(user);
@@ -163,38 +84,25 @@ export class SocialGraphUtils {
       graphAny.muteListCreatedAt.delete(user);
     }
 
-    // Phase 3: Clean up follow relationships - single pass through all users
-    for (const [, followedSet] of graphAny.followedByUser) {
-      // Remove all users in batch from this follower's follow list
-      for (const userToRemove of usersToRemove) {
-        followedSet.delete(userToRemove);
-      }
-    }
-
-    // Phase 3.5: Clean up reverse follow index - remove deleted users from others' follower lists
-    for (const [, followersSet] of graphAny.followersByUser) {
-      for (const userToRemove of usersToRemove) {
-        followersSet.delete(userToRemove);
-      }
-    }
-
-    // Phase 4: Clean up mute relationships using inverse relationships
-    for (const user of usersToRemove) {
-      const relationships = userRelationships.get(user)!;
-      
-      // Remove from muters' mute lists
-      for (const muter of relationships.userMuters) {
-        const muterMuteSet = graphAny.mutedByUser.get(muter);
-        if (muterMuteSet) {
-          muterMuteSet.delete(user);
+    for (const { user, followed, followers, muted, muters } of removedData) {
+      if (followers) {
+        for (const follower of followers) {
+          if (!uniqueUsers.has(follower)) graphAny.followedByUser.get(follower)?.delete(user);
         }
       }
-
-      // Remove from userMutedBy sets of users they muted
-      for (const mutedUser of relationships.mutedUsers) {
-        const mutedUserMuterSet = graphAny.userMutedBy.get(mutedUser);
-        if (mutedUserMuterSet) {
-          mutedUserMuterSet.delete(user);
+      if (followed) {
+        for (const target of followed) {
+          if (!uniqueUsers.has(target)) graphAny.followersByUser.get(target)?.delete(user);
+        }
+      }
+      if (muters) {
+        for (const muter of muters) {
+          if (!uniqueUsers.has(muter)) graphAny.mutedByUser.get(muter)?.delete(user);
+        }
+      }
+      if (muted) {
+        for (const target of muted) {
+          if (!uniqueUsers.has(target)) graphAny.userMutedBy.get(target)?.delete(user);
         }
       }
     }
@@ -216,25 +124,20 @@ export class SocialGraphUtils {
     const userId = graph.getInternalData().ids.get(user);
     if (userId === undefined) return stats;
 
-    const followersSet = SocialGraphUtils.getFollowersSet(graph, userId);
-    
-    for (const follower of followersSet) {
-      const distance = graphAny.followDistanceByUser.get(follower);
-      if (distance !== undefined) {
-        if (!stats[distance]) {
-          stats[distance] = { followers: 0, muters: 0 };
-        }
-        stats[distance].followers++;
+    const distances: Map<number, number> = graphAny.followDistanceByUser;
+    const followers = graphAny.followersByUser.get(userId);
+    if (followers) {
+      for (const follower of followers) {
+        const distance = distances.get(follower);
+        if (distance !== undefined) (stats[distance] ??= { followers: 0, muters: 0 }).followers++;
       }
     }
 
-    for (const muter of graphAny.userMutedBy.get(userId) || []) {
-      const distance = graphAny.followDistanceByUser.get(muter);
-      if (distance !== undefined) {
-        if (!stats[distance]) {
-          stats[distance] = { followers: 0, muters: 0 };
-        }
-        stats[distance].muters++;
+    const muters = graphAny.userMutedBy.get(userId);
+    if (muters) {
+      for (const muter of muters) {
+        const distance = distances.get(muter);
+        if (distance !== undefined) (stats[distance] ??= { followers: 0, muters: 0 }).muters++;
       }
     }
     return stats;
@@ -245,10 +148,7 @@ export class SocialGraphUtils {
    * Uses reverse index for O(1) lookup.
    */
   static getFollowersSet(graph: SocialGraph, id: number): Set<number> {
-    const { followersByUser } = graph.getInternalData();
-    
-    // Use reverse index for fast lookup
-    return followersByUser.get(id) || new Set<number>();
+    return graph.getInternalData().followersByUser.get(id) ?? new Set<number>();
   }
 
   /**
@@ -261,69 +161,49 @@ export class SocialGraphUtils {
   }
 
   /**
-   * Check if a user is "overmuted" - where muters * threshold > followers 
-   * at the closest distance where they have any followers or muters (efficient implementation)
+   * Zero-allocation overmute check by internal numeric ID.
+   * Only the closest distance with any follower or muter decides the outcome.
    */
-  static isOvermuted(graph: SocialGraph, user: string, threshold: number = 1): boolean {
-    // Graph root is never considered overmuted
-    if (user === graph.getRoot()) {
-      return false;
-    }
-    
+  static isOvermutedById(graph: SocialGraph, userId: number, threshold = 1): boolean {
     const graphAny = graph as any;
-    const { followersByUser, userMutedBy, ids } = graph.getInternalData();
-    const userId = ids.get(user);
-    if (userId === undefined) return false;
+    if (userId === graphAny.root) return false;
 
-    // Early check: if no one has muted this user, they can't be overmuted
-    const mutersSet = userMutedBy.get(userId);
-    if (!mutersSet || mutersSet.size === 0) {
-      return false;
-    }
+    const mutersSet: Set<number> | undefined = graphAny.userMutedBy.get(userId);
+    if (!mutersSet?.size) return false;
+    if (mutersSet.has(graphAny.root)) return true;
 
-    if (mutersSet.has(graphAny.root)) {
-      return true;
-    }
-
-    // Count followers and muters by distance
-    const statsByDistance = new Map<number, { followers: number; muters: number }>();
-    
-    // Count followers using reverse index
-    const followersSet = followersByUser.get(userId);
-    if (followersSet) {
-      for (const follower of followersSet) {
-        const distance = graphAny.followDistanceByUser.get(follower);
-        if (distance !== undefined) {
-          if (!statsByDistance.has(distance)) {
-            statsByDistance.set(distance, { followers: 0, muters: 0 });
-          }
-          statsByDistance.get(distance)!.followers++;
-        }
-      }
-    }
-    
-    // Count muters  
+    const distances: Map<number, number> = graphAny.followDistanceByUser;
+    let minDist = Infinity;
+    let mutersAtMin = 0;
     for (const muter of mutersSet) {
-      const distance = graphAny.followDistanceByUser.get(muter);
-      if (distance !== undefined) {
-        if (!statsByDistance.has(distance)) {
-          statsByDistance.set(distance, { followers: 0, muters: 0 });
-        }
-        statsByDistance.get(distance)!.muters++;
+      const d = distances.get(muter);
+      if (d === undefined) continue;
+      if (d < minDist) { minDist = d; mutersAtMin = 1; }
+      else if (d === minDist) mutersAtMin++;
+    }
+    const maxFollowers = mutersAtMin * threshold;
+    if (!mutersAtMin || !(maxFollowers > 0)) return false;
+
+    const followersSet: Set<number> | undefined = graphAny.followersByUser.get(userId);
+    if (followersSet) {
+      let followersAtMin = 0;
+      for (const follower of followersSet) {
+        const d = distances.get(follower);
+        if (d === undefined) continue;
+        if (d < minDist) return false;
+        if (d === minDist && ++followersAtMin >= maxFollowers) return false;
       }
     }
-    
-    // Find closest distance with any opinions
-    const sortedDistances = Array.from(statsByDistance.keys()).sort((a, b) => a - b);
-    for (const distance of sortedDistances) {
-      const { followers, muters } = statsByDistance.get(distance)!;
-      if (followers + muters > 0) {
-        return muters * threshold > followers;
-      }
-    }
-    
-    // If no one has any opinion anywhere, not considered overmuted
-    return false;
+    return true;
+  }
+
+  /**
+   * Check if a user is "overmuted" - where muters * threshold > followers
+   * at the closest distance where they have any followers or muters.
+   */
+  static isOvermuted(graph: SocialGraph, user: string, threshold = 1): boolean {
+    const userId = graph.getInternalData().ids.get(user);
+    return userId !== undefined && SocialGraphUtils.isOvermutedById(graph, userId, threshold);
   }
 
   /**
@@ -331,57 +211,32 @@ export class SocialGraphUtils {
    * Returns the total number of users removed.
    */
   static async pruneOvermutedUsers(
-    graph: SocialGraph, 
-    threshold: number = 1,
+    graph: SocialGraph,
+    threshold = 1,
     logger: (distance: number, scanned: number, removed: number) => void = () => {}
   ): Promise<number> {
-    console.time('pruneOvermutedUsers');
     let totalRemoved = 0;
-    
     const graphAny = graph as any;
-    
-    // Process each distance level, starting from closest (distance 1)
-    // We skip distance 0 since that's just the root user
-    let distance = 1;
-    let hasUsersAtDistance = true;
-    
-    while (hasUsersAtDistance) {
-      const usersAtDistance = graphAny.usersByFollowDistance.get(distance);
-      if (!usersAtDistance || usersAtDistance.size === 0) {
-        hasUsersAtDistance = false;
-        continue;
-      }
-      
-      console.log(`Processing distance ${distance} (${usersAtDistance.size.toLocaleString()} users)...`);
-      
-      // Find overmuted users at this distance
+
+    for (let distance = 1; distance <= 20; distance++) {
+      const usersAtDistance: Set<number> | undefined = graphAny.usersByFollowDistance.get(distance);
+      if (!usersAtDistance?.size) break;
+
       const overmutedUsers: number[] = [];
       for (const userId of usersAtDistance) {
-        const userStr = graphAny.str(userId);
-        if (SocialGraphUtils.isOvermuted(graph, userStr, threshold)) {
+        if (SocialGraphUtils.isOvermutedById(graph, userId, threshold)) {
           overmutedUsers.push(userId);
         }
       }
-      
+
       logger(distance, usersAtDistance.size, overmutedUsers.length);
-      
+
       if (overmutedUsers.length > 0) {
-        console.log(`  Removing ${overmutedUsers.length.toLocaleString()} overmuted users at distance ${distance}`);
         SocialGraphUtils.batchRemoveUsers(graph, overmutedUsers);
         totalRemoved += overmutedUsers.length;
       }
-      
-      distance++;
-      
-      // Safety check to prevent infinite loops
-      if (distance > 20) {
-        console.warn('Stopping pruning at distance 20 to prevent infinite loop');
-        break;
-      }
     }
-    
-    console.timeEnd('pruneOvermutedUsers');
-    console.log(`✅ Pruning complete: removed ${totalRemoved.toLocaleString()} overmuted users total`);
+
     await graph.recalculateFollowDistances();
     return totalRemoved;
   }

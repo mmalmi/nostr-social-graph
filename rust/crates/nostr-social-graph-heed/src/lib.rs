@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fs;
 use std::path::Path;
 use std::str;
@@ -149,7 +149,7 @@ impl HeedSocialGraph {
         }
         let snapshot = metadata.get(&wtxn, SNAPSHOT_KEY)?.map(ToOwned::to_owned);
         if let Some(snapshot) = snapshot {
-            let root = read_root_from_wtxn(&metadata, &wtxn)?.to_string();
+            let root = read_root(&metadata, &wtxn)?.to_string();
             let graph = SocialGraph::from_binary(&root, &snapshot)?;
             persist_state(
                 &mut wtxn,
@@ -229,7 +229,7 @@ impl HeedSocialGraph {
 
     pub fn get_root(&self) -> Result<String> {
         let rtxn = self.env.read_txn()?;
-        Ok(read_root_from_rtxn(&self.metadata, &rtxn)?.to_string())
+        Ok(read_root(&self.metadata, &rtxn)?.to_string())
     }
 
     pub fn handle_event(
@@ -270,7 +270,7 @@ impl HeedSocialGraph {
             return Ok(());
         }
 
-        if is_overmuted_in_wtxn(
+        if is_overmuted_in_txn(
             &wtxn,
             &self.metadata,
             &self.str_to_unique_id,
@@ -316,11 +316,11 @@ impl HeedSocialGraph {
             _ => false,
         };
 
-        wtxn.commit()?;
-
         if recalc {
-            self.recalculate_follow_distances()?;
+            self.recalculate_follow_distances_in_wtxn(&mut wtxn)?;
         }
+
+        wtxn.commit()?;
 
         Ok(())
     }
@@ -341,8 +341,9 @@ impl HeedSocialGraph {
             root,
         )?;
         self.metadata.put(&mut wtxn, ROOT_KEY, root.as_bytes())?;
+        self.recalculate_follow_distances_in_wtxn(&mut wtxn)?;
         wtxn.commit()?;
-        self.recalculate_follow_distances()
+        Ok(())
     }
 
     pub fn get_follow_distance(&self, user: &str) -> Result<u32> {
@@ -471,7 +472,7 @@ impl HeedSocialGraph {
 
     pub fn is_overmuted(&self, user: &str, threshold: f64) -> Result<bool> {
         let rtxn = self.env.read_txn()?;
-        is_overmuted_in_rotxn(
+        is_overmuted_in_txn(
             &rtxn,
             &self.metadata,
             &self.str_to_unique_id,
@@ -606,10 +607,9 @@ impl HeedSocialGraph {
         Ok(graph.size())
     }
 
-    fn recalculate_follow_distances(&self) -> Result<()> {
-        let rtxn = self.env.read_txn()?;
-        let root = read_root_from_rtxn(&self.metadata, &rtxn)?.to_string();
-        let Some(root_id) = self.str_to_unique_id.get(&rtxn, &root)? else {
+    fn recalculate_follow_distances_in_wtxn(&self, wtxn: &mut heed::RwTxn<'_>) -> Result<()> {
+        let root = read_root(&self.metadata, wtxn)?.to_string();
+        let Some(root_id) = self.str_to_unique_id.get(wtxn, &root)? else {
             return Err(HeedSocialGraphError::MissingRoot);
         };
 
@@ -621,7 +621,7 @@ impl HeedSocialGraph {
 
         while let Some(user) = queue.pop_front() {
             let distance = distances[&user];
-            if let Some(followed) = self.followed_by_user.get(&rtxn, &user)? {
+            if let Some(followed) = self.followed_by_user.get(wtxn, &user)? {
                 for target in followed {
                     if distances.contains_key(&target) {
                         continue;
@@ -636,22 +636,17 @@ impl HeedSocialGraph {
                 }
             }
         }
-        drop(rtxn);
 
-        let mut wtxn = self.env.write_txn()?;
-        self.follow_distance_by_user.clear(&mut wtxn)?;
-        self.users_by_follow_distance.clear(&mut wtxn)?;
+        self.follow_distance_by_user.clear(wtxn)?;
+        self.users_by_follow_distance.clear(wtxn)?;
 
         for (user, distance) in distances {
-            self.follow_distance_by_user
-                .put(&mut wtxn, &user, &distance)?;
+            self.follow_distance_by_user.put(wtxn, &user, &distance)?;
         }
         for (distance, users) in users_by_distance {
-            self.users_by_follow_distance
-                .put(&mut wtxn, &distance, &users)?;
+            self.users_by_follow_distance.put(wtxn, &distance, &users)?;
         }
 
-        wtxn.commit()?;
         Ok(())
     }
 }
@@ -736,22 +731,9 @@ impl SocialGraphBackend for HeedSocialGraph {
     }
 }
 
-fn read_root_from_rtxn<'a>(
-    metadata: &'a Database<Str, Bytes>,
-    rtxn: &'a heed::RoTxn<'_>,
-) -> Result<&'a str> {
+fn read_root<'a>(metadata: &'a Database<Str, Bytes>, txn: &'a heed::RoTxn<'_>) -> Result<&'a str> {
     let root = metadata
-        .get(rtxn, ROOT_KEY)?
-        .ok_or(HeedSocialGraphError::MissingRoot)?;
-    Ok(str::from_utf8(root)?)
-}
-
-fn read_root_from_wtxn<'a>(
-    metadata: &'a Database<Str, Bytes>,
-    wtxn: &'a heed::RwTxn<'_>,
-) -> Result<&'a str> {
-    let root = metadata
-        .get(wtxn, ROOT_KEY)?
+        .get(txn, ROOT_KEY)?
         .ok_or(HeedSocialGraphError::MissingRoot)?;
     Ok(str::from_utf8(root)?)
 }
@@ -770,7 +752,7 @@ fn export_state_from_databases(
     user_muted_by: &Database<U32<BigEndian>, SerdeBincode<Vec<u32>>>,
     mute_list_created_at: &Database<U32<BigEndian>, U64<BigEndian>>,
 ) -> Result<SocialGraphState> {
-    let root = read_root_from_rtxn(metadata, rtxn)?.to_string();
+    let root = read_root(metadata, rtxn)?.to_string();
 
     let unique_ids = unique_id_to_str
         .iter(rtxn)?
@@ -851,10 +833,6 @@ fn is_valid_pubkey(key: &str) -> bool {
     key.len() == 64 && key.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
-fn contains_id(ids: &[u32], target: u32) -> bool {
-    ids.contains(&target)
-}
-
 fn collect_tag_ids(
     wtxn: &mut heed::RwTxn<'_>,
     metadata: &Database<Str, Bytes>,
@@ -863,7 +841,8 @@ fn collect_tag_ids(
     author: u32,
     tags: &[Vec<String>],
 ) -> Result<Vec<u32>> {
-    let mut ids = Vec::new();
+    let mut ids = Vec::with_capacity(tags.len());
+    let mut seen = HashSet::with_capacity(tags.len());
     for tag in tags {
         if tag.first().is_none_or(|value| value != "p") {
             continue;
@@ -875,11 +854,62 @@ fn collect_tag_ids(
             continue;
         }
         let id = get_or_create_id(wtxn, metadata, str_to_unique_id, unique_id_to_str, pubkey)?;
-        if id != author && !contains_id(&ids, id) {
+        if id != author && seen.insert(id) {
             ids.push(id);
         }
     }
     Ok(ids)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn update_edge_list(
+    wtxn: &mut heed::RwTxn<'_>,
+    forward_db: &Database<U32<BigEndian>, SerdeBincode<Vec<u32>>>,
+    reverse_db: &Database<U32<BigEndian>, SerdeBincode<Vec<u32>>>,
+    author: u32,
+    incoming: &[u32],
+) -> Result<bool> {
+    let current = forward_db.get(wtxn, &author)?.unwrap_or_default();
+    if current == incoming {
+        return Ok(false);
+    }
+
+    let incoming_set: HashSet<u32> = incoming.iter().copied().collect();
+    let current_set: HashSet<u32> = current.iter().copied().collect();
+
+    for unlinked in current
+        .iter()
+        .copied()
+        .filter(|id| !incoming_set.contains(id))
+    {
+        let mut reverse = reverse_db.get(wtxn, &unlinked)?.unwrap_or_default();
+        reverse.retain(|id| *id != author);
+        if reverse.is_empty() {
+            reverse_db.delete(wtxn, &unlinked)?;
+        } else {
+            reverse_db.put(wtxn, &unlinked, &reverse)?;
+        }
+    }
+
+    for linked in incoming
+        .iter()
+        .copied()
+        .filter(|id| !current_set.contains(id))
+    {
+        let mut reverse = reverse_db.get(wtxn, &linked)?.unwrap_or_default();
+        if !reverse.contains(&author) {
+            reverse.push(author);
+        }
+        reverse_db.put(wtxn, &linked, &reverse)?;
+    }
+
+    if incoming.is_empty() {
+        forward_db.delete(wtxn, &author)?;
+    } else {
+        forward_db.put(wtxn, &author, &incoming.to_vec())?;
+    }
+
+    Ok(true)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -929,46 +959,13 @@ fn handle_follow_list(
         author,
         tags,
     )?;
-    let current = followed_by_user.get(wtxn, &author)?.unwrap_or_default();
-    if current == followed_in_event {
-        return Ok(false);
-    }
-
-    for unfollowed in current
-        .iter()
-        .copied()
-        .filter(|id| !contains_id(&followed_in_event, *id))
-    {
-        let mut followers = followers_by_user
-            .get(wtxn, &unfollowed)?
-            .unwrap_or_default();
-        followers.retain(|id| *id != author);
-        if followers.is_empty() {
-            followers_by_user.delete(wtxn, &unfollowed)?;
-        } else {
-            followers_by_user.put(wtxn, &unfollowed, &followers)?;
-        }
-    }
-
-    for followed in followed_in_event
-        .iter()
-        .copied()
-        .filter(|id| !contains_id(&current, *id))
-    {
-        let mut followers = followers_by_user.get(wtxn, &followed)?.unwrap_or_default();
-        if !contains_id(&followers, author) {
-            followers.push(author);
-        }
-        followers_by_user.put(wtxn, &followed, &followers)?;
-    }
-
-    if followed_in_event.is_empty() {
-        followed_by_user.delete(wtxn, &author)?;
-    } else {
-        followed_by_user.put(wtxn, &author, &followed_in_event)?;
-    }
-
-    Ok(true)
+    update_edge_list(
+        wtxn,
+        followed_by_user,
+        followers_by_user,
+        author,
+        &followed_in_event,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1018,45 +1015,12 @@ fn handle_mute_list(
         author,
         tags,
     )?;
-    let current = muted_by_user.get(wtxn, &author)?.unwrap_or_default();
-
-    for unmuted in current
-        .iter()
-        .copied()
-        .filter(|id| !contains_id(&muted_in_event, *id))
-    {
-        let mut muters = user_muted_by.get(wtxn, &unmuted)?.unwrap_or_default();
-        muters.retain(|id| *id != author);
-        if muters.is_empty() {
-            user_muted_by.delete(wtxn, &unmuted)?;
-        } else {
-            user_muted_by.put(wtxn, &unmuted, &muters)?;
-        }
-    }
-
-    for muted in muted_in_event
-        .iter()
-        .copied()
-        .filter(|id| !contains_id(&current, *id))
-    {
-        let mut muters = user_muted_by.get(wtxn, &muted)?.unwrap_or_default();
-        if !contains_id(&muters, author) {
-            muters.push(author);
-        }
-        user_muted_by.put(wtxn, &muted, &muters)?;
-    }
-
-    if muted_in_event.is_empty() {
-        muted_by_user.delete(wtxn, &author)?;
-    } else {
-        muted_by_user.put(wtxn, &author, &muted_in_event)?;
-    }
-
+    update_edge_list(wtxn, muted_by_user, user_muted_by, author, &muted_in_event)?;
     Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
-fn is_overmuted_in_rotxn(
+fn is_overmuted_in_txn(
     txn: &heed::RoTxn<'_>,
     metadata: &Database<Str, Bytes>,
     str_to_unique_id: &Database<Str, U32<BigEndian>>,
@@ -1089,96 +1053,45 @@ fn is_overmuted_in_rotxn(
     let root_id = str_to_unique_id
         .get(txn, root)?
         .ok_or(HeedSocialGraphError::MissingRoot)?;
-    if contains_id(&muters, root_id) {
+    if muters.contains(&root_id) {
         return Ok(true);
     }
 
-    let mut stats = BTreeMap::<u32, (u32, u32)>::new();
-    if let Some(followers) = followers_by_user.get(txn, &user_id)? {
-        for follower in followers {
-            if let Some(distance) = follow_distance_by_user.get(txn, &follower)? {
-                let entry = stats.entry(distance).or_insert((0, 0));
-                entry.0 += 1;
+    let mut min_dist = u32::MAX;
+    let mut muters_at_min = 0u32;
+    for muter in muters {
+        if let Some(distance) = follow_distance_by_user.get(txn, &muter)? {
+            if distance < min_dist {
+                min_dist = distance;
+                muters_at_min = 1;
+            } else if distance == min_dist {
+                muters_at_min += 1;
             }
         }
     }
-    for muter in muters {
-        if let Some(distance) = follow_distance_by_user.get(txn, &muter)? {
-            let entry = stats.entry(distance).or_insert((0, 0));
-            entry.1 += 1;
-        }
-    }
-
-    for (_distance, (followers, muters)) in stats {
-        if followers + muters > 0 {
-            return Ok((muters as f64) * threshold > followers as f64);
-        }
-    }
-
-    Ok(false)
-}
-
-#[allow(clippy::too_many_arguments)]
-fn is_overmuted_in_wtxn(
-    txn: &heed::RwTxn<'_>,
-    metadata: &Database<Str, Bytes>,
-    str_to_unique_id: &Database<Str, U32<BigEndian>>,
-    follow_distance_by_user: &Database<U32<BigEndian>, U32<BigEndian>>,
-    followers_by_user: &Database<U32<BigEndian>, SerdeBincode<Vec<u32>>>,
-    user_muted_by: &Database<U32<BigEndian>, SerdeBincode<Vec<u32>>>,
-    user: &str,
-    threshold: f64,
-) -> Result<bool> {
-    let user = canonical_node_id(user);
-    let user = user.as_ref();
-    let root = match metadata.get(txn, ROOT_KEY)? {
-        Some(root) => str::from_utf8(root)?,
-        None => return Err(HeedSocialGraphError::MissingRoot),
-    };
-    if user == root {
+    let max_followers = (muters_at_min as f64) * threshold;
+    if muters_at_min == 0 || max_followers.is_nan() || max_followers <= 0.0 {
         return Ok(false);
     }
 
-    let Some(user_id) = str_to_unique_id.get(txn, user)? else {
-        return Ok(false);
-    };
-    let Some(muters) = user_muted_by.get(txn, &user_id)? else {
-        return Ok(false);
-    };
-    if muters.is_empty() {
-        return Ok(false);
-    }
-
-    let root_id = str_to_unique_id
-        .get(txn, root)?
-        .ok_or(HeedSocialGraphError::MissingRoot)?;
-    if contains_id(&muters, root_id) {
-        return Ok(true);
-    }
-
-    let mut stats = BTreeMap::<u32, (u32, u32)>::new();
     if let Some(followers) = followers_by_user.get(txn, &user_id)? {
+        let mut followers_at_min = 0u32;
         for follower in followers {
             if let Some(distance) = follow_distance_by_user.get(txn, &follower)? {
-                let entry = stats.entry(distance).or_insert((0, 0));
-                entry.0 += 1;
+                if distance < min_dist {
+                    return Ok(false);
+                }
+                if distance == min_dist {
+                    followers_at_min += 1;
+                    if (followers_at_min as f64) >= max_followers {
+                        return Ok(false);
+                    }
+                }
             }
         }
     }
-    for muter in muters {
-        if let Some(distance) = follow_distance_by_user.get(txn, &muter)? {
-            let entry = stats.entry(distance).or_insert((0, 0));
-            entry.1 += 1;
-        }
-    }
 
-    for (_distance, (followers, muters)) in stats {
-        if followers + muters > 0 {
-            return Ok((muters as f64) * threshold > followers as f64);
-        }
-    }
-
-    Ok(false)
+    Ok(true)
 }
 
 fn ensure_next_unique_id(
